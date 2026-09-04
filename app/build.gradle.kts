@@ -46,9 +46,12 @@ android {
 
     buildTypes {
         debug {
-            val evalSsl = project.findProperty("insecureSslForEval")?.toString()?.toBoolean() ?: false
-            buildConfigField("boolean", "INSECURE_SSL_FOR_EVAL", evalSsl.toString())
-        }
+    applicationIdSuffix = ".smt"
+    versionNameSuffix = "-smt"
+
+    val evalSsl = project.findProperty("insecureSslForEval")?.toString()?.toBoolean() ?: false
+    buildConfigField("boolean", "INSECURE_SSL_FOR_EVAL", evalSsl.toString())
+}
         release {
             isMinifyEnabled = true
             isShrinkResources = true
