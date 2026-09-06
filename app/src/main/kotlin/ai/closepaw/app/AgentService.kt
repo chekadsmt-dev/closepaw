@@ -122,6 +122,7 @@ class AgentService : AccessibilityService() {
     }
 
     private var eventCollectorJob: Job? = null
+    private val smtRouter by lazy { SmtRouter(this) }
 
     fun observeExternalSession(
             externalSession: AgentSession,
@@ -252,6 +253,8 @@ class AgentService : AccessibilityService() {
         isServiceActive = false
         instance = null
 
+        if (smtRouter.isRunning) smtRouter.stop()
+
         eventCollectorJob?.cancel()
         eventCollectorJob = null
 
@@ -359,6 +362,21 @@ class AgentService : AccessibilityService() {
             Log.w(TAG, "Ignoring runAgent because service is not active")
             return
         }
+
+        val normalizedGoal = goal.trim()
+        if (normalizedGoal.equals("SMT ROUTER START", ignoreCase = true) ||
+            normalizedGoal.equals("SMT ROUTER ON", ignoreCase = true)) {
+            smtRouter.start()
+            updateStatus("SMT Router running — deterministic / no LLM")
+            return
+        }
+        if (normalizedGoal.equals("SMT ROUTER STOP", ignoreCase = true) ||
+            normalizedGoal.equals("SMT ROUTER OFF", ignoreCase = true)) {
+            smtRouter.stop()
+            updateStatus("SMT Router stopped")
+            return
+        }
+
         if (session != null) {
             Log.i(TAG, "Stopping existing session before starting new one")
             eventCollectorJob?.cancel()
@@ -408,6 +426,7 @@ class AgentService : AccessibilityService() {
     }
 
     fun stopAgent() {
+        smtRouter.stop()
         submitOp(Op.Shutdown)
         overlayController?.hideAll()
         updateStatus("🛑 Agent stopped")
