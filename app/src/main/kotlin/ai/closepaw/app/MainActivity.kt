@@ -456,25 +456,43 @@ class MainActivity : ComponentActivity() {
         val service = AgentService.instance ?: return
         val serviceSession = service.getActiveSession() ?: return
         if (coordinator.currentSession === serviceSession) return
+
         // Don't rebind a dead session — let the next message create a fresh one
         if (serviceSession.state.value == SessionState.Shutdown) return
 
         coordinator.attachSession(serviceSession)
         sessionHistoryManager.setActiveSessionId(serviceSession.sessionId.value)
-        val snapshot = serviceSession.getServices().recordingService.getCurrentSession()
+
+        val snapshot =
+            serviceSession
+                .getServices()
+                .recordingService
+                .getCurrentSession()
+
         snapshot?.let {
-            viewModel.restoreMessagesFromRecords(snapshot.messages)
-            viewModel.startEventCollection(
-                    serviceSession,
-                    replayCutoffTimestamp = snapshot.lastUpdated
+            viewModel.restoreMessagesFromRecords(
+                snapshot.messages
             )
+
+            viewModel.startEventCollection(
+                serviceSession,
+                replayCutoffTimestamp =
+                    snapshot.lastUpdated
+            )
+
             Log.i(
-                    TAG,
-                    "Rebound active session ${serviceSession.sessionId} with ${snapshot.messages.size} recorded messages"
+                TAG,
+                "Rebound active session ${serviceSession.sessionId} with ${snapshot.messages.size} recorded messages"
             )
         } ?: run {
-            viewModel.startEventCollection(serviceSession)
-            Log.i(TAG, "Rebound active session ${serviceSession.sessionId} without recorder snapshot")
+            viewModel.startEventCollection(
+                serviceSession
+            )
+
+            Log.i(
+                TAG,
+                "Rebound active session ${serviceSession.sessionId} without recorder snapshot"
+            )
         }
     }
 
@@ -489,104 +507,225 @@ class MainActivity : ComponentActivity() {
             text: String,
             launchPolicy: SessionLaunchPolicy = SessionLaunchPolicy.AUTO
     ) {
-        if (!validateCloudKeysForSelectedModels()) return
 
-        if (!Settings.canDrawOverlays(this)) {
-            Toast.makeText(this, "Please grant Overlay permission", Toast.LENGTH_LONG).show()
-            openOverlaySettings(this)
+        /*
+         * SMT ROUTER COMMAND INTERCEPT
+         *
+         * IMPORTANT:
+         * This happens BEFORE cloud credential validation and BEFORE
+         * SessionCoordinator / LLM execution.
+         *
+         * Therefore SMT Router commands do not consume GPT/Codex/API usage.
+         */
+        val normalizedGoal = text.trim()
+
+        if (
+            normalizedGoal.equals("SMT ROUTER START", ignoreCase = true) ||
+            normalizedGoal.equals("SMT ROUTER ON", ignoreCase = true) ||
+            normalizedGoal.equals("SMT ROUTER STOP", ignoreCase = true) ||
+            normalizedGoal.equals("SMT ROUTER OFF", ignoreCase = true)
+        ) {
+            val service = AgentService.instance
+
+            if (service == null) {
+                pendingAutoStartGoal = normalizedGoal
+
+                Toast.makeText(
+                    this,
+                    "Please enable the Accessibility Service",
+                    Toast.LENGTH_LONG
+                ).show()
+
+                openAccessibilitySettings(this)
+                return
+            }
+
+            service.runAgent(normalizedGoal)
             return
         }
 
-        val service = AgentService.instance
+        if (!validateCloudKeysForSelectedModels()) return
+
+        if (!Settings.canDrawOverlays(this)) {
+            Toast.makeText(
+                this,
+                "Please grant Overlay permission",
+                Toast.LENGTH_LONG
+            ).show()
+
+            openOverlaySettings(this)
+
+            return
+        }
+
+        val service =
+            AgentService.instance
+
         if (service == null) {
             pendingAutoStartGoal = text
-            Toast.makeText(this, "Please enable the Accessibility Service", Toast.LENGTH_LONG)
-                    .show()
+
+            Toast.makeText(
+                this,
+                "Please enable the Accessibility Service",
+                Toast.LENGTH_LONG
+            ).show()
+
             openAccessibilitySettings(this)
+
             return
         }
 
         lifecycleScope.launch {
             // Try existing session first
-            val submitResult = coordinator.submit(text)
+            val submitResult =
+                coordinator.submit(text)
+
             when (submitResult) {
                 SubmitResult.SENT -> {
                     pendingAutoStartGoal = null
                     return@launch
                 }
-                SubmitResult.QUEUED -> return@launch
-                SubmitResult.NO_SESSION, SubmitResult.SESSION_DEAD -> { /* create new session */ }
+
+                SubmitResult.QUEUED ->
+                    return@launch
+
+                SubmitResult.NO_SESSION,
+                SubmitResult.SESSION_DEAD -> {
+                    /* create new session */
+                }
             }
 
             // Auto-reload: if session just died and no explicit reload target is set,
             // recover the dead session's checkpoint so the user keeps context.
             var autoReload = false
-            if (coordinator.selectedSessionForReload == null
-                && launchPolicy != SessionLaunchPolicy.FORCE_FRESH
+
+            if (
+                coordinator.selectedSessionForReload == null &&
+                launchPolicy !=
+                SessionLaunchPolicy.FORCE_FRESH
             ) {
-                val deadFileName = coordinator.consumeDeadSessionFileName()
-                val deadSessionId = sessionHistoryManager.getCurrentSessionId()
-                if (deadFileName != null && deadSessionId != null) {
-                    coordinator.selectedSessionForReload = SessionInfo(
-                        id = deadSessionId,
-                        fileName = deadFileName,
-                        startTime = 0,
-                        lastUpdated = 0,
-                        messageCount = 0,
-                        displayTitle = "",
-                        firstUserMessage = ""
-                    )
+                val deadFileName =
+                    coordinator.consumeDeadSessionFileName()
+
+                val deadSessionId =
+                    sessionHistoryManager
+                        .getCurrentSessionId()
+
+                if (
+                    deadFileName != null &&
+                    deadSessionId != null
+                ) {
+                    coordinator.selectedSessionForReload =
+                        SessionInfo(
+                            id = deadSessionId,
+                            fileName = deadFileName,
+                            startTime = 0,
+                            lastUpdated = 0,
+                            messageCount = 0,
+                            displayTitle = "",
+                            firstUserMessage = ""
+                        )
+
                     autoReload = true
                 }
             }
 
             // Create new session under coordinator's creation lock
             try {
-                val result = coordinator.createAndSubmit(text) {
-                    createOrReloadSession(service, launchPolicy, autoReload)
-                }
+                val result =
+                    coordinator.createAndSubmit(
+                        text
+                    ) {
+                        createOrReloadSession(
+                            service,
+                            launchPolicy,
+                            autoReload
+                        )
+                    }
+
                 when (result) {
-                    ai.closepaw.session.CreateResult.Success -> { /* done */ }
+                    ai.closepaw.session.CreateResult.Success -> {
+                        /* done */
+                    }
+
                     ai.closepaw.session.CreateResult.LockBusy -> {
                         // Another creation in progress — enqueue so input drains
                         // once the in-flight session becomes Idle/Created.
                         coordinator.enqueue(text)
                     }
+
                     ai.closepaw.session.CreateResult.Aborted -> {
                         // Creation explicitly refused (e.g. non-reloadable checkpoint).
                         // Coordinator has cleared pendingInputs; do NOT enqueue.
                     }
                 }
+
             } catch (e: Exception) {
-                Log.e(TAG, "Failed to create session", e)
-                if (settingsState.llmBackend == LLMBackendType.LOCAL) {
+                Log.e(
+                    TAG,
+                    "Failed to create session",
+                    e
+                )
+
+                if (
+                    settingsState.llmBackend ==
+                    LLMBackendType.LOCAL
+                ) {
                     modelLoadingStatusHolder.update(
-                            ModelLoadingStatus.Error(e.message ?: "Unknown error")
+                        ModelLoadingStatus.Error(
+                            e.message
+                                ?: "Unknown error"
+                        )
                     )
                 }
-                val errMsg = e.message ?: "Unknown error"
-                val deepLink = when (e) {
-                    is ai.closepaw.auth.MissingCredential,
-                    is ai.closepaw.auth.OAuthRefreshFailed,
-                    is ai.closepaw.auth.WrongCredentialType -> {
-                        val provider = (e as? ai.closepaw.auth.MissingCredential)?.provider
-                            ?: (e as? ai.closepaw.auth.OAuthRefreshFailed)?.provider
-                            ?: (e as? ai.closepaw.auth.WrongCredentialType)?.provider
-                        ai.closepaw.ui.chat.SettingsDeepLink(
-                            page = ai.closepaw.ui.chat.SettingsPage.LLM_AUTH,
-                            authTab = provider?.mode,
-                            provider = provider,
-                        )
+
+                val errMsg =
+                    e.message
+                        ?: "Unknown error"
+
+                val deepLink =
+                    when (e) {
+                        is ai.closepaw.auth.MissingCredential,
+                        is ai.closepaw.auth.OAuthRefreshFailed,
+                        is ai.closepaw.auth.WrongCredentialType -> {
+                            val provider =
+                                (
+                                    e as?
+                                    ai.closepaw.auth.MissingCredential
+                                )?.provider
+                                    ?: (
+                                        e as?
+                                        ai.closepaw.auth.OAuthRefreshFailed
+                                    )?.provider
+                                    ?: (
+                                        e as?
+                                        ai.closepaw.auth.WrongCredentialType
+                                    )?.provider
+
+                            ai.closepaw.ui.chat.SettingsDeepLink(
+                                page =
+                                    ai.closepaw.ui.chat.SettingsPage.LLM_AUTH,
+                                authTab =
+                                    provider?.mode,
+                                provider =
+                                    provider,
+                            )
+                        }
+
+                        else -> null
                     }
-                    else -> null
-                }
-                viewModel.reportStartupFailure(text, errMsg, deepLink)
+
+                viewModel.reportStartupFailure(
+                    text,
+                    errMsg,
+                    deepLink
+                )
+
                 Toast.makeText(
-                                this@MainActivity,
-                                "Failed to start: $errMsg",
-                                Toast.LENGTH_LONG
-                        )
-                        .show()
+                    this@MainActivity,
+                    "Failed to start: $errMsg",
+                    Toast.LENGTH_LONG
+                ).show()
             }
         }
     }
@@ -603,40 +742,103 @@ class MainActivity : ComponentActivity() {
             launchPolicy: SessionLaunchPolicy,
             autoReload: Boolean = false
     ): AgentSession? {
-        val baseUrlOverrides: Map<LLMProvider, String> = if (settingsState.openaiBaseUrl.isNotBlank()) {
-            mapOf(LLMProvider.OPENAI_API to settingsState.openaiBaseUrl)
-        } else emptyMap()
-        val visualizer = service.getActionVisualizer()
-        val touchGate = service.getOverlayTouchGate()
-        val selectedForReload =
-                if (launchPolicy == SessionLaunchPolicy.FORCE_FRESH) null
-                else coordinator.selectedSessionForReload
-
-        val session = if (selectedForReload != null) {
-            val reloaded = tryReloadSelectedSession(
-                    service = service,
-                    baseUrlOverrides = baseUrlOverrides,
-                    visualizer = visualizer,
-                    touchGate = touchGate,
-                    selected = selectedForReload
-            )
-            if (reloaded != null) {
-                Log.i(TAG, "Reloaded session ${reloaded.sessionId} from checkpoint")
-                reloaded
-            } else if (autoReload) {
-                Log.w(TAG, "Auto-reload failed for ${selectedForReload.id}, falling back to fresh session")
-                coordinator.selectedSessionForReload = null
-                createFreshSession(service, baseUrlOverrides, visualizer, touchGate)
+        val baseUrlOverrides: Map<LLMProvider, String> =
+            if (
+                settingsState.openaiBaseUrl
+                    .isNotBlank()
+            ) {
+                mapOf(
+                    LLMProvider.OPENAI_API to
+                        settingsState.openaiBaseUrl
+                )
             } else {
-                Log.w(TAG, "Explicit resume failed for ${selectedForReload.id}, checkpoint not reloadable")
-                coordinator.selectedSessionForReload = null
-                Toast.makeText(this, "Session from previous version — start a new session.", Toast.LENGTH_SHORT).show()
-                return null
+                emptyMap()
             }
-        } else {
-            coordinator.selectedSessionForReload = null
-            createFreshSession(service, baseUrlOverrides, visualizer, touchGate)
-        }
+
+        val visualizer =
+            service.getActionVisualizer()
+
+        val touchGate =
+            service.getOverlayTouchGate()
+
+        val selectedForReload =
+            if (
+                launchPolicy ==
+                SessionLaunchPolicy.FORCE_FRESH
+            ) {
+                null
+            } else {
+                coordinator.selectedSessionForReload
+            }
+
+        val session =
+            if (selectedForReload != null) {
+                val reloaded =
+                    tryReloadSelectedSession(
+                        service = service,
+                        baseUrlOverrides =
+                            baseUrlOverrides,
+                        visualizer =
+                            visualizer,
+                        touchGate =
+                            touchGate,
+                        selected =
+                            selectedForReload
+                    )
+
+                if (reloaded != null) {
+                    Log.i(
+                        TAG,
+                        "Reloaded session ${reloaded.sessionId} from checkpoint"
+                    )
+
+                    reloaded
+
+                } else if (autoReload) {
+                    Log.w(
+                        TAG,
+                        "Auto-reload failed for ${selectedForReload.id}, falling back to fresh session"
+                    )
+
+                    coordinator.selectedSessionForReload =
+                        null
+
+                    createFreshSession(
+                        service,
+                        baseUrlOverrides,
+                        visualizer,
+                        touchGate
+                    )
+
+                } else {
+                    Log.w(
+                        TAG,
+                        "Explicit resume failed for ${selectedForReload.id}, checkpoint not reloadable"
+                    )
+
+                    coordinator.selectedSessionForReload =
+                        null
+
+                    Toast.makeText(
+                        this,
+                        "Session from previous version — start a new session.",
+                        Toast.LENGTH_SHORT
+                    ).show()
+
+                    return null
+                }
+
+            } else {
+                coordinator.selectedSessionForReload =
+                    null
+
+                createFreshSession(
+                    service,
+                    baseUrlOverrides,
+                    visualizer,
+                    touchGate
+                )
+            }
 
         pendingTraceEnabled = null
         pendingTraceRunId = null
@@ -645,11 +847,25 @@ class MainActivity : ComponentActivity() {
         pendingEvalTurnBudget = null
         pendingAutoStartGoal = null
 
-        sessionHistoryManager.setActiveSessionId(session.sessionId.value)
-        viewModel.startEventCollection(session)
-        service.observeExternalSession(session, session.getServices().platform.mode)
+        sessionHistoryManager
+            .setActiveSessionId(
+                session.sessionId.value
+            )
 
-        Log.i(TAG, "Session ready with backend=${settingsState.llmBackend} and message sent")
+        viewModel.startEventCollection(
+            session
+        )
+
+        service.observeExternalSession(
+            session,
+            session.getServices().platform.mode
+        )
+
+        Log.i(
+            TAG,
+            "Session ready with backend=${settingsState.llmBackend} and message sent"
+        )
+
         return session
     }
 
@@ -660,34 +876,76 @@ class MainActivity : ComponentActivity() {
             touchGate: OverlayTouchGate?,
             selected: SessionInfo
     ): AgentSession? {
-        val storage = SessionStorage(applicationContext)
-        val contextFileName = storage.contextFileNameFor(selected.fileName)
-        val snapshot = storage.readSnapshot(contextFileName).getOrNull() ?: return null
-        if (snapshot.schemaVersion != 2) return null
-        if (!snapshot.checkpointState.isReloadable()) return null
+        val storage =
+            SessionStorage(
+                applicationContext
+            )
 
-        val session = withContext(Dispatchers.Default) {
-            AgentSession.reload(
+        val contextFileName =
+            storage.contextFileNameFor(
+                selected.fileName
+            )
+
+        val snapshot =
+            storage.readSnapshot(
+                contextFileName
+            ).getOrNull()
+                ?: return null
+
+        if (
+            snapshot.schemaVersion != 2
+        ) {
+            return null
+        }
+
+        if (
+            !snapshot.checkpointState
+                .isReloadable()
+        ) {
+            return null
+        }
+
+        val session =
+            withContext(
+                Dispatchers.Default
+            ) {
+                AgentSession.reload(
                     snapshot = snapshot,
                     service = service,
                     scope = service.serviceScope,
                     authStore = authStore,
-                    baseUrlOverrides = baseUrlOverrides,
+                    baseUrlOverrides =
+                        baseUrlOverrides,
                     visualizer = visualizer,
-                    overlayTouchGate = touchGate,
-            )
-        }
-        if (session == null) return null
+                    overlayTouchGate =
+                        touchGate,
+                )
+            }
 
-        val existingRecord = storage.readSession(selected.fileName).getOrNull()
-        if (existingRecord != null) {
-            session.getServices().recordingService.resumeSession(
-                    ResumedSessionData(
-                            session = existingRecord,
-                            fileName = selected.fileName
-                    )
-            )
+        if (session == null) {
+            return null
         }
+
+        val existingRecord =
+            storage
+                .readSession(
+                    selected.fileName
+                )
+                .getOrNull()
+
+        if (existingRecord != null) {
+            session.getServices()
+                .recordingService
+                .resumeSession(
+                    ResumedSessionData(
+                        session =
+                            existingRecord,
+                        fileName =
+                            selected.fileName
+                    )
+                )
+        }
+
         return session
     }
 
@@ -698,63 +956,129 @@ class MainActivity : ComponentActivity() {
             touchGate: OverlayTouchGate?
     ): AgentSession {
         val localConfig =
-                if (settingsState.llmBackend == LLMBackendType.LOCAL) {
-                    LocalLLMConfig(
-                            modelSlug = settingsState.localModel.modelSlug,
-                            quantizationSlug = settingsState.localModel.quantizationSlug
-                    )
-                } else null
+            if (
+                settingsState.llmBackend ==
+                LLMBackendType.LOCAL
+            ) {
+                LocalLLMConfig(
+                    modelSlug =
+                        settingsState
+                            .localModel
+                            .modelSlug,
+                    quantizationSlug =
+                        settingsState
+                            .localModel
+                            .quantizationSlug
+                )
+            } else {
+                null
+            }
 
-        if (settingsState.llmBackend == LLMBackendType.LOCAL) {
-            modelLoadingStatusHolder.update(ModelLoadingStatus.Loading)
+        if (
+            settingsState.llmBackend ==
+            LLMBackendType.LOCAL
+        ) {
+            modelLoadingStatusHolder.update(
+                ModelLoadingStatus.Loading
+            )
         }
 
         val sessionConfig =
-                SessionConfig(
-                        approvalMode = pendingApprovalMode ?: settingsState.approvalMode,
-                        mainModel = settingsState.selectedModel,
-                        debugMode = settingsState.debugMode,
-                        traceEnabled = pendingTraceEnabled ?: settingsState.traceEnabled,
-                        traceRunId = pendingTraceRunId,
-                        llm =
-                                SessionLlmConfig(
-                                        backendType = settingsState.llmBackend,
-                                        localConfig = localConfig
-                                ),
-                        perceptionConfig =
-                                when (settingsState.perceptionMode) {
-                                    "screenshot_only" ->
-                                            PerceptionConfig.ScreenshotOnly()
-                                    "hybrid" -> PerceptionConfig.Hybrid()
-                                    else -> PerceptionConfig.AccessibilityOnly
-                                },
-                        platformMode = settingsState.platformMode,
-                        excludedTools = pendingExcludedTools,
-                        evalTurnBudget = pendingEvalTurnBudget
-                )
+            SessionConfig(
+                approvalMode =
+                    pendingApprovalMode
+                        ?: settingsState
+                            .approvalMode,
+                mainModel =
+                    settingsState
+                        .selectedModel,
+                debugMode =
+                    settingsState
+                        .debugMode,
+                traceEnabled =
+                    pendingTraceEnabled
+                        ?: settingsState
+                            .traceEnabled,
+                traceRunId =
+                    pendingTraceRunId,
+                llm =
+                    SessionLlmConfig(
+                        backendType =
+                            settingsState
+                                .llmBackend,
+                        localConfig =
+                            localConfig
+                    ),
+                perceptionConfig =
+                    when (
+                        settingsState
+                            .perceptionMode
+                    ) {
+                        "screenshot_only" ->
+                            PerceptionConfig
+                                .ScreenshotOnly()
+
+                        "hybrid" ->
+                            PerceptionConfig
+                                .Hybrid()
+
+                        else ->
+                            PerceptionConfig
+                                .AccessibilityOnly
+                    },
+                platformMode =
+                    settingsState
+                        .platformMode,
+                excludedTools =
+                    pendingExcludedTools,
+                evalTurnBudget =
+                    pendingEvalTurnBudget
+            )
 
         val session =
-                withContext(Dispatchers.Default) {
-                    AgentSession.create(
-                            config = sessionConfig,
-                            service = service,
-                            scope = service.serviceScope,
-                            authStore = authStore,
-                            baseUrlOverrides = baseUrlOverrides,
-                            visualizer = visualizer,
-                            overlayTouchGate = touchGate,
-                    )
-                }
+            withContext(
+                Dispatchers.Default
+            ) {
+                AgentSession.create(
+                    config =
+                        sessionConfig,
+                    service =
+                        service,
+                    scope =
+                        service.serviceScope,
+                    authStore =
+                        authStore,
+                    baseUrlOverrides =
+                        baseUrlOverrides,
+                    visualizer =
+                        visualizer,
+                    overlayTouchGate =
+                        touchGate,
+                )
+            }
 
-        if (settingsState.llmBackend == LLMBackendType.LOCAL) {
-            val localClient = session.getServices().llmClient as? LFMLLMClient
+        if (
+            settingsState.llmBackend ==
+            LLMBackendType.LOCAL
+        ) {
+            val localClient =
+                session.getServices()
+                    .llmClient as?
+                    LFMLLMClient
+
             if (localClient == null) {
                 modelLoadingStatusHolder.update(
-                        ModelLoadingStatus.Error("Local LLM client unavailable")
+                    ModelLoadingStatus.Error(
+                        "Local LLM client unavailable"
+                    )
                 )
             } else {
-                localClient.loadModel { state ->
-                    modelLoadingStatusHolder.update(state.toUiStatus())
+                localClient.loadModel {
+                    state ->
+                    modelLoadingStatusHolder
+                        .update(
+                            state.toUiStatus()
+                        )
                 }
             }
         }
@@ -763,189 +1087,514 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun retryPendingAutoStartGoalIfReady() {
-        val pendingGoal = pendingAutoStartGoal ?: return
-        if (AgentService.instance == null) return
-        if (!Settings.canDrawOverlays(this)) return
-        if (findMissingCloudKeys(settingsState, modelCatalog, authStore).isNotEmpty()) return
+        val pendingGoal =
+            pendingAutoStartGoal
+                ?: return
+
+        if (
+            AgentService.instance ==
+            null
+        ) {
+            return
+        }
+
+        if (
+            !Settings.canDrawOverlays(
+                this
+            )
+        ) {
+            return
+        }
+
+        /*
+         * SMT Router commands do not need cloud credentials.
+         */
+        val normalizedGoal =
+            pendingGoal.trim()
+
+        val isSmtRouterCommand =
+            normalizedGoal.equals(
+                "SMT ROUTER START",
+                true
+            ) ||
+            normalizedGoal.equals(
+                "SMT ROUTER ON",
+                true
+            ) ||
+            normalizedGoal.equals(
+                "SMT ROUTER STOP",
+                true
+            ) ||
+            normalizedGoal.equals(
+                "SMT ROUTER OFF",
+                true
+            )
+
+        if (
+            !isSmtRouterCommand &&
+            findMissingCloudKeys(
+                settingsState,
+                modelCatalog,
+                authStore
+            ).isNotEmpty()
+        ) {
+            return
+        }
+
         // Clear before dispatching to prevent double-fire from rapid lifecycle callbacks
         pendingAutoStartGoal = null
-        ensureSessionAndSend(pendingGoal)
-    }
 
-    private fun scheduleGoalDispatch(goal: String, delayMs: Long = 500L) {
-        pendingGoalRunnable?.let { window.decorView.removeCallbacks(it) }
-        val runnable =
-                Runnable {
-                    pendingGoalRunnable = null
-                    ensureSessionAndSend(goal)
-                }
-        pendingGoalRunnable = runnable
-        window.decorView.postDelayed(runnable, delayMs)
-    }
-
-    private fun validateCloudKeysForSelectedModels(): Boolean {
-        val missing = findMissingCloudKeys(settingsState, modelCatalog, authStore)
-
-        if (missing.isEmpty()) return true
-
-        Toast.makeText(this, "Missing credential(s): ${missing.joinToString("; ") { it.message }}", Toast.LENGTH_LONG)
-                .show()
-        pendingSettingsDeepLink = ai.closepaw.ui.chat.SettingsDeepLink(
-            page = ai.closepaw.ui.chat.SettingsPage.LLM_AUTH,
-            authTab = missing.first().provider.mode,
-            provider = missing.first().provider,
+        ensureSessionAndSend(
+            pendingGoal
         )
+    }
+
+    private fun scheduleGoalDispatch(
+        goal: String,
+        delayMs: Long = 500L
+    ) {
+        pendingGoalRunnable?.let {
+            window.decorView
+                .removeCallbacks(it)
+        }
+
+        val runnable =
+            Runnable {
+                pendingGoalRunnable = null
+                ensureSessionAndSend(goal)
+            }
+
+        pendingGoalRunnable =
+            runnable
+
+        window.decorView
+            .postDelayed(
+                runnable,
+                delayMs
+            )
+    }
+
+    private fun validateCloudKeysForSelectedModels():
+        Boolean {
+        val missing =
+            findMissingCloudKeys(
+                settingsState,
+                modelCatalog,
+                authStore
+            )
+
+        if (missing.isEmpty()) {
+            return true
+        }
+
+        Toast.makeText(
+            this,
+            "Missing credential(s): ${
+                missing.joinToString("; ") {
+                    it.message
+                }
+            }",
+            Toast.LENGTH_LONG
+        ).show()
+
+        pendingSettingsDeepLink =
+            ai.closepaw.ui.chat.SettingsDeepLink(
+                page =
+                    ai.closepaw.ui.chat.SettingsPage.LLM_AUTH,
+                authTab =
+                    missing.first()
+                        .provider
+                        .mode,
+                provider =
+                    missing.first()
+                        .provider,
+            )
+
         showSettings = true
+
         return false
     }
 
     // ── Settings OAuth handlers ──
 
     private fun deriveOpenAiAuthUiState() {
-        val cred = kotlinx.coroutines.runBlocking { authStore.get(LLMProvider.OPENAI_CODEX) }
-        val oauthCred = cred as? AuthCredential.OAuth
-        openAiAuthUiState = if (oauthCred != null) {
-            ai.closepaw.ui.settings.OpenAiAuthUiState.SignedIn(oauthCred.email)
-        } else {
-            ai.closepaw.ui.settings.OpenAiAuthUiState.SignedOut
-        }
+        val cred =
+            kotlinx.coroutines
+                .runBlocking {
+                    authStore.get(
+                        LLMProvider.OPENAI_CODEX
+                    )
+                }
+
+        val oauthCred =
+            cred as?
+            AuthCredential.OAuth
+
+        openAiAuthUiState =
+            if (oauthCred != null) {
+                ai.closepaw.ui.settings
+                    .OpenAiAuthUiState
+                    .SignedIn(
+                        oauthCred.email
+                    )
+            } else {
+                ai.closepaw.ui.settings
+                    .OpenAiAuthUiState
+                    .SignedOut
+            }
     }
 
     private fun handleStartOAuth() {
-        if (oauthJob?.isActive == true) return
+        if (
+            oauthJob?.isActive ==
+            true
+        ) {
+            return
+        }
 
-        openAiAuthUiState = ai.closepaw.ui.settings.OpenAiAuthUiState.InProgress
-        oauthJob = lifecycleScope.launch {
-            val result = ai.closepaw.auth.openAiSignIn(
-                launchBrowser = { url ->
-                    try {
-                        val intent = Intent(Intent.ACTION_VIEW, Uri.parse(url))
-                        startActivity(intent)
-                    } catch (e: Exception) {
-                        Log.e(TAG, "Failed to launch OAuth browser", e)
-                        throw e
-                    }
-                },
-                onCallbackReceived = {
-                    openAiAuthUiState = ai.closepaw.ui.settings.OpenAiAuthUiState.Finishing
-                },
-            )
+        openAiAuthUiState =
+            ai.closepaw.ui.settings
+                .OpenAiAuthUiState
+                .InProgress
 
-            when (result) {
-                is ai.closepaw.auth.OpenAiSignInResult.Success -> {
-                    val tokens = result.tokens
-                    withContext(Dispatchers.IO) {
-                        authStore.set(
-                            LLMProvider.OPENAI_CODEX,
-                            AuthCredential.OAuth(
-                                accessToken = tokens.accessToken,
-                                refreshToken = tokens.refreshToken,
-                                expiresAt = tokens.expiresAt,
-                                email = tokens.email,
-                                idToken = tokens.idToken,
+        oauthJob =
+            lifecycleScope.launch {
+                val result =
+                    ai.closepaw.auth
+                        .openAiSignIn(
+                            launchBrowser = {
+                                url ->
+                                try {
+                                    val intent =
+                                        Intent(
+                                            Intent.ACTION_VIEW,
+                                            Uri.parse(url)
+                                        )
+
+                                    startActivity(
+                                        intent
+                                    )
+
+                                } catch (
+                                    e: Exception
+                                ) {
+                                    Log.e(
+                                        TAG,
+                                        "Failed to launch OAuth browser",
+                                        e
+                                    )
+
+                                    throw e
+                                }
+                            },
+                            onCallbackReceived = {
+                                openAiAuthUiState =
+                                    ai.closepaw.ui.settings
+                                        .OpenAiAuthUiState
+                                        .Finishing
+                            },
+                        )
+
+                when (result) {
+                    is ai.closepaw.auth
+                        .OpenAiSignInResult
+                        .Success -> {
+                        val tokens =
+                            result.tokens
+
+                        withContext(
+                            Dispatchers.IO
+                        ) {
+                            authStore.set(
+                                LLMProvider
+                                    .OPENAI_CODEX,
+                                AuthCredential
+                                    .OAuth(
+                                        accessToken =
+                                            tokens.accessToken,
+                                        refreshToken =
+                                            tokens.refreshToken,
+                                        expiresAt =
+                                            tokens.expiresAt,
+                                        email =
+                                            tokens.email,
+                                        idToken =
+                                            tokens.idToken,
+                                    )
                             )
+                        }
+
+                        settingsState
+                            .updateBackend(
+                                ai.closepaw.protocol
+                                    .LLMBackendType
+                                    .OPENAI
+                            )
+
+                        openAiAuthUiState =
+                            ai.closepaw.ui.settings
+                                .OpenAiAuthUiState
+                                .SignedIn(
+                                    tokens.email
+                                )
+
+                        Log.d(
+                            TAG,
+                            "Settings OAuth success"
                         )
                     }
-                    settingsState.updateBackend(ai.closepaw.protocol.LLMBackendType.OPENAI)
-                    openAiAuthUiState = ai.closepaw.ui.settings.OpenAiAuthUiState.SignedIn(tokens.email)
-                    Log.d(TAG, "Settings OAuth success")
-                }
-                is ai.closepaw.auth.OpenAiSignInResult.Error -> {
-                    openAiAuthUiState = ai.closepaw.ui.settings.OpenAiAuthUiState.Error(result.message)
-                    Log.w(TAG, "Settings OAuth error: ${result.message}")
+
+                    is ai.closepaw.auth
+                        .OpenAiSignInResult
+                        .Error -> {
+                        openAiAuthUiState =
+                            ai.closepaw.ui.settings
+                                .OpenAiAuthUiState
+                                .Error(
+                                    result.message
+                                )
+
+                        Log.w(
+                            TAG,
+                            "Settings OAuth error: ${result.message}"
+                        )
+                    }
                 }
             }
-        }
     }
 
     private fun handleCancelOAuth() {
         oauthJob?.cancel()
         oauthJob = null
-        openAiAuthUiState = ai.closepaw.ui.settings.OpenAiAuthUiState.SignedOut
+
+        openAiAuthUiState =
+            ai.closepaw.ui.settings
+                .OpenAiAuthUiState
+                .SignedOut
     }
 
     private fun handleSignOut() {
-        lifecycleScope.launch { authStore.clear(LLMProvider.OPENAI_CODEX) }
-        openAiAuthUiState = ai.closepaw.ui.settings.OpenAiAuthUiState.SignedOut
-        Log.d(TAG, "Settings OAuth sign-out, manual key preserved")
+        lifecycleScope.launch {
+            authStore.clear(
+                LLMProvider.OPENAI_CODEX
+            )
+        }
+
+        openAiAuthUiState =
+            ai.closepaw.ui.settings
+                .OpenAiAuthUiState
+                .SignedOut
+
+        Log.d(
+            TAG,
+            "Settings OAuth sign-out, manual key preserved"
+        )
     }
 
     // ── Onboarding helpers ──
 
-    private fun handleOnboardingEffect(effect: OnboardingEffect) {
+    private fun handleOnboardingEffect(
+        effect: OnboardingEffect
+    ) {
         when (effect) {
-            OnboardingEffect.OpenAccessibilitySettings ->
-                openAccessibilitySettings(this)
-            OnboardingEffect.OpenOverlaySettings ->
-                openOverlaySettings(this)
-            OnboardingEffect.OpenBatteryOptimization -> {
+            OnboardingEffect
+                .OpenAccessibilitySettings ->
+                openAccessibilitySettings(
+                    this
+                )
+
+            OnboardingEffect
+                .OpenOverlaySettings ->
+                openOverlaySettings(
+                    this
+                )
+
+            OnboardingEffect
+                .OpenBatteryOptimization -> {
                 try {
                     startActivity(
                         Intent(
                             Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS,
-                            Uri.parse("package:$packageName")
+                            Uri.parse(
+                                "package:$packageName"
+                            )
                         )
                     )
                 } catch (_: Exception) {
                     try {
-                        startActivity(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS))
+                        startActivity(
+                            Intent(
+                                Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS
+                            )
+                        )
                     } catch (_: Exception) {
-                        Toast.makeText(this, "Unable to open battery settings", Toast.LENGTH_SHORT).show()
+                        Toast.makeText(
+                            this,
+                            "Unable to open battery settings",
+                            Toast.LENGTH_SHORT
+                        ).show()
                     }
                 }
             }
-            OnboardingEffect.OpenBatteryOptimizationList -> {
+
+            OnboardingEffect
+                .OpenBatteryOptimizationList -> {
                 try {
-                    startActivity(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS))
+                    startActivity(
+                        Intent(
+                            Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS
+                        )
+                    )
                 } catch (_: Exception) {
-                    Toast.makeText(this, "Unable to open battery settings", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(
+                        this,
+                        "Unable to open battery settings",
+                        Toast.LENGTH_SHORT
+                    ).show()
                 }
             }
-            OnboardingEffect.BringMainActivityToFront -> {
-                val intent = Intent(this, MainActivity::class.java).apply {
-                    flags = Intent.FLAG_ACTIVITY_REORDER_TO_FRONT
-                }
+
+            OnboardingEffect
+                .BringMainActivityToFront -> {
+                val intent =
+                    Intent(
+                        this,
+                        MainActivity::class.java
+                    ).apply {
+                        flags =
+                            Intent.FLAG_ACTIVITY_REORDER_TO_FRONT
+                    }
+
                 startActivity(intent)
             }
-            is OnboardingEffect.LaunchOAuth -> {
+
+            is OnboardingEffect
+                .LaunchOAuth -> {
                 try {
-                    val intent = Intent(Intent.ACTION_VIEW, Uri.parse(effect.url))
+                    val intent =
+                        Intent(
+                            Intent.ACTION_VIEW,
+                            Uri.parse(
+                                effect.url
+                            )
+                        )
+
                     startActivity(intent)
+
                 } catch (e: Exception) {
-                    Log.e(TAG, "Failed to launch OAuth browser", e)
-                    Toast.makeText(this, "Unable to open browser for sign-in", Toast.LENGTH_SHORT).show()
-                    onboardingViewModel?.cancelOAuth()
+                    Log.e(
+                        TAG,
+                        "Failed to launch OAuth browser",
+                        e
+                    )
+
+                    Toast.makeText(
+                        this,
+                        "Unable to open browser for sign-in",
+                        Toast.LENGTH_SHORT
+                    ).show()
+
+                    onboardingViewModel
+                        ?.cancelOAuth()
                 }
             }
         }
     }
 
     /** Derive permission repair model for post-onboarding state. */
-    private fun deriveRepairModel(): PermissionStateMonitor.PermissionRepairModel? {
-        if (!onboardingStore.isCompleted) return null
-        val outcomes = onboardingStore.loadOutcomes()
-        val batteryWasDone = outcomes.battery == ai.closepaw.onboarding.StepOutcome.Done
-        return PermissionStateMonitor(applicationContext).deriveRepairModel(batteryWasDone)
+    private fun deriveRepairModel():
+        PermissionStateMonitor
+            .PermissionRepairModel? {
+        if (
+            !onboardingStore
+                .isCompleted
+        ) {
+            return null
+        }
+
+        val outcomes =
+            onboardingStore
+                .loadOutcomes()
+
+        val batteryWasDone =
+            outcomes.battery ==
+                ai.closepaw.onboarding
+                    .StepOutcome
+                    .Done
+
+        return PermissionStateMonitor(
+            applicationContext
+        ).deriveRepairModel(
+            batteryWasDone
+        )
     }
 
     /** Check for evidence this is an existing user (for onboarding migration). */
-    private fun hasLegacyUsageEvidence(): Boolean {
-        val settings = settingsState
+    private fun hasLegacyUsageEvidence():
+        Boolean {
+        val settings =
+            settingsState
+
         // Any stored cloud credential indicates prior use.
-        val providers = listOf(
-            LLMProvider.OPENAI_API,
-            LLMProvider.OPENAI_CODEX,
-            LLMProvider.OPENROUTER,
-        )
-        if (providers.any { authStore.has(it) }) return true
-        if (settings.selectedModel != AppSettingsStore.DEFAULT_MODEL) return true
-        if (settings.llmBackend != AppSettingsStore.DEFAULT_LLM_BACKEND) return true
+        val providers =
+            listOf(
+                LLMProvider.OPENAI_API,
+                LLMProvider.OPENAI_CODEX,
+                LLMProvider.OPENROUTER,
+            )
+
+        if (
+            providers.any {
+                authStore.has(it)
+            }
+        ) {
+            return true
+        }
+
+        if (
+            settings.selectedModel !=
+            AppSettingsStore.DEFAULT_MODEL
+        ) {
+            return true
+        }
+
+        if (
+            settings.llmBackend !=
+            AppSettingsStore.DEFAULT_LLM_BACKEND
+        ) {
+            return true
+        }
+
         // User app overrides (persistent per-app policy)
-        val overrides = AppSettingsStore(applicationContext).loadUserAppOverrides()
-        if (overrides.isNotEmpty()) return true
+        val overrides =
+            AppSettingsStore(
+                applicationContext
+            ).loadUserAppOverrides()
+
+        if (
+            overrides.isNotEmpty()
+        ) {
+            return true
+        }
+
         // Session directory has files
-        val sessionsDir = java.io.File(applicationContext.filesDir, "sessions")
-        if (sessionsDir.exists() && (sessionsDir.listFiles()?.isNotEmpty() == true)) return true
+        val sessionsDir =
+            java.io.File(
+                applicationContext.filesDir,
+                "sessions"
+            )
+
+        if (
+            sessionsDir.exists() &&
+            (
+                sessionsDir.listFiles()
+                    ?.isNotEmpty() ==
+                true
+            )
+        ) {
+            return true
+        }
+
         return false
     }
 }
