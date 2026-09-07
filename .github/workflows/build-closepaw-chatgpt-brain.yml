@@ -1,0 +1,250 @@
+name: Build ClosePaw ChatGPT Brain
+
+'on':
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    env:
+      BRAIN_PROVIDER: "chatgpt"
+      BRAIN_PACKAGE: "com.openai.chatgpt"
+      APP_SUFFIX: "chatgpt"
+      APP_NAME: "ClosePaw ChatGPT"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Apply stable Hybrid Agent v5.5
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import subprocess
+
+          workflow = Path('.github/workflows/build-hybrid-agent-v5-5.yml')
+          if not workflow.exists():
+              raise SystemExit('Missing base workflow: .github/workflows/build-hybrid-agent-v5-5.yml')
+
+          lines = workflow.read_text(encoding='utf-8').splitlines()
+
+          def run_step(step_name: str):
+              marker = f'- name: {step_name}'
+              start = next(i for i, line in enumerate(lines) if line.strip() == marker)
+              run_idx = next(i for i in range(start + 1, len(lines)) if lines[i].strip() == 'run: |')
+              body_indent = len(lines[run_idx]) - len(lines[run_idx].lstrip()) + 2
+              body = []
+
+              for line in lines[run_idx + 1:]:
+                  if line.strip() and (len(line) - len(line.lstrip())) < body_indent:
+                      break
+                  body.append('' if not line.strip() else line[body_indent:])
+
+              subprocess.run(
+                  ['bash'],
+                  input='\n'.join(body) + '\n',
+                  text=True,
+                  check=True,
+              )
+
+          run_step('Apply v5.4 base')
+          run_step('Fix Brain verification regression')
+          print('v5.5 base applied: PASS')
+          PY
+
+      - name: Patch Brain provider and limits
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import os
+
+          provider = os.environ['BRAIN_PROVIDER']
+          pkg = os.environ['BRAIN_PACKAGE']
+
+          path = Path('app/src/main/kotlin/ai/closepaw/app/HybridAgentEngine.kt')
+          text = path.read_text(encoding='utf-8')
+
+          def replace_required(old: str, new: str, label: str):
+              global text
+              if old not in text:
+                  raise SystemExit(f'Missing {label}: {old}')
+              text = text.replace(old, new, 1)
+
+          replace_required(
+              'private const val CHATGPT_PACKAGE = "com.openai.chatgpt"',
+              f'private const val CHATGPT_PACKAGE = "{pkg}"',
+              'Brain package',
+          )
+
+          replace_required(
+              'private const val MAX_BRAIN_TURNS = 24',
+              'private const val MAX_BRAIN_TURNS = 80',
+              'MAX_BRAIN_TURNS',
+          )
+
+          replace_required(
+              'private const val BRAIN_TIMEOUT_MS = 90_000L',
+              'private const val BRAIN_TIMEOUT_MS = 240_000L',
+              'BRAIN_TIMEOUT_MS',
+          )
+
+          # Prevent long USER_GOAL / UI snapshots from being truncated too early.
+          if 'private const val MAX_UI_CHARS = 18_000' in text:
+              text = text.replace(
+                  'private const val MAX_UI_CHARS = 18_000',
+                  'private const val MAX_UI_CHARS = 48_000',
+                  1,
+              )
+
+          # Keep long foreground jobs alive for up to 2 hours.
+          if 'private const val TASK_WAKELOCK_TIMEOUT_MS = 30 * 60 * 1000L' in text:
+              text = text.replace(
+                  'private const val TASK_WAKELOCK_TIMEOUT_MS = 30 * 60 * 1000L',
+                  'private const val TASK_WAKELOCK_TIMEOUT_MS = 2 * 60 * 60 * 1000L',
+                  1,
+              )
+
+          # Knot may expose "Run" rather than "Send".
+          old_send = 'listOf("Send message", "Send", "Submit", "ارسال")'
+          new_send = 'listOf("Send message", "Send", "Submit", "Run", "ارسال")'
+          if old_send in text:
+              text = text.replace(old_send, new_send, 1)
+
+          # Keep v5.5 navigation logic. For Claude/Knot, leave the dedicated
+          # ClosePaw Brain conversation open as the last active conversation.
+          # Because CHATGPT_PACKAGE is replaced above, foreground/open checks
+          # target the selected Brain app instead of ChatGPT.
+          required = [
+              f'private const val CHATGPT_PACKAGE = "{pkg}"',
+              'private const val MAX_BRAIN_TURNS = 80',
+              'private const val BRAIN_TIMEOUT_MS = 240_000L',
+              'waitForMatchingBrainResponse',
+              'extractLatestPlanForTask',
+              'plan.taskId != brainRequestId',
+              'NO_UI_CHANGE',
+              'SessionRecordingService',
+              'VirtualDisplayPlatform',
+          ]
+          missing = [item for item in required if item not in text]
+          if missing:
+              raise SystemExit('Engine self-check failed: ' + ', '.join(missing))
+
+          path.write_text(text, encoding='utf-8')
+          print(f'Brain provider patch: PASS ({provider})')
+          PY
+
+      - name: Patch side-by-side app identity
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import os
+          import re
+
+          suffix = os.environ['APP_SUFFIX']
+          app_name = os.environ['APP_NAME']
+          brain_package = os.environ['BRAIN_PACKAGE']
+
+          gradle = Path('app/build.gradle.kts')
+          text = gradle.read_text(encoding='utf-8')
+
+          old = 'applicationIdSuffix = ".smt"'
+          new = f'applicationIdSuffix = ".{suffix}"'
+          if old not in text:
+              raise SystemExit('applicationIdSuffix anchor missing')
+          text = text.replace(old, new, 1)
+
+          old_version = 'versionNameSuffix = "-smt"'
+          if old_version in text:
+              text = text.replace(
+                  old_version,
+                  f'versionNameSuffix = "-{suffix}-brain"',
+                  1,
+              )
+
+          gradle.write_text(text, encoding='utf-8')
+
+          strings = Path('app/src/main/res/values/strings.xml')
+          text = strings.read_text(encoding='utf-8')
+          text, count = re.subn(
+              r'<string name="app_name">.*?</string>',
+              f'<string name="app_name">{app_name}</string>',
+              text,
+              count=1,
+          )
+          if count != 1:
+              raise SystemExit('app_name anchor missing')
+          strings.write_text(text, encoding='utf-8')
+
+          manifest = Path('app/src/main/AndroidManifest.xml')
+          text = manifest.read_text(encoding='utf-8')
+          package_line = f'        <package android:name="{brain_package}" />'
+
+          if package_line not in text:
+              anchor = '        <package android:name="com.termux" />'
+              if anchor not in text:
+                  raise SystemExit('AndroidManifest queries anchor missing')
+              text = text.replace(anchor, anchor + '\n' + package_line, 1)
+
+          manifest.write_text(text, encoding='utf-8')
+          print(f'Identity patch: PASS ai.closepaw.{suffix} / {app_name}')
+          PY
+
+      - name: Variant self-check
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import os
+
+          pkg = os.environ['BRAIN_PACKAGE']
+          suffix = os.environ['APP_SUFFIX']
+          app_name = os.environ['APP_NAME']
+
+          engine = Path(
+              'app/src/main/kotlin/ai/closepaw/app/HybridAgentEngine.kt'
+          ).read_text(encoding='utf-8')
+          gradle = Path('app/build.gradle.kts').read_text(encoding='utf-8')
+          strings = Path('app/src/main/res/values/strings.xml').read_text(encoding='utf-8')
+          manifest = Path('app/src/main/AndroidManifest.xml').read_text(encoding='utf-8')
+
+          checks = [
+              (f'CHATGPT_PACKAGE = "{pkg}"' in engine, 'Brain package'),
+              ('MAX_BRAIN_TURNS = 80' in engine, '80 Brain turns'),
+              ('BRAIN_TIMEOUT_MS = 240_000L' in engine, '240 sec timeout'),
+              ('waitForMatchingBrainResponse' in engine, 'matching Brain token'),
+              ('extractLatestPlanForTask' in engine, 'stale-response guard'),
+              ('NO_UI_CHANGE' in engine, 'loop guard'),
+              (f'applicationIdSuffix = ".{suffix}"' in gradle, 'side-by-side app id'),
+              (f'<string name="app_name">{app_name}</string>' in strings, 'app name'),
+              (f'<package android:name="{pkg}" />' in manifest, 'package visibility'),
+          ]
+
+          failed = [name for ok, name in checks if not ok]
+          if failed:
+              raise SystemExit('Variant self-check failed: ' + ', '.join(failed))
+
+          print('Variant self-check: PASS')
+          PY
+
+      - name: Make Gradle executable
+        run: chmod +x ./gradlew
+
+      - name: Build Debug APK
+        run: ./gradlew assembleDebug
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: ClosePaw-ChatGPT-Brain-Debug
+          path: app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
