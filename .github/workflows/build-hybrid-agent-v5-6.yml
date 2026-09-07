@@ -1,0 +1,89 @@
+name: Build ClosePaw Hybrid Agent v5.6
+
+'on':
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Apply v5.5 base
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import subprocess
+
+          workflow = Path('.github/workflows/build-hybrid-agent-v5-5.yml')
+          lines = workflow.read_text(encoding='utf-8').splitlines()
+
+          def run_step(step_name: str):
+              marker = f'- name: {step_name}'
+              start = next(i for i, line in enumerate(lines) if line.strip() == marker)
+              run_idx = next(i for i in range(start + 1, len(lines)) if lines[i].strip() == 'run: |')
+              body_indent = len(lines[run_idx]) - len(lines[run_idx].lstrip()) + 2
+              body = []
+
+              for line in lines[run_idx + 1:]:
+                  if line.strip() and (len(line) - len(line.lstrip())) < body_indent:
+                      break
+                  if not line.strip():
+                      body.append('')
+                  else:
+                      body.append(line[body_indent:])
+
+              script = '\n'.join(body) + '\n'
+              subprocess.run(['bash'], input=script, text=True, check=True)
+
+          run_step('Apply v5.4 base')
+          run_step('Fix Brain verification regression')
+          print('v5.5 base applied: PASS')
+          PY
+
+      - name: Keep virtual display unlocked while phone locks
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path('app/src/main/kotlin/ai/closepaw/platform/virtualdisplay/VirtualDisplayPlatform.kt')
+          text = path.read_text(encoding='utf-8')
+
+          old = 'private const val DISPLAY_FLAGS = 0x1 or 0x8 or 0x40 or 0x200 or 0x400 or 0x800'
+          new = 'private const val DISPLAY_FLAGS = 0x1 or 0x8 or 0x40 or 0x200 or 0x400 or 0x800 or 0x1000'
+
+          if old in text:
+              text = text.replace(old, new, 1)
+          elif new not in text:
+              raise SystemExit('DISPLAY_FLAGS anchor not found')
+
+          path.write_text(text, encoding='utf-8')
+
+          final = path.read_text(encoding='utf-8')
+          if new not in final:
+              raise SystemExit('ALWAYS_UNLOCKED flag was not applied')
+
+          print('Virtual display ALWAYS_UNLOCKED flag: PASS')
+          PY
+
+      - name: Make Gradle executable
+        run: chmod +x ./gradlew
+
+      - name: Build Debug APK
+        run: ./gradlew assembleDebug
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: ClosePaw-Hybrid-Agent-v5.6-Debug
+          path: app/build/outputs/apk/debug/app-debug.apk
