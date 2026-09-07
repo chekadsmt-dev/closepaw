@@ -1,0 +1,962 @@
+name: Build ClosePaw 3 Brains
+
+'on':
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Build ${{ matrix.app }}
+    runs-on: ubuntu-latest
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - provider: chatgpt
+            pkg: com.openai.chatgpt
+            suffix: chatgpt
+            app: ClosePaw ChatGPT
+            artifact: ClosePaw-ChatGPT-Brain-Debug
+
+          - provider: claude
+            pkg: com.anthropic.claude
+            suffix: claude
+            app: ClosePaw Claude
+            artifact: ClosePaw-Claude-Brain-Debug
+
+          - provider: knot
+            pkg: app.knotwork.android
+            suffix: knot
+            app: ClosePaw Knot
+            artifact: ClosePaw-Knot-Brain-Debug
+
+    env:
+      PROVIDER: ${{ matrix.provider }}
+      BRAIN_PACKAGE: ${{ matrix.pkg }}
+      APP_SUFFIX: ${{ matrix.suffix }}
+      APP_NAME: ${{ matrix.app }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Apply stable Hybrid Agent v5.5
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import subprocess
+
+          workflow = Path(
+              '.github/workflows/build-hybrid-agent-v5-5.yml'
+          )
+
+          if not workflow.exists():
+              raise SystemExit(
+                  'Missing base workflow: build-hybrid-agent-v5-5.yml'
+              )
+
+          lines = workflow.read_text(
+              encoding='utf-8'
+          ).splitlines()
+
+          def run_step(step_name):
+              marker = f'- name: {step_name}'
+
+              start = next(
+                  i for i, line in enumerate(lines)
+                  if line.strip() == marker
+              )
+
+              run_idx = next(
+                  i for i in range(start + 1, len(lines))
+                  if lines[i].strip() == 'run: |'
+              )
+
+              body_indent = (
+                  len(lines[run_idx])
+                  - len(lines[run_idx].lstrip())
+                  + 2
+              )
+
+              body = []
+
+              for line in lines[run_idx + 1:]:
+                  if (
+                      line.strip()
+                      and (
+                          len(line)
+                          - len(line.lstrip())
+                      ) < body_indent
+                  ):
+                      break
+
+                  body.append(
+                      ''
+                      if not line.strip()
+                      else line[body_indent:]
+                  )
+
+              subprocess.run(
+                  ['bash'],
+                  input='\n'.join(body) + '\n',
+                  text=True,
+                  check=True,
+              )
+
+          run_step('Apply v5.4 base')
+          run_step('Fix Brain verification regression')
+
+          print('v5.5 base: PASS')
+          PY
+
+      - name: Patch Brain provider and limits
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import os
+
+          provider = os.environ['PROVIDER']
+          brain_package = os.environ['BRAIN_PACKAGE']
+
+          path = Path(
+              'app/src/main/kotlin/'
+              'ai/closepaw/app/HybridAgentEngine.kt'
+          )
+
+          text = path.read_text(
+              encoding='utf-8'
+          )
+
+          def replace_required(
+              old,
+              new,
+              label,
+          ):
+              global text
+
+              if old not in text:
+                  raise SystemExit(
+                      f'Missing {label}: {old}'
+                  )
+
+              text = text.replace(
+                  old,
+                  new,
+                  1,
+              )
+
+          # --------------------------------
+          # Brain application
+          # --------------------------------
+
+          replace_required(
+              'private const val CHATGPT_PACKAGE = '
+              '"com.openai.chatgpt"',
+              f'private const val CHATGPT_PACKAGE = '
+              f'"{brain_package}"',
+              'Brain package anchor',
+          )
+
+          # --------------------------------
+          # Increase Brain turn limit
+          # 24 -> 80
+          # --------------------------------
+
+          replace_required(
+              'private const val '
+              'MAX_BRAIN_TURNS = 24',
+              'private const val '
+              'MAX_BRAIN_TURNS = 80',
+              'MAX_BRAIN_TURNS',
+          )
+
+          # --------------------------------
+          # Increase response timeout
+          # 90 sec -> 240 sec
+          # --------------------------------
+
+          replace_required(
+              'private const val '
+              'BRAIN_TIMEOUT_MS = 90_000L',
+              'private const val '
+              'BRAIN_TIMEOUT_MS = 240_000L',
+              'BRAIN_TIMEOUT_MS',
+          )
+
+          # --------------------------------
+          # Increase UI/request text budget
+          # Prevent long task truncation
+          # 18k -> 48k chars
+          # --------------------------------
+
+          if (
+              'private const val '
+              'MAX_UI_CHARS = 18_000'
+              in text
+          ):
+              text = text.replace(
+                  'private const val '
+                  'MAX_UI_CHARS = 18_000',
+                  'private const val '
+                  'MAX_UI_CHARS = 48_000',
+                  1,
+              )
+
+          # --------------------------------
+          # Longer foreground task wakelock
+          # 30 min -> 2 hours
+          # --------------------------------
+
+          if (
+              'private const val '
+              'TASK_WAKELOCK_TIMEOUT_MS = '
+              '30 * 60 * 1000L'
+              in text
+          ):
+              text = text.replace(
+                  'private const val '
+                  'TASK_WAKELOCK_TIMEOUT_MS = '
+                  '30 * 60 * 1000L',
+                  'private const val '
+                  'TASK_WAKELOCK_TIMEOUT_MS = '
+                  '2 * 60 * 60 * 1000L',
+                  1,
+              )
+
+          # --------------------------------
+          # Support Knot "Run" composer
+          # --------------------------------
+
+          text = text.replace(
+              'listOf('
+              '"Send message", '
+              '"Send", '
+              '"Submit", '
+              '"ارسال"'
+              ')',
+              'listOf('
+              '"Send message", '
+              '"Send", '
+              '"Submit", '
+              '"Run", '
+              '"ارسال"'
+              ')',
+          )
+
+          # --------------------------------
+          # Kotlin function-body replacer
+          # --------------------------------
+
+          def replace_function_body(
+              source,
+              marker,
+              new_body,
+          ):
+              start = source.find(marker)
+
+              if start < 0:
+                  raise SystemExit(
+                      f'Function not found: {marker}'
+                  )
+
+              open_brace = source.find(
+                  '{',
+                  start,
+              )
+
+              if open_brace < 0:
+                  raise SystemExit(
+                      f'Opening brace not found: '
+                      f'{marker}'
+                  )
+
+              i = open_brace
+              depth = 0
+              state = 'code'
+              escape = False
+              end = None
+
+              while i < len(source):
+                  ch = source[i]
+
+                  nxt = (
+                      source[i + 1]
+                      if i + 1 < len(source)
+                      else ''
+                  )
+
+                  if state == 'code':
+
+                      if ch == '"':
+                          state = 'string'
+
+                      elif ch == "'":
+                          state = 'char'
+
+                      elif (
+                          ch == '/'
+                          and nxt == '/'
+                      ):
+                          state = 'line_comment'
+                          i += 1
+
+                      elif (
+                          ch == '/'
+                          and nxt == '*'
+                      ):
+                          state = 'block_comment'
+                          i += 1
+
+                      elif ch == '{':
+                          depth += 1
+
+                      elif ch == '}':
+                          depth -= 1
+
+                          if depth == 0:
+                              end = i + 1
+                              break
+
+                  elif state == 'string':
+
+                      if escape:
+                          escape = False
+
+                      elif ch == '\\':
+                          escape = True
+
+                      elif ch == '"':
+                          state = 'code'
+
+                  elif state == 'char':
+
+                      if escape:
+                          escape = False
+
+                      elif ch == '\\':
+                          escape = True
+
+                      elif ch == "'":
+                          state = 'code'
+
+                  elif state == 'line_comment':
+
+                      if ch == '\n':
+                          state = 'code'
+
+                  elif state == 'block_comment':
+
+                      if (
+                          ch == '*'
+                          and nxt == '/'
+                      ):
+                          state = 'code'
+                          i += 1
+
+                  i += 1
+
+              if end is None:
+                  raise SystemExit(
+                      f'Closing brace not found: '
+                      f'{marker}'
+                  )
+
+              header = (
+                  source[
+                      start:open_brace
+                  ].rstrip()
+              )
+
+              return (
+                  source[:start]
+                  + header
+                  + new_body
+                  + source[end:]
+              )
+
+          # --------------------------------
+          # Generic Brain verification
+          # Works with:
+          # ChatGPT / Claude / Knot
+          # --------------------------------
+
+          wait_body = r''' {
+              repeat(12) {
+
+                  runCatching {
+                      verifyChatGptForeground(
+                          platform,
+                          "verifying dedicated Brain"
+                      )
+                  }.getOrElse {
+                      return@repeat
+                  }
+
+                  val snapshot =
+                      platform.captureScreen()
+
+                  val combined =
+                      snapshot.elements
+                          .joinToString(" ") {
+                              element ->
+
+                              "${element.text} " +
+                                  "${element.description} " +
+                                  "${element.hintText} " +
+                                  "${element.className}"
+                          }
+
+                  val normalized =
+                      normalizeForMatch(
+                          combined
+                      )
+
+                  val hasBrainMarker =
+                      normalized.contains(
+                          "closepaw brain anchor 71d4"
+                      ) ||
+                      normalized.contains(
+                          "closepaw_brain_anchor_71d4"
+                      ) ||
+                      normalized.contains(
+                          "brain ready"
+                      ) ||
+                      normalized.contains(
+                          "brain_ready"
+                      ) ||
+                      normalized.contains(
+                          "brain plan"
+                      ) ||
+                      normalized.contains(
+                          "brain_plan"
+                      ) ||
+                      normalized.contains(
+                          "closepaw brain"
+                      )
+
+                  val hasComposer =
+                      snapshot.elements.any {
+                          element ->
+
+                          val node =
+                              normalizeForMatch(
+                                  "${element.text} " +
+                                      "${element.description} " +
+                                      "${element.hintText} " +
+                                      "${element.className}"
+                              )
+
+                          node.contains(
+                              "edittext"
+                          ) ||
+                          node.contains(
+                              "follow up"
+                          ) ||
+                          node.contains(
+                              "reply to chatgpt"
+                          ) ||
+                          node.contains(
+                              "message chatgpt"
+                          ) ||
+                          node.contains(
+                              "ask chatgpt"
+                          ) ||
+                          node.contains(
+                              "reply to claude"
+                          ) ||
+                          node.contains(
+                              "message claude"
+                          ) ||
+                          node.contains(
+                              "send"
+                          ) ||
+                          node.contains(
+                              "submit"
+                          ) ||
+                          node.contains(
+                              "run"
+                          ) ||
+                          node.contains(
+                              "prompt"
+                          )
+                      }
+
+                  if (
+                      hasBrainMarker
+                      && hasComposer
+                  ) {
+                      return true
+                  }
+
+                  delay(250)
+              }
+
+              return false
+          }'''
+
+          text = replace_function_body(
+              text,
+              'private suspend fun '
+              'waitForDedicatedBrainConversation',
+              wait_body,
+          )
+
+          # --------------------------------
+          # Claude / Knot:
+          # do NOT navigate inside ChatGPT.
+          # Open external Brain app.
+          # Prefer last active Brain.
+          # --------------------------------
+
+          if provider != 'chatgpt':
+
+              external_body = r''' {
+                  ensureChatGptForeground(
+                      platform,
+                      "opening external Brain"
+                  )
+
+                  if (
+                      waitForDedicatedBrainConversation(
+                          platform
+                      )
+                  ) {
+                      return
+                  }
+
+                  val selected =
+                      clickTextExact(
+                          platform,
+                          "ClosePaw Brain",
+                          excludeEditable = true
+                      ) ||
+                      clickTextContains(
+                          platform,
+                          "ClosePaw Brain",
+                          excludeEditable = true
+                      )
+
+                  if (selected) {
+
+                      delay(600)
+
+                      if (
+                          waitForDedicatedBrainConversation(
+                              platform
+                          )
+                      ) {
+                          return
+                      }
+                  }
+
+                  error(
+                      "Dedicated ClosePaw Brain " +
+                          "is not active. " +
+                          "Open the ClosePaw Brain " +
+                          "conversation/pipeline in the " +
+                          "Brain app once, leave it as " +
+                          "the last active screen, " +
+                          "then retry."
+                  )
+              }'''
+
+              text = replace_function_body(
+                  text,
+                  'private suspend fun '
+                  'ensureBrainConversation('
+                  'platform: AndroidPlatform)',
+                  external_body,
+              )
+
+          # --------------------------------
+          # Optional Send -> Run fallback
+          # --------------------------------
+
+          text = text.replace(
+              'clickTextExact('
+              'platform, '
+              '"Send", '
+              'excludeEditable = true'
+              ')',
+              '('
+              'clickTextExact('
+              'platform, '
+              '"Send", '
+              'excludeEditable = true'
+              ') || '
+              'clickTextExact('
+              'platform, '
+              '"Run", '
+              'excludeEditable = true'
+              ')'
+              ')',
+          )
+
+          text = text.replace(
+              'clickTextContains('
+              'platform, '
+              '"Send", '
+              'excludeEditable = true'
+              ')',
+              '('
+              'clickTextContains('
+              'platform, '
+              '"Send", '
+              'excludeEditable = true'
+              ') || '
+              'clickTextContains('
+              'platform, '
+              '"Run", '
+              'excludeEditable = true'
+              ')'
+              ')',
+          )
+
+          path.write_text(
+              text,
+              encoding='utf-8',
+          )
+
+          # --------------------------------
+          # Engine safety checks
+          # --------------------------------
+
+          required = [
+              (
+                  'private const val '
+                  'CHATGPT_PACKAGE = '
+                  f'"{brain_package}"'
+              ),
+              (
+                  'private const val '
+                  'MAX_BRAIN_TURNS = 80'
+              ),
+              (
+                  'private const val '
+                  'BRAIN_TIMEOUT_MS = 240_000L'
+              ),
+              'waitForMatchingBrainResponse',
+              'extractLatestPlanForTask',
+              'plan.taskId != brainRequestId',
+              'NO_UI_CHANGE',
+              'SessionRecordingService',
+              'VirtualDisplayPlatform',
+          ]
+
+          missing = [
+              item
+              for item in required
+              if item not in text
+          ]
+
+          if missing:
+              raise SystemExit(
+                  'Engine self-check failed: '
+                  + ', '.join(missing)
+              )
+
+          print(
+              f'Brain provider patch: '
+              f'PASS ({provider})'
+          )
+          PY
+
+      - name: Patch side-by-side app identity
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import os
+          import re
+
+          suffix = os.environ['APP_SUFFIX']
+          app_name = os.environ['APP_NAME']
+          brain_package = os.environ[
+              'BRAIN_PACKAGE'
+          ]
+
+          # --------------------------------
+          # Separate Android application IDs
+          # --------------------------------
+
+          gradle = Path(
+              'app/build.gradle.kts'
+          )
+
+          text = gradle.read_text(
+              encoding='utf-8'
+          )
+
+          old = (
+              'applicationIdSuffix = ".smt"'
+          )
+
+          new = (
+              f'applicationIdSuffix = '
+              f'".{suffix}"'
+          )
+
+          if old not in text:
+              raise SystemExit(
+                  'applicationIdSuffix '
+                  'anchor missing'
+              )
+
+          text = text.replace(
+              old,
+              new,
+              1,
+          )
+
+          old_version = (
+              'versionNameSuffix = "-smt"'
+          )
+
+          if old_version in text:
+              text = text.replace(
+                  old_version,
+                  (
+                      'versionNameSuffix = '
+                      f'"-{suffix}-brain"'
+                  ),
+                  1,
+              )
+
+          gradle.write_text(
+              text,
+              encoding='utf-8',
+          )
+
+          # --------------------------------
+          # App launcher name
+          # --------------------------------
+
+          strings = Path(
+              'app/src/main/res/values/'
+              'strings.xml'
+          )
+
+          text = strings.read_text(
+              encoding='utf-8'
+          )
+
+          text, count = re.subn(
+              r'<string name="app_name">'
+              r'.*?</string>',
+              (
+                  '<string name="app_name">'
+                  f'{app_name}'
+                  '</string>'
+              ),
+              text,
+              count=1,
+          )
+
+          if count != 1:
+              raise SystemExit(
+                  'app_name anchor missing'
+              )
+
+          strings.write_text(
+              text,
+              encoding='utf-8',
+          )
+
+          # --------------------------------
+          # Android package visibility
+          # --------------------------------
+
+          manifest = Path(
+              'app/src/main/'
+              'AndroidManifest.xml'
+          )
+
+          text = manifest.read_text(
+              encoding='utf-8'
+          )
+
+          package_line = (
+              '        <package '
+              f'android:name="{brain_package}" />'
+          )
+
+          if package_line not in text:
+
+              anchor = (
+                  '        <package '
+                  'android:name="com.termux" />'
+              )
+
+              if anchor not in text:
+                  raise SystemExit(
+                      'AndroidManifest '
+                      'queries anchor missing'
+                  )
+
+              text = text.replace(
+                  anchor,
+                  anchor
+                  + '\n'
+                  + package_line,
+                  1,
+              )
+
+          manifest.write_text(
+              text,
+              encoding='utf-8',
+          )
+
+          print(
+              f'Identity: '
+              f'ai.closepaw.{suffix} / '
+              f'{app_name} / '
+              f'Brain={brain_package}'
+          )
+          PY
+
+      - name: Variant self-check
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import os
+
+          provider = os.environ['PROVIDER']
+          pkg = os.environ['BRAIN_PACKAGE']
+          suffix = os.environ['APP_SUFFIX']
+          app = os.environ['APP_NAME']
+
+          engine = Path(
+              'app/src/main/kotlin/'
+              'ai/closepaw/app/'
+              'HybridAgentEngine.kt'
+          ).read_text(
+              encoding='utf-8'
+          )
+
+          gradle = Path(
+              'app/build.gradle.kts'
+          ).read_text(
+              encoding='utf-8'
+          )
+
+          strings = Path(
+              'app/src/main/res/values/'
+              'strings.xml'
+          ).read_text(
+              encoding='utf-8'
+          )
+
+          manifest = Path(
+              'app/src/main/'
+              'AndroidManifest.xml'
+          ).read_text(
+              encoding='utf-8'
+          )
+
+          checks = [
+              (
+                  f'CHATGPT_PACKAGE = "{pkg}"'
+                  in engine,
+                  'Brain package',
+              ),
+              (
+                  'MAX_BRAIN_TURNS = 80'
+                  in engine,
+                  '80 Brain turns',
+              ),
+              (
+                  'BRAIN_TIMEOUT_MS = '
+                  '240_000L'
+                  in engine,
+                  '240 sec Brain timeout',
+              ),
+              (
+                  'waitForMatchingBrainResponse'
+                  in engine,
+                  'matching response',
+              ),
+              (
+                  'extractLatestPlanForTask'
+                  in engine,
+                  'stale-response protection',
+              ),
+              (
+                  'NO_UI_CHANGE'
+                  in engine,
+                  'loop guard',
+              ),
+              (
+                  f'applicationIdSuffix = '
+                  f'".{suffix}"'
+                  in gradle,
+                  'side-by-side id',
+              ),
+              (
+                  (
+                      '<string name="app_name">'
+                      f'{app}'
+                      '</string>'
+                  )
+                  in strings,
+                  'app name',
+              ),
+              (
+                  (
+                      '<package android:name="'
+                      f'{pkg}" />'
+                  )
+                  in manifest,
+                  'package visibility',
+              ),
+          ]
+
+          if provider != 'chatgpt':
+              checks.append(
+                  (
+                      (
+                          'Open the ClosePaw Brain '
+                          'conversation/pipeline'
+                      )
+                      in engine,
+                      'external Brain navigation',
+                  )
+              )
+
+          failed = [
+              name
+              for ok, name in checks
+              if not ok
+          ]
+
+          if failed:
+              raise SystemExit(
+                  'Variant self-check failed: '
+                  + ', '.join(failed)
+              )
+
+          print(
+              'Variant self-check: PASS'
+          )
+          PY
+
+      - name: Make Gradle executable
+        run: chmod +x ./gradlew
+
+      - name: Build Debug APK
+        run: ./gradlew assembleDebug
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
