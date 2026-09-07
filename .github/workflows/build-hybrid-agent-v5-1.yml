@@ -1,0 +1,76 @@
+name: Build ClosePaw Hybrid Agent v5.1
+
+'on':
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Apply Hybrid Agent v5 patch
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import subprocess
+
+          path = Path('.github/workflows/build-hybrid-agent-v5.yml')
+          lines = path.read_text(encoding='utf-8').splitlines()
+
+          start = next(i for i, line in enumerate(lines) if line.strip() == '- name: Apply Hybrid Agent v5 patch')
+          run_idx = next(i for i in range(start + 1, len(lines)) if lines[i].strip() == 'run: |')
+          body_indent = len(lines[run_idx]) - len(lines[run_idx].lstrip()) + 2
+          body = []
+
+          for line in lines[run_idx + 1:]:
+              if line.strip() and (len(line) - len(line.lstrip())) < body_indent:
+                  break
+              if not line.strip():
+                  body.append('')
+              else:
+                  body.append(line[body_indent:])
+
+          script = '\n'.join(body) + '\n'
+          subprocess.run(['bash'], input=script, text=True, check=True)
+          PY
+
+      - name: Fix HybridUiEvent visibility
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path('app/src/main/kotlin/ai/closepaw/app/HybridAgentUiEvent.kt')
+          text = path.read_text(encoding='utf-8')
+
+          old = 'internal sealed interface HybridUiEvent'
+          new = 'sealed interface HybridUiEvent'
+
+          if old not in text:
+              raise SystemExit('HybridUiEvent visibility anchor not found')
+
+          path.write_text(text.replace(old, new, 1), encoding='utf-8')
+          print('HybridUiEvent visibility fix: PASS')
+          PY
+
+      - name: Make Gradle executable
+        run: chmod +x ./gradlew
+
+      - name: Build Debug APK
+        run: ./gradlew assembleDebug
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: ClosePaw-Hybrid-Agent-v5.1-Debug
+          path: app/build/outputs/apk/debug/app-debug.apk
