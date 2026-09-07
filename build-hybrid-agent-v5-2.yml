@@ -1,0 +1,264 @@
+name: Build ClosePaw Hybrid Agent v5.2
+
+'on':
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Apply Hybrid Agent v5 patch
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import subprocess
+
+          path = Path('.github/workflows/build-hybrid-agent-v5.yml')
+          lines = path.read_text(encoding='utf-8').splitlines()
+
+          start = next(i for i, line in enumerate(lines) if line.strip() == '- name: Apply Hybrid Agent v5 patch')
+          run_idx = next(i for i in range(start + 1, len(lines)) if lines[i].strip() == 'run: |')
+          body_indent = len(lines[run_idx]) - len(lines[run_idx].lstrip()) + 2
+          body = []
+
+          for line in lines[run_idx + 1:]:
+              if line.strip() and (len(line) - len(line.lstrip())) < body_indent:
+                  break
+              if not line.strip():
+                  body.append('')
+              else:
+                  body.append(line[body_indent:])
+
+          script = '\n'.join(body) + '\n'
+          subprocess.run(['bash'], input=script, text=True, check=True)
+          PY
+
+      - name: Fix HybridUiEvent visibility
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path('app/src/main/kotlin/ai/closepaw/app/HybridAgentUiEvent.kt')
+          text = path.read_text(encoding='utf-8')
+
+          old = 'internal sealed interface HybridUiEvent'
+          new = 'sealed interface HybridUiEvent'
+
+          if old in text:
+              text = text.replace(old, new, 1)
+          elif new not in text:
+              raise SystemExit('HybridUiEvent visibility anchor not found')
+
+          path.write_text(text, encoding='utf-8')
+          print('HybridUiEvent visibility fix: PASS')
+          PY
+
+      - name: Fix dedicated Brain discovery
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path('app/src/main/kotlin/ai/closepaw/app/HybridAgentEngine.kt')
+          text = path.read_text(encoding='utf-8')
+
+          start_marker = '    private suspend fun ensureBrainConversation(platform: AndroidPlatform) {'
+          end_marker = '    private fun containsNoResults(text: String): Boolean {'
+
+          start = text.find(start_marker)
+          end = text.find(end_marker, start)
+          if start < 0 or end < 0 or end <= start:
+              raise SystemExit('Could not locate ensureBrainConversation patch anchors')
+
+          replacement = r'''    private suspend fun ensureBrainConversation(platform: AndroidPlatform) {
+                  ensureChatGptForeground(platform, "opening Brain")
+
+                  /*
+                   * ChatGPT Android can resume the last open conversation, and its search/indexing
+                   * behavior is not identical across app versions.  Do not trust the resumed chat.
+                   *
+                   * The user's dedicated Brain has historically had either the canonical anchor title
+                   * or ChatGPT's auto-generated title "Acknowledge readiness".  Search every known
+                   * title, including short unique fragments, and only accept a selection when the
+                   * navigation/search surface actually closes.
+                   */
+                  val knownTitles = listOf(
+                      BRAIN_ANCHOR,
+                      "Acknowledge readiness",
+                      "ClosePaw Brain",
+                  )
+                  val searchTerms = listOf(
+                      "Acknowledge readiness",
+                      BRAIN_ANCHOR,
+                      "71D4",
+                      "ClosePaw Brain",
+                  )
+
+                  repeat(3) { attempt ->
+                      closeChatOptionsPopupIfOpen(platform)
+
+                      if (!openSidebarSafely(platform)) {
+                          if (attempt < 2) {
+                              ensureChatGptForeground(platform, "recovering Brain navigation")
+                              delay(350)
+                              return@repeat
+                          }
+                          error("Could not open ChatGPT sidebar")
+                      }
+
+                      // First try pinned/recent rows already visible in the sidebar.
+                      if (selectBrainCandidate(platform, knownTitles)) return
+
+                      val searchClicked = clickByLabels(
+                          platform,
+                          listOf(
+                              "Search chats",
+                              "Search conversations",
+                              "Search",
+                              "جستجو",
+                              "جست‌وجو",
+                          ),
+                      )
+
+                      if (searchClicked) {
+                          delay(400)
+
+                          for (term in searchTerms) {
+                              if (!setEditableText(platform, term, preferSearch = true)) {
+                                  continue
+                              }
+                              delay(900)
+
+                              // Prefer complete known titles, but also accept a unique fragment result.
+                              if (selectBrainCandidate(platform, knownTitles)) return
+
+                              val fragment = when (term) {
+                                  "71D4" -> "71D4"
+                                  "Acknowledge readiness" -> "Acknowledge"
+                                  "ClosePaw Brain" -> "ClosePaw Brain"
+                                  else -> null
+                              }
+                              if (
+                                  fragment != null &&
+                                  clickTextContains(platform, fragment, excludeEditable = true)
+                              ) {
+                                  delay(UI_SETTLE_MS)
+                                  verifyChatGptForeground(platform, "after selecting Brain search result")
+                                  if (!isSidebarVisible(platform)) return
+                              }
+
+                              // Do not abort merely because one query has no result. ChatGPT search
+                              // may index a title but not message text (or vice versa).
+                          }
+                      }
+
+                      if (attempt < 2) {
+                          // Escape Search/sidebar and restart from a known ChatGPT foreground state.
+                          repeat(2) {
+                              if (isSidebarVisible(platform)) {
+                                  performSystemBack(platform)
+                                  delay(250)
+                              }
+                          }
+                          ensureChatGptForeground(platform, "recovering Brain navigation")
+                          delay(400)
+                      }
+                  }
+
+                  error("Could not locate dedicated ClosePaw Brain chat")
+              }
+
+              private suspend fun selectBrainCandidate(
+                  platform: AndroidPlatform,
+                  candidates: List<String>,
+              ): Boolean {
+                  for (candidate in candidates.distinct()) {
+                      if (clickTextExact(platform, candidate, excludeEditable = true)) {
+                          delay(UI_SETTLE_MS)
+                          verifyChatGptForeground(platform, "after selecting Brain candidate")
+                          if (!isSidebarVisible(platform)) return true
+                      }
+
+                      /*
+                       * Chat rows are sometimes exposed by Accessibility as a combined/wrapped label
+                       * instead of a TextView whose value exactly equals the title.
+                       */
+                      if (clickTextContains(platform, candidate, excludeEditable = true)) {
+                          delay(UI_SETTLE_MS)
+                          verifyChatGptForeground(platform, "after selecting Brain candidate")
+                          if (!isSidebarVisible(platform)) return true
+                      }
+                  }
+                  return false
+              }
+
+          '''
+
+          patched = text[:start] + replacement + text[end:]
+
+          checks = {
+              'three Brain navigation attempts': 'repeat(3) { attempt ->',
+              'auto title search': '"Acknowledge readiness"',
+              'anchor fragment search': '"71D4"',
+              'candidate helper': 'private suspend fun selectBrainCandidate(',
+              'contains fallback': 'clickTextContains(platform, candidate, excludeEditable = true)',
+              'no early no-results abort': 'Dedicated ClosePaw Brain title not found:' not in replacement,
+          }
+          failed = [name for name, ok in checks.items() if not ok]
+          if failed:
+              raise SystemExit('Brain discovery self-check failed: ' + ', '.join(failed))
+
+          path.write_text(patched, encoding='utf-8')
+          print('Dedicated Brain discovery fix: PASS')
+          PY
+
+      - name: Hybrid v5.2 self-check
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          app = Path('app/src/main/kotlin/ai/closepaw/app')
+          engine = (app / 'HybridAgentEngine.kt').read_text(encoding='utf-8')
+          event = (app / 'HybridAgentUiEvent.kt').read_text(encoding='utf-8')
+
+          checks = [
+              ('sealed interface HybridUiEvent' in event, 'HybridUiEvent public visibility'),
+              ('private suspend fun selectBrainCandidate(' in engine, 'Brain candidate helper'),
+              ('"Acknowledge readiness"' in engine, 'auto-generated Brain title'),
+              ('"71D4"' in engine, 'short anchor search'),
+              ('repeat(3) { attempt ->' in engine, 'Brain navigation retries'),
+              ('NO_UI_CHANGE' in engine, 'no-change loop guard retained'),
+              ('SessionRecordingService' in engine, 'session persistence retained'),
+              ('VirtualDisplayPlatform' in engine, 'Virtual Display retained'),
+          ]
+          failed = [name for ok, name in checks if not ok]
+          if failed:
+              raise SystemExit('Hybrid v5.2 self-check failed: ' + ', '.join(failed))
+
+          print('Hybrid Agent v5.2 self-check: PASS')
+          PY
+
+      - name: Make Gradle executable
+        run: chmod +x ./gradlew
+
+      - name: Build Debug APK
+        run: ./gradlew assembleDebug
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: ClosePaw-Hybrid-Agent-v5.2-Debug
+          path: app/build/outputs/apk/debug/app-debug.apk
