@@ -734,7 +734,15 @@ jobs:
           if '!isDedicatedBrainSnapshot' in opener:
               raise SystemExit('Not-Brain is insufficient restore success proof')
 
-          for forbidden in ['originAnchors', 'overlap', 'similarity']:
+          # Reject the executable fuzzy-acceptance logic from the old implementation,
+          # not harmless words in comments (for example: "Historical anchor overlap").
+          for forbidden in [
+              'frame.originAnchors.isEmpty()',
+              'frame.originAnchors.intersect(now).size',
+              'val overlap =',
+              'val similarity =',
+              'return overlap >=',
+          ]:
               if forbidden in origin:
                   raise SystemExit('Fuzzy origin restore acceptance remains: ' + forbidden)
           for required in [
