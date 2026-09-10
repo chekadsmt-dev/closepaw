@@ -1,0 +1,149 @@
+name: 015 - ClosePaw RC10 Local Server Anchor Fix
+
+'on':
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Setup Java 17
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Run corrected 014 pipeline
+        shell: bash
+        run: |
+          python3 - <<'PY015'
+          from pathlib import Path
+          import subprocess
+
+          source_path = Path('.github/workflows/014-ClosePaw-RC10-Local-Server-Primary.yml')
+          if not source_path.exists():
+              raise SystemExit('015 missing required 014 workflow')
+
+          text = source_path.read_text(encoding='utf-8')
+
+          # Proven CI failure in 014: the exact-string anchor for primaryModelLabel
+          # assumed indentation that 013 had already normalized differently.
+          # Keep the 014 feature patch unchanged; only make this one replacement
+          # whitespace-tolerant when the legacy exact anchor is absent.
+          needle = "m = replace_once(m, old_label, new_label, 'effective Local Server drawer label')"
+          idx = text.find(needle)
+          if idx < 0:
+              raise SystemExit('015 could not find the proven 014 failing replacement line')
+
+          line_start = text.rfind('\n', 0, idx) + 1
+          line_end = text.find('\n', idx)
+          if line_end < 0:
+              line_end = len(text)
+          indent = text[line_start:idx]
+
+          replacement_lines = [
+              indent + 'if old_label in m:',
+              indent + '    m = m.replace(old_label, new_label, 1)',
+              indent + 'else:',
+              indent + '    token = "val primaryModelLabel = if (settingsState.llmBackend == LLMBackendType.LOCAL) {"',
+              indent + '    start = m.find(token)',
+              indent + '    if start < 0:',
+              indent + "        raise SystemExit('014 patch anchor missing: effective Local Server drawer label')",
+              indent + "    block_start = m.rfind('\\n', 0, start) + 1",
+              indent + "    selected = m.find('settingsState.selectedModel', start)",
+              indent + "    close = m.find('}', selected)",
+              indent + '    if selected < 0 or close < 0:',
+              indent + "        raise SystemExit('014 malformed effective Primary label block')",
+              indent + "    m = m[:block_start] + new_label.rstrip('\\n') + '\\n' + m[close + 1:]",
+          ]
+          text = text[:line_start] + '\n'.join(replacement_lines) + text[line_end:]
+
+          # Keep the installed candidate visibly distinguishable from 014.
+          text = text.replace('ClosePaw General v9 014', 'ClosePaw General v9 015')
+
+          # Execute the run-steps of the frozen 014 pipeline in order. Checkout and
+          # Java setup are provided above; uses-only artifact steps are handled below.
+          lines = text.splitlines()
+          step_starts = [
+              i for i, line in enumerate(lines)
+              if line.startswith('      - name: ')
+          ]
+
+          executed = 0
+          for pos, start_i in enumerate(step_starts):
+              end_i = step_starts[pos + 1] if pos + 1 < len(step_starts) else len(lines)
+              segment = lines[start_i:end_i]
+              name = lines[start_i].split('- name:', 1)[1].strip()
+
+              run_i = None
+              inline = None
+              for rel_i, line in enumerate(segment[1:], start=1):
+                  stripped = line.strip()
+                  if stripped == 'run: |':
+                      run_i = start_i + rel_i
+                      break
+                  if stripped.startswith('run: '):
+                      run_i = start_i + rel_i
+                      inline = stripped[len('run: '):]
+                      break
+
+              if run_i is None:
+                  continue
+
+              print(f'::group::015 replay: {name}', flush=True)
+              if inline is not None:
+                  body = inline
+              else:
+                  body_indent = len(lines[run_i]) - len(lines[run_i].lstrip()) + 2
+                  body_lines = []
+                  for line in lines[run_i + 1:end_i]:
+                      if line.strip() and (len(line) - len(line.lstrip())) < body_indent:
+                          break
+                      body_lines.append('' if not line.strip() else line[body_indent:])
+                  body = '\n'.join(body_lines) + '\n'
+
+              result = subprocess.run(
+                  ['bash', '-e', '-o', 'pipefail', '-c', body],
+                  text=True,
+                  check=False,
+              )
+              print('::endgroup::', flush=True)
+              if result.returncode != 0:
+                  raise SystemExit(f'015 replay failed in: {name} (exit {result.returncode})')
+              executed += 1
+
+          if executed < 10:
+              raise SystemExit(f'015 replay unexpectedly executed only {executed} run steps')
+
+          print(f'015 CORRECTED 014 PIPELINE: PASS ({executed} run steps)')
+          PY015
+
+      - name: Upload generated sources on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: 015-ClosePaw-RC10-failure-sources
+          path: |
+            app/src/main/kotlin/ai/closepaw/app/AgentService.kt
+            app/src/main/kotlin/ai/closepaw/app/ChatBrainConfigTester.kt
+            app/src/main/kotlin/ai/closepaw/app/HybridAgentEngine.kt
+            app/src/main/kotlin/ai/closepaw/app/HybridAgentProtocol.kt
+            app/src/main/kotlin/ai/closepaw/app/MainActivityContent.kt
+            app/src/main/kotlin/ai/closepaw/ui/settings/ChatBrainSettingsPage.kt
+            app/src/main/kotlin/ai/closepaw/ui/settings/LlmAuthSettingsPage.kt
+            app/src/main/kotlin/ai/closepaw/ui/settings/LlmAuthDiscoveryUi.kt
+            app/src/main/kotlin/ai/closepaw/ui/settings/RefreshButtonGate.kt
+            app/src/main/kotlin/ai/closepaw/llm/OtherBaseUrlValidator.kt
+          if-no-files-found: warn
+
+      - name: Upload APK
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: 015-ClosePaw-RC10-Local-Server-Primary-Debug
+          path: app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
