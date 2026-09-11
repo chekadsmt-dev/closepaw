@@ -1,0 +1,802 @@
+name: 036 - ClosePaw RC11 Constrained Local Primary + Real Session Traces
+
+'on':
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Setup Java 17
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Restore exact verified 035 full source
+        uses: actions/download-artifact@v5
+        with:
+          name: 035-ClosePaw-RC11-verified-full-source
+          path: /tmp/035-source
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: 34627580299
+
+      - name: Verify and activate exact 035 baseline
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f /tmp/035-source/app/src/main/kotlin/ai/closepaw/app/HybridAgentEngine.kt
+          test -f /tmp/035-source/app/src/main/kotlin/ai/closepaw/app/HybridAgentProtocol.kt
+          test -f /tmp/035-source/app/src/main/kotlin/ai/closepaw/app/PrimaryLocalHttpTransportV32.kt
+          test -f /tmp/035-source/app/src/test/kotlin/ai/closepaw/app/PrimaryFormatComplianceV33Test.kt
+          test -f /tmp/035-source/tools/termux-bridge/closepaw_bridge.py
+          find . -mindepth 1 -maxdepth 1 ! -name .git ! -name .github -exec rm -rf {} +
+          cp -a /tmp/035-source/. ./
+
+          python3 - <<'PYBASE036'
+          from pathlib import Path
+          import hashlib
+
+          expected = {
+              'app/src/main/kotlin/ai/closepaw/app/HybridAgentEngine.kt': '978af731f79027a73702488dead50daca2e16b4f62b967ae7f245870fec7464a',
+              'app/src/main/kotlin/ai/closepaw/app/HybridAgentProtocol.kt': '6c386d7e712c1f19f1d106f324d500b2fead4fc4b30a1b043cb368db16ebc03e',
+              'app/src/main/kotlin/ai/closepaw/app/RC11CorrectnessPolicy.kt': '6d2069354b970927dc4729a00355a74e8139f60efadb866e3f9e9b2c020e67b6',
+              'app/src/main/kotlin/ai/closepaw/ui/settings/PermissionsAdvancedSettingsPage.kt': 'be57a2128568aa5c738e340acd7441eebf4001f106fd42ad73900065e425c0b9',
+              'app/build.gradle.kts': 'ae2a6d7d3cfb618eb8662d5dbf06f61f43bf8347dc9af0796f8cc0eec937c506',
+              'app/src/main/res/values/strings.xml': '1d15618919094c2d3b703acbefd2037a06c80fa46c2a7bfb6ffd5a2908f12188',
+              'tools/termux-bridge/closepaw_bridge.py': '707906f17acde07c0a86cb45c3c76b7a554f3ffcc39acc17f76f32e376749b2c',
+          }
+          for rel, wanted in expected.items():
+              p = Path(rel)
+              if not p.is_file():
+                  raise SystemExit('036 verified 035 baseline missing: ' + rel)
+              actual = hashlib.sha256(p.read_bytes()).hexdigest()
+              if actual != wanted:
+                  raise SystemExit(f'036 baseline hash mismatch {rel}: {actual} != {wanted}')
+
+          Path('036-verification-report.txt').write_text(
+              'ClosePaw RC11 036 verification report\n'
+              '=====================================\n'
+              'Base: exact verified 035 full-source artifact from successful run 34627580299\n'
+              '035 key-file hashes: VERIFIED\n'
+              '035 V33 format compliance, V32 HTTP timeout diagnostics, RC8 restore, RC11 durable execution, and bridge are baseline.\n'
+              '036 scope before patch: ONLY local-server constrained output + actual Hybrid session trace wiring + package identity.\n',
+              encoding='utf-8',
+          )
+          print('036 EXACT VERIFIED 035 BASELINE HASH GATE: PASS')
+          PYBASE036
+
+      - name: Baseline 035 clean compile before any 036 change
+        shell: bash
+        run: |
+          set -euo pipefail
+          chmod +x ./gradlew
+          ./gradlew clean :app:compileDebugKotlin --stacktrace --no-daemon --no-configuration-cache
+          echo 'Baseline 035 clean Kotlin compile BEFORE 036 patch: PASS' >> 036-verification-report.txt
+
+      - name: Freeze 035 source manifest and untouched correctness regions
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PYFREEZE036'
+          from pathlib import Path
+          import hashlib, json
+
+          def sha_bytes(data: bytes) -> str:
+              return hashlib.sha256(data).hexdigest()
+          def sha_file(path: Path) -> str:
+              return sha_bytes(path.read_bytes())
+          def collect_app():
+              out = {}
+              for p in sorted(Path('app').rglob('*')):
+                  if not p.is_file():
+                      continue
+                  rel = p.as_posix()
+                  if rel.startswith('app/build/'):
+                      continue
+                  out[rel] = sha_file(p)
+              return out
+
+          manifest = collect_app()
+          if len(manifest) < 600:
+              raise SystemExit(f'036 baseline manifest unexpectedly small: {len(manifest)}')
+          Path('036-baseline-source-manifest.json').write_text(json.dumps(manifest, indent=2, sort_keys=True) + '\n')
+
+          engine = Path('app/src/main/kotlin/ai/closepaw/app/HybridAgentEngine.kt').read_text(encoding='utf-8')
+          def region(start_token: str, end_token: str) -> str:
+              start = engine.find(start_token)
+              if start < 0: raise SystemExit('036 critical start anchor missing: ' + start_token)
+              end = engine.find(end_token, start)
+              if end < 0: raise SystemExit('036 critical end anchor missing: ' + end_token)
+              return engine[start:end]
+
+          critical = {
+              'routing_execution': sha_bytes(region(
+                  'val planQueue = mutableListOf<HybridAction>()',
+                  'finishFailure("Bounded recovery stopped after',
+              ).encode()),
+              'rc8_restore': sha_bytes(region(
+                  '// RC8: only strong identity evidence may authorize a restore-side navigation.',
+                  'private suspend fun restoreSidebarShapeIfNeeded(',
+              ).encode()),
+              'durable_transaction': sha_bytes(region(
+                  'private suspend fun executeActionTransactionV9(',
+                  'private fun receiptHistoryLineV9(',
+              ).encode()),
+              'v33_primary_plan_validation': sha_bytes(region(
+                  'private suspend fun requestPrimaryPlanV9(',
+                  'private fun buildBrainRequest(',
+              ).encode()),
+              'hybrid_protocol_file': sha_file(Path('app/src/main/kotlin/ai/closepaw/app/HybridAgentProtocol.kt')),
+              'rc11_policy_file': sha_file(Path('app/src/main/kotlin/ai/closepaw/app/RC11CorrectnessPolicy.kt')),
+              'http_transport_v32_file': sha_file(Path('app/src/main/kotlin/ai/closepaw/app/PrimaryLocalHttpTransportV32.kt')),
+              'canonical_bridge_source': sha_file(Path('tools/termux-bridge/closepaw_bridge.py')),
+          }
+          Path('036-baseline-critical-hashes.json').write_text(json.dumps(critical, indent=2, sort_keys=True) + '\n')
+          with Path('036-verification-report.txt').open('a') as f:
+              f.write(f'Baseline app source/config manifest files: {len(manifest)}\n')
+              f.write('Frozen routing/RC8/durable/V33 validation/protocol/RC11/HTTP transport/bridge captured: PASS\n')
+          print('036 BASELINE MANIFEST + UNTOUCHED CORRECTNESS FREEZE: PASS')
+          PYFREEZE036
+
+      - name: Apply isolated 036 constrained-output and trace-wiring patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > /tmp/036.patch <<'PATCH036'
+          diff --git a/app/build.gradle.kts b/app/build.gradle.kts
+          index e19ea10..4637c48 100644
+          --- a/app/build.gradle.kts
+          +++ b/app/build.gradle.kts
+          @@ -46,8 +46,8 @@ android {
+           
+               buildTypes {
+                   debug {
+          -    applicationIdSuffix = ".rc11c035"
+          -    versionNameSuffix = "-rc11-c035"
+          +    applicationIdSuffix = ".rc11c036"
+          +    versionNameSuffix = "-rc11-c036"
+           
+               val evalSsl = project.findProperty("insecureSslForEval")?.toString()?.toBoolean() ?: false
+               buildConfigField("boolean", "INSECURE_SSL_FOR_EVAL", evalSsl.toString())
+          diff --git a/app/src/main/kotlin/ai/closepaw/app/HybridAgentEngine.kt b/app/src/main/kotlin/ai/closepaw/app/HybridAgentEngine.kt
+          index 02308fc..feaf992 100644
+          --- a/app/src/main/kotlin/ai/closepaw/app/HybridAgentEngine.kt
+          +++ b/app/src/main/kotlin/ai/closepaw/app/HybridAgentEngine.kt
+          @@ -31,10 +31,13 @@ import ai.closepaw.platform.virtualdisplay.VirtualDisplayPlatform
+           import ai.closepaw.protocol.LLMBackendType
+           import ai.closepaw.protocol.PlatformMode
+           import ai.closepaw.protocol.SessionConfig
+          +import ai.closepaw.protocol.SessionId
+           import ai.closepaw.protocol.SessionLlmConfig
+           import ai.closepaw.session.SessionLlmBootstrapper
+           import ai.closepaw.protocol.TaskOutcome
+           import ai.closepaw.trace.NoopTraceRecorder
+          +import ai.closepaw.trace.TraceRecorder
+          +import ai.closepaw.trace.TraceRecorderFactory
+           import com.openai.models.responses.EasyInputMessage
+           import com.openai.models.responses.ResponseInputItem
+           import kotlinx.coroutines.CancellationException
+          @@ -152,6 +155,11 @@ internal class HybridAgentEngine(private val service: AgentService) {
+                   val detail: String,
+               )
+           
+          +    private data class TaskPlatformRuntime(
+          +        val platform: AndroidPlatform,
+          +        val traceRecorder: TraceRecorder,
+          +    )
+          +
+               private data class NodeDescriptor(
+                   val index: Int,
+                   val text: String,
+          @@ -408,13 +416,16 @@ internal class HybridAgentEngine(private val service: AgentService) {
+                   val runEpochV11 = executionEpochV11.incrementAndGet()
+                   val wakeLock = acquireTaskWakeLock()
+                   var platform: AndroidPlatform? = null
+          +        var traceRecorder: TraceRecorder = NoopTraceRecorder
+                   var terminalRecorded = false
+                   var suspendedForConfirmation = false
+                   activeTask = task
+                   beginTaskLifecycle(task)
+           
+                   try {
+          -            platform = createTaskPlatform()
+          +            val taskRuntime = createTaskPlatform(task.id)
+          +            platform = taskRuntime.platform
+          +            traceRecorder = taskRuntime.traceRecorder
+                       currentPlatformMode = platform.mode
+                       service.publishHybridPlatformMode(platform.mode)
+                       service.notifyHybridTaskStarted(task.id, task.goal, platform.mode)
+          @@ -935,6 +946,10 @@ internal class HybridAgentEngine(private val service: AgentService) {
+                       withContext(NonCancellable) {
+                           runCatching { platform?.stop() }
+                               .onFailure { Log.w(TAG, "Platform stop failed", it) }
+          +                runCatching { traceRecorder.flush() }
+          +                    .onFailure { Log.w(TAG, "Trace flush failed", it) }
+          +                runCatching { traceRecorder.close() }
+          +                    .onFailure { Log.w(TAG, "Trace close failed", it) }
+                           currentPlatformMode = null
+                           service.publishHybridPlatformMode(null)
+                           if (!suspendedForConfirmation) activeTask = null
+          @@ -2261,46 +2276,55 @@ internal class HybridAgentEngine(private val service: AgentService) {
+                   return ActionOutcome(false, "NO_UI_CHANGE after ${actionSignature(action)}$suffix")
+               }
+           
+          -    private suspend fun createTaskPlatform(): AndroidPlatform {
+          -        val mode = AppSettingsStore(service).load().platformMode
+          +    private suspend fun createTaskPlatform(taskId: String): TaskPlatformRuntime {
+          +        val settings = AppSettingsStore(service).load()
+          +        val mode = settings.platformMode
+                   val config = SessionConfig(
+                       platformMode = mode,
+          -            debugMode = false,
+          -            traceEnabled = false,
+          +            debugMode = settings.debugMode,
+          +            traceEnabled = settings.traceEnabled,
+          +            traceRunId = taskId,
+                   )
+          +        val recorder = TraceRecorderFactory.create(service, config, SessionId(taskId))
+           
+          -        val platform: AndroidPlatform = when (mode) {
+          -            PlatformMode.ACCESSIBILITY -> AccessibilityPlatform(
+          -                service = service,
+          -                config = config,
+          -                visualizer = service.getActionVisualizer(),
+          -                traceRecorder = NoopTraceRecorder,
+          -                overlayTouchGate = service.getOverlayTouchGate(),
+          -            )
+          -            PlatformMode.VIRTUAL_DISPLAY -> {
+          -                val shizuku = ShizukuClient()
+          -                if (!shizuku.isAvailable()) {
+          -                    error("Virtual Display انتخاب شده ولی Shizuku در حال اجرا نیست")
+          -                }
+          -                if (!shizuku.hasPermission()) {
+          -                    error("Virtual Display انتخاب شده ولی ClosePaw مجوز Shizuku ندارد")
+          -                }
+          -                VirtualDisplayPlatform(
+          +        try {
+          +            val platform: AndroidPlatform = when (mode) {
+          +                PlatformMode.ACCESSIBILITY -> AccessibilityPlatform(
+                               service = service,
+          -                    shizuku = shizuku,
+          -                    config = VirtualDisplayConfig.fromPhysicalDisplay(service),
+          -                    sessionConfig = config,
+          -                    traceRecorder = NoopTraceRecorder,
+          -                    visualizer = null,
+          +                    config = config,
+          +                    visualizer = service.getActionVisualizer(),
+          +                    traceRecorder = recorder,
+          +                    overlayTouchGate = service.getOverlayTouchGate(),
+                           )
+          +                PlatformMode.VIRTUAL_DISPLAY -> {
+          +                    val shizuku = ShizukuClient()
+          +                    if (!shizuku.isAvailable()) {
+          +                        error("Virtual Display انتخاب شده ولی Shizuku در حال اجرا نیست")
+          +                    }
+          +                    if (!shizuku.hasPermission()) {
+          +                        error("Virtual Display انتخاب شده ولی ClosePaw مجوز Shizuku ندارد")
+          +                    }
+          +                    VirtualDisplayPlatform(
+          +                        service = service,
+          +                        shizuku = shizuku,
+          +                        config = VirtualDisplayConfig.fromPhysicalDisplay(service),
+          +                        sessionConfig = config,
+          +                        traceRecorder = recorder,
+          +                        visualizer = null,
+          +                    )
+          +                }
+                       }
+          -        }
+           
+          -        if (!platform.hasRequiredPermissions()) {
+          -            error("مجوزهای لازم برای ${modeLabel(mode)} در دسترس نیست")
+          +            if (!platform.hasRequiredPermissions()) {
+          +                error("مجوزهای لازم برای ${modeLabel(mode)} در دسترس نیست")
+          +            }
+          +            platform.start()
+          +            return TaskPlatformRuntime(platform, recorder)
+          +        } catch (error: Throwable) {
+          +            runCatching { recorder.close() }
+          +                .onFailure { Log.w(TAG, "Trace close after platform creation failure failed", it) }
+          +            throw error
+                   }
+          -        platform.start()
+          -        return platform
+               }
+           
+               private fun acquireTaskWakeLock(): PowerManager.WakeLock? = runCatching {
+          @@ -2536,6 +2560,8 @@ internal class HybridAgentEngine(private val service: AgentService) {
+                               .put(JSONObject().put("role", "system").put("content", systemPrompt))
+                               .put(JSONObject().put("role", "user").put("content", request))
+                       )
+          +        val grammar = exactLease.takeIf { it.isNotBlank() }?.let(PrimaryLocalGrammarV36::build)
+          +        if (grammar != null) payload.put("grammar", grammar)
+           
+                   val payloadText = payload.toString()
+                   val started = android.os.SystemClock.elapsedRealtime()
+          @@ -2558,7 +2584,7 @@ internal class HybridAgentEngine(private val service: AgentService) {
+                   }
+           
+                   appendPrimaryDiagnosticV32(
+          -            "REQUEST_START|endpoint=$endpoint|model=$model|requestChars=${request.length}|estimatedTokens=$estimatedInputTokens|nodes=$nodeCount|callTimeoutMs=${http.callTimeoutMillis}|readTimeoutMs=${http.readTimeoutMillis}"
+          +            "REQUEST_START|endpoint=$endpoint|model=$model|requestChars=${request.length}|estimatedTokens=$estimatedInputTokens|nodes=$nodeCount|grammar=${grammar != null}|grammarChars=${grammar?.length ?: 0}|callTimeoutMs=${http.callTimeoutMillis}|readTimeoutMs=${http.readTimeoutMillis}"
+                   )
+           
+                   try {
+          diff --git a/app/src/main/kotlin/ai/closepaw/app/PrimaryLocalGrammarV36.kt b/app/src/main/kotlin/ai/closepaw/app/PrimaryLocalGrammarV36.kt
+          new file mode 100644
+          index 0000000..6f13046
+          --- /dev/null
+          +++ b/app/src/main/kotlin/ai/closepaw/app/PrimaryLocalGrammarV36.kt
+          @@ -0,0 +1,50 @@
+          +package ai.closepaw.app
+          +
+          +/**
+          + * Request-scoped GBNF for the phone-local llama.cpp-compatible Primary endpoint.
+          + *
+          + * This constrains surface syntax only. The existing RC11/V33 parser remains the authority
+          + * for lease identity, action semantics, target uniqueness, and one-action enforcement.
+          + */
+          +internal object PrimaryLocalGrammarV36 {
+          +    fun build(requestId: String): String {
+          +        require(requestId.isNotBlank()) { "Primary grammar requires a request lease" }
+          +        val lease = gbnfLiteral("REQ|$requestId|")
+          +        return """
+          +            root ::= $lease action | escalate
+          +            action ::= open-app | click-text | click-desc | click-node | set-text-node | scroll-node | scroll | wait | back | home | recents | verify-text | done
+          +            open-app ::= "OPEN_APP|" arg
+          +            click-text ::= "CLICK_TEXT|" arg
+          +            click-desc ::= "CLICK_DESC|" arg
+          +            click-node ::= "CLICK_NODE|" digits
+          +            set-text-node ::= "SET_TEXT_NODE|" digits "|" arg
+          +            scroll-node ::= "SCROLL_NODE|" digits "|" direction
+          +            scroll ::= "SCROLL|" direction
+          +            wait ::= "WAIT|" digits
+          +            back ::= "BACK"
+          +            home ::= "HOME"
+          +            recents ::= "RECENTS"
+          +            verify-text ::= "VERIFY_TEXT|" arg
+          +            done ::= "DONE|" arg
+          +            escalate ::= "PRIMARY_ESCALATE|" arg
+          +            direction ::= "UP" | "DOWN"
+          +            digits ::= [0-9]+
+          +            arg ::= [^|\r\n]+
+          +        """.trimIndent()
+          +    }
+          +
+          +    private fun gbnfLiteral(value: String): String = buildString {
+          +        append('"')
+          +        value.forEach { ch ->
+          +            when (ch) {
+          +                '\\' -> append("\\\\")
+          +                '"' -> append("\\\"")
+          +                '\n' -> append("\\n")
+          +                '\r' -> append("\\r")
+          +                '\t' -> append("\\t")
+          +                else -> append(ch)
+          +            }
+          +        }
+          +        append('"')
+          +    }
+          +}
+          diff --git a/app/src/main/kotlin/ai/closepaw/ui/settings/PermissionsAdvancedSettingsPage.kt b/app/src/main/kotlin/ai/closepaw/ui/settings/PermissionsAdvancedSettingsPage.kt
+          index 311197f..2f46085 100644
+          --- a/app/src/main/kotlin/ai/closepaw/ui/settings/PermissionsAdvancedSettingsPage.kt
+          +++ b/app/src/main/kotlin/ai/closepaw/ui/settings/PermissionsAdvancedSettingsPage.kt
+          @@ -308,7 +308,7 @@ private fun DataStorageSection(
+                       }
+           
+                       Button(
+          -                onClick = { exportDiagnosticsLauncher.launch("ClosePaw-035-diagnostics.zip") },
+          +                onClick = { exportDiagnosticsLauncher.launch("ClosePaw-036-diagnostics.zip") },
+                           modifier = Modifier.fillMaxWidth(),
+                           shape = MaterialTheme.shapes.large,
+                       ) {
+          diff --git a/app/src/main/res/values/strings.xml b/app/src/main/res/values/strings.xml
+          index 3053644..91ee00f 100644
+          --- a/app/src/main/res/values/strings.xml
+          +++ b/app/src/main/res/values/strings.xml
+          @@ -1,5 +1,5 @@
+           <?xml version="1.0" encoding="utf-8"?>
+           <resources>
+          -    <string name="app_name">ClosePaw RC11 035</string>
+          +    <string name="app_name">ClosePaw RC11 036</string>
+               <string name="accessibility_service_description">ClosePaw acts as an on-device automation agent. With your permission, it reads on-screen elements and performs taps, swipes, and text input only when you start a task. It does not run in the background or monitor other apps.</string>
+           </resources>
+          diff --git a/app/src/test/kotlin/ai/closepaw/app/PrimaryLocalGrammarV36Test.kt b/app/src/test/kotlin/ai/closepaw/app/PrimaryLocalGrammarV36Test.kt
+          new file mode 100644
+          index 0000000..7a8886c
+          --- /dev/null
+          +++ b/app/src/test/kotlin/ai/closepaw/app/PrimaryLocalGrammarV36Test.kt
+          @@ -0,0 +1,29 @@
+          +package ai.closepaw.app
+          +
+          +import org.junit.Assert.assertFalse
+          +import org.junit.Assert.assertTrue
+          +import org.junit.Test
+          +
+          +class PrimaryLocalGrammarV36Test {
+          +    @Test fun bindsGrammarToExactRequestLease() {
+          +        val id = "HA-1-P1-abcd1234"
+          +        val grammar = PrimaryLocalGrammarV36.build(id)
+          +        assertTrue(grammar.contains("\"REQ|$id|\""))
+          +        assertFalse(grammar.contains("REQ|OLD|"))
+          +    }
+          +
+          +    @Test fun grammarAllowsOnlyPrimarySafeOps() {
+          +        val grammar = PrimaryLocalGrammarV36.build("REQ-1")
+          +        for (op in listOf("OPEN_APP", "CLICK_TEXT", "CLICK_DESC", "CLICK_NODE", "SET_TEXT_NODE", "SCROLL_NODE", "SCROLL", "WAIT", "BACK", "HOME", "RECENTS", "VERIFY_TEXT", "DONE")) {
+          +            assertTrue("missing $op", grammar.contains(op))
+          +        }
+          +        for (op in listOf("TAP|", "TYPE|", "SWIPE|", "LONG_PRESS|", "CONFIRM|", "FAIL|")) {
+          +            assertFalse("unsafe op admitted: $op", grammar.contains("\"$op"))
+          +        }
+          +    }
+          +
+          +    @Test fun escapesLeaseBeforeEmbeddingInGrammar() {
+          +        val grammar = PrimaryLocalGrammarV36.build("REQ-\\\"-1")
+          +        assertTrue(grammar.contains("REQ-\\\\\\\"-1"))
+          +    }
+          +}
+          PATCH036
+          git apply --check /tmp/036.patch
+          git apply /tmp/036.patch
+          echo '036 isolated patch applied: PASS' >> 036-verification-report.txt
+
+      - name: 036 source isolation and frozen correctness gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PYISO036'
+          from pathlib import Path
+          import hashlib, json
+
+          def sha_bytes(data: bytes) -> str:
+              return hashlib.sha256(data).hexdigest()
+          def sha_file(path: Path) -> str:
+              return sha_bytes(path.read_bytes())
+          def collect_app():
+              out = {}
+              for p in sorted(Path('app').rglob('*')):
+                  if not p.is_file():
+                      continue
+                  rel = p.as_posix()
+                  if rel.startswith('app/build/'):
+                      continue
+                  out[rel] = sha_file(p)
+              return out
+
+          before = json.loads(Path('036-baseline-source-manifest.json').read_text())
+          after = collect_app()
+          allowed = {
+              'app/build.gradle.kts',
+              'app/src/main/res/values/strings.xml',
+              'app/src/main/kotlin/ai/closepaw/ui/settings/PermissionsAdvancedSettingsPage.kt',
+              'app/src/main/kotlin/ai/closepaw/app/HybridAgentEngine.kt',
+              'app/src/main/kotlin/ai/closepaw/app/PrimaryLocalGrammarV36.kt',
+              'app/src/test/kotlin/ai/closepaw/app/PrimaryLocalGrammarV36Test.kt',
+          }
+          all_paths = set(before) | set(after)
+          changed = {p for p in all_paths if before.get(p) != after.get(p)}
+          unexpected = changed - allowed
+          if unexpected:
+              raise SystemExit('036 unexpected source changes: ' + ', '.join(sorted(unexpected)))
+          missing = {p for p in allowed if before.get(p) == after.get(p)}
+          if missing:
+              raise SystemExit('036 expected patch file did not change: ' + ', '.join(sorted(missing)))
+
+          baseline = json.loads(Path('036-baseline-critical-hashes.json').read_text())
+          engine = Path('app/src/main/kotlin/ai/closepaw/app/HybridAgentEngine.kt').read_text(encoding='utf-8')
+          def region(start_token: str, end_token: str) -> str:
+              start = engine.find(start_token)
+              if start < 0: raise SystemExit('036 postpatch critical start missing: ' + start_token)
+              end = engine.find(end_token, start)
+              if end < 0: raise SystemExit('036 postpatch critical end missing: ' + end_token)
+              return engine[start:end]
+
+          current = {
+              'routing_execution': sha_bytes(region(
+                  'val planQueue = mutableListOf<HybridAction>()',
+                  'finishFailure("Bounded recovery stopped after',
+              ).encode()),
+              'rc8_restore': sha_bytes(region(
+                  '// RC8: only strong identity evidence may authorize a restore-side navigation.',
+                  'private suspend fun restoreSidebarShapeIfNeeded(',
+              ).encode()),
+              'durable_transaction': sha_bytes(region(
+                  'private suspend fun executeActionTransactionV9(',
+                  'private fun receiptHistoryLineV9(',
+              ).encode()),
+              'v33_primary_plan_validation': sha_bytes(region(
+                  'private suspend fun requestPrimaryPlanV9(',
+                  'private fun buildBrainRequest(',
+              ).encode()),
+              'hybrid_protocol_file': sha_file(Path('app/src/main/kotlin/ai/closepaw/app/HybridAgentProtocol.kt')),
+              'rc11_policy_file': sha_file(Path('app/src/main/kotlin/ai/closepaw/app/RC11CorrectnessPolicy.kt')),
+              'http_transport_v32_file': sha_file(Path('app/src/main/kotlin/ai/closepaw/app/PrimaryLocalHttpTransportV32.kt')),
+              'canonical_bridge_source': sha_file(Path('tools/termux-bridge/closepaw_bridge.py')),
+          }
+          if current != baseline:
+              for key in sorted(baseline):
+                  if current.get(key) != baseline.get(key):
+                      print('CHANGED FROZEN REGION:', key)
+              raise SystemExit('036 modified a frozen 035 correctness region')
+
+          Path('036-postpatch-source-manifest.json').write_text(json.dumps(after, indent=2, sort_keys=True) + '\n')
+          with Path('036-verification-report.txt').open('a') as f:
+              f.write('Source isolation gate: PASS\n')
+              f.write('Frozen 035 correctness regions/files: PASS\n')
+              f.write('Changed app files: ' + ', '.join(sorted(changed)) + '\n')
+          print('036 SOURCE ISOLATION + FROZEN CORRECTNESS: PASS')
+          PYISO036
+
+      - name: 036 constrained-output and trace contract audit
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PYAUDIT036'
+          from pathlib import Path
+
+          engine = Path('app/src/main/kotlin/ai/closepaw/app/HybridAgentEngine.kt').read_text(encoding='utf-8')
+          grammar = Path('app/src/main/kotlin/ai/closepaw/app/PrimaryLocalGrammarV36.kt').read_text(encoding='utf-8')
+          test = Path('app/src/test/kotlin/ai/closepaw/app/PrimaryLocalGrammarV36Test.kt').read_text(encoding='utf-8')
+          settings = Path('app/src/main/kotlin/ai/closepaw/ui/settings/PermissionsAdvancedSettingsPage.kt').read_text(encoding='utf-8')
+          gradle = Path('app/build.gradle.kts').read_text(encoding='utf-8')
+          strings = Path('app/src/main/res/values/strings.xml').read_text(encoding='utf-8')
+
+          for token in [
+              'val grammar = exactLease.takeIf { it.isNotBlank() }?.let(PrimaryLocalGrammarV36::build)',
+              'payload.put("grammar", grammar)',
+              'grammar=${grammar != null}',
+              'PrimaryLocalHttpTransportV32.create(PRIMARY_CUSTOM_HTTP_TIMEOUT_MS)',
+              'PRIMARY_CUSTOM_HTTP_TIMEOUT_MS = 180_000L',
+              'PRIMARY_CUSTOM_MAX_OUTPUT_TOKENS = 64L',
+          ]:
+              if token not in engine:
+                  raise SystemExit('036 constrained-local contract missing: ' + token)
+
+          for token in [
+              'root ::= $lease action | escalate',
+              '"OPEN_APP|" arg',
+              '"CLICK_TEXT|" arg',
+              '"CLICK_NODE|" digits',
+              '"SET_TEXT_NODE|" digits "|" arg',
+              '"SCROLL_NODE|" digits "|" direction',
+              '"VERIFY_TEXT|" arg',
+              '"PRIMARY_ESCALATE|" arg',
+              r'arg ::= [^|\r\n]+',
+          ]:
+              if token not in grammar:
+                  raise SystemExit('036 grammar contract missing: ' + token)
+          for forbidden in ['"TAP|"', '"TYPE|"', '"SWIPE|"', '"LONG_PRESS|"', '"CONFIRM|"', '"FAIL|"']:
+              if forbidden in grammar:
+                  raise SystemExit('036 grammar admits forbidden Primary op: ' + forbidden)
+          for token in ['bindsGrammarToExactRequestLease', 'grammarAllowsOnlyPrimarySafeOps', 'escapesLeaseBeforeEmbeddingInGrammar']:
+              if token not in test:
+                  raise SystemExit('036 grammar regression test missing: ' + token)
+
+          create_start = engine.index('private suspend fun createTaskPlatform(taskId: String): TaskPlatformRuntime')
+          create_end = engine.index('private fun acquireTaskWakeLock()', create_start)
+          create = engine[create_start:create_end]
+          for token in [
+              'debugMode = settings.debugMode',
+              'traceEnabled = settings.traceEnabled',
+              'traceRunId = taskId',
+              'TraceRecorderFactory.create(service, config, SessionId(taskId))',
+              'traceRecorder = recorder',
+          ]:
+              if token not in create:
+                  raise SystemExit('036 trace wiring missing: ' + token)
+          for forbidden in ['debugMode = false', 'traceEnabled = false', 'traceRecorder = NoopTraceRecorder']:
+              if forbidden in create:
+                  raise SystemExit('036 trace wiring still contains disabled hard-code: ' + forbidden)
+          for token in ['traceRecorder.flush()', 'traceRecorder.close()']:
+              if token not in engine:
+                  raise SystemExit('036 trace lifecycle missing: ' + token)
+          for token in ['closepaw-diagnostics', 'inspection-trace', 'Export Diagnostics ZIP', 'ClosePaw-036-diagnostics.zip']:
+              if token not in settings:
+                  raise SystemExit('036 diagnostics export contract missing: ' + token)
+
+          # V33 parser/repair remains present; 036 must not relax it.
+          for token in [
+              'PrimaryCompactPlanV33.parseOrNull(raw, taskId, requestId)',
+              'val repairRequestId = requestId',
+              'CP_PRIMARY_FORMAT_REPAIR_V33',
+              'PLAN_RAW_V33',
+              'PLAN_ACCEPT_V33',
+              'PLAN_REJECT_V33',
+          ]:
+              if token not in engine:
+                  raise SystemExit('036 lost V33 validation contract: ' + token)
+
+          if 'applicationIdSuffix = ".rc11c036"' not in gradle or 'versionNameSuffix = "-rc11-c036"' not in gradle:
+              raise SystemExit('036 package/version identity missing')
+          if '<string name="app_name">ClosePaw RC11 036</string>' not in strings:
+              raise SystemExit('036 app label missing')
+
+          with Path('036-verification-report.txt').open('a') as f:
+              f.write('Dynamic exact-lease GBNF attached to Local Server requests: PASS\n')
+              f.write('GBNF safe-op surface excludes TAP/TYPE/SWIPE/LONG_PRESS/CONFIRM/FAIL: PASS\n')
+              f.write('V33 strict parser/repair preserved byte-identically: PASS\n')
+              f.write('Debug Mode + Session Traces are wired into Hybrid platform config: PASS\n')
+              f.write('Trace recorder is flushed/closed and existing diagnostics ZIP includes inspection-trace: PASS\n')
+          print('036 CONSTRAINED OUTPUT + REAL TRACE CONTRACT AUDIT: PASS')
+          PYAUDIT036
+
+      - name: 036 clean Kotlin compile gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./gradlew clean :app:compileDebugKotlin --stacktrace --no-daemon --no-configuration-cache
+          echo '036 clean Kotlin compile: PASS' >> 036-verification-report.txt
+
+      - name: 036 targeted grammar V33 RC11 and bridge tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./gradlew :app:testDebugUnitTest \
+            --tests ai.closepaw.app.PrimaryLocalGrammarV36Test \
+            --tests ai.closepaw.app.PrimaryFormatComplianceV33Test \
+            --tests ai.closepaw.app.RC11CorrectnessPolicyTest \
+            --tests ai.closepaw.termux.ClosePawBridgeResourceTest \
+            --stacktrace --no-daemon --no-configuration-cache
+          echo '036 targeted grammar/V33/RC11/bridge tests: PASS' >> 036-verification-report.txt
+
+      - name: 036 unit tests and clean rebuild
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./gradlew :app:testDebugUnitTest :app:assembleDebug --stacktrace --no-daemon --no-configuration-cache
+          echo '036 full unit tests: PASS' >> 036-verification-report.txt
+          echo '036 debug APK rebuild: PASS' >> 036-verification-report.txt
+
+      - name: 036 APK identity integrity native-runtime and signature gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          mapfile -t APKS < <(find app/build/outputs/apk/debug -maxdepth 1 -type f -name '*.apk' -print)
+          if [ "${#APKS[@]}" -ne 1 ]; then
+            echo "Expected exactly one debug APK, found ${#APKS[@]}" >&2
+            exit 1
+          fi
+          APK="${APKS[0]}"
+          unzip -tq "$APK" >/dev/null
+          SIZE="$(stat -c %s "$APK")"
+          if [ "$SIZE" -lt 50000000 ]; then
+            echo "APK unexpectedly small: $SIZE bytes" >&2
+            exit 1
+          fi
+
+          CONTENTS="$(zipinfo -1 "$APK")"
+          for ENTRY in \
+            AndroidManifest.xml \
+            classes.dex \
+            lib/arm64-v8a/libllama.so \
+            lib/arm64-v8a/libggml.so \
+            lib/arm64-v8a/libinference_engine.so \
+            lib/arm64-v8a/libinference_engine_jni.so \
+            lib/arm64-v8a/libinference_engine_llamacpp_backend.so
+          do
+            if ! grep -Fxq "$ENTRY" <<<"$CONTENTS"; then
+              echo "Required APK entry missing: $ENTRY" >&2
+              exit 1
+            fi
+          done
+
+          # Same aapt gate that was proven by successful 032 and successful 035.
+          AAPT="$(find "$ANDROID_HOME/build-tools" -type f -name aapt -print | sort -V | tail -n 1)"
+          APKSIGNER="$(find "$ANDROID_HOME/build-tools" -type f -name apksigner -print | sort -V | tail -n 1)"
+          test -x "$AAPT"
+          test -x "$APKSIGNER"
+          BADGING="$($AAPT dump badging "$APK")"
+          if ! grep -Fq "package: name='ai.closepaw.rc11c036'" <<<"$BADGING"; then
+            echo "036 APK package identity mismatch" >&2
+            printf '%s\n' "$BADGING" | head -n 12 >&2
+            exit 1
+          fi
+          if ! grep -Fq "application-label:'ClosePaw RC11 036'" <<<"$BADGING"; then
+            echo "036 APK application label mismatch" >&2
+            printf '%s\n' "$BADGING" | grep -E "^(package:|application-label|sdkVersion|targetSdkVersion)" >&2 || true
+            exit 1
+          fi
+          if ! grep -Fq "sdkVersion:'31'" <<<"$BADGING"; then
+            echo "036 APK minSdk mismatch" >&2
+            exit 1
+          fi
+          if ! grep -Fq "targetSdkVersion:'36'" <<<"$BADGING"; then
+            echo "036 APK targetSdk mismatch" >&2
+            exit 1
+          fi
+
+          "$APKSIGNER" verify --verbose "$APK" > 036-apksigner-verification.txt
+          APK_SHA="$(sha256sum "$APK" | awk '{print $1}')"
+          {
+            echo "APK path: $APK"
+            echo "APK size bytes: $SIZE"
+            echo "APK SHA256: $APK_SHA"
+            echo 'APK ZIP integrity: PASS'
+            echo 'APK package identity ai.closepaw.rc11c036: PASS'
+            echo 'APK app label ClosePaw RC11 036: PASS'
+            echo 'minSdk 31 / targetSdk 36: PASS'
+            echo 'arm64 local-inference runtime libraries: PASS'
+            echo 'APK signature verification: PASS'
+          } >> 036-verification-report.txt
+          echo "036 APK FULL INTEGRITY GATE: PASS | size=$SIZE | sha256=$APK_SHA"
+
+      - name: Prepare 036 full verified source snapshot
+        if: success()
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf 036-full-source
+          mkdir -p 036-full-source
+          rsync -a \
+            --exclude='.git/' \
+            --exclude='.github/' \
+            --exclude='.gradle/' \
+            --exclude='app/build/' \
+            --exclude='036-full-source/' \
+            ./ 036-full-source/
+          test -f 036-full-source/app/src/main/kotlin/ai/closepaw/app/HybridAgentEngine.kt
+          test -f 036-full-source/app/src/main/kotlin/ai/closepaw/app/PrimaryLocalGrammarV36.kt
+          test -f 036-full-source/app/src/test/kotlin/ai/closepaw/app/PrimaryLocalGrammarV36Test.kt
+          test -f 036-full-source/app/src/test/kotlin/ai/closepaw/app/PrimaryFormatComplianceV33Test.kt
+          test -f 036-full-source/tools/termux-bridge/closepaw_bridge.py
+          test "$(sha256sum 036-full-source/tools/termux-bridge/closepaw_bridge.py | awk '{print $1}')" = "707906f17acde07c0a86cb45c3c76b7a554f3ffcc39acc17f76f32e376749b2c"
+
+      - name: Upload 036 verification proof
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: 036-ClosePaw-RC11-verification-proof
+          if-no-files-found: warn
+          path: |
+            036-verification-report.txt
+            036-baseline-source-manifest.json
+            036-postpatch-source-manifest.json
+            036-baseline-critical-hashes.json
+            036-apksigner-verification.txt
+
+      - name: Upload 036 full verified source
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: 036-ClosePaw-RC11-verified-full-source
+          if-no-files-found: error
+          path: 036-full-source/
+
+      - name: Upload 036 APK
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: 036-ClosePaw-RC11-APK
+          if-no-files-found: error
+          path: app/build/outputs/apk/debug/app-debug.apk
+
+      - name: Upload 036 failure sources
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: 036-ClosePaw-RC11-failure-sources
+          if-no-files-found: warn
+          path: |
+            app/src/main/kotlin/ai/closepaw/app/HybridAgentEngine.kt
+            app/src/main/kotlin/ai/closepaw/app/HybridAgentProtocol.kt
+            app/src/main/kotlin/ai/closepaw/app/PrimaryLocalGrammarV36.kt
+            app/src/main/kotlin/ai/closepaw/app/RC11CorrectnessPolicy.kt
+            app/src/main/kotlin/ai/closepaw/app/PrimaryLocalHttpTransportV32.kt
+            app/src/main/kotlin/ai/closepaw/ui/settings/PermissionsAdvancedSettingsPage.kt
+            app/src/test/kotlin/ai/closepaw/app/PrimaryLocalGrammarV36Test.kt
+            app/src/test/kotlin/ai/closepaw/app/PrimaryFormatComplianceV33Test.kt
+            app/build.gradle.kts
+            app/src/main/res/values/strings.xml
+            036-verification-report.txt
