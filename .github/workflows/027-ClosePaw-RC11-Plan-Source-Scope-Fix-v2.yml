@@ -1,0 +1,290 @@
+name: 027 - ClosePaw RC11 Verified Plan Source Scope Fix
+
+'on':
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Setup Java 17
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Reconstruct 025 and apply verified plan-source scope fix
+        shell: bash
+        run: |
+          python3 - <<'PY027'
+          from pathlib import Path
+          import re
+          import subprocess
+
+          workflow_path = Path('.github/workflows/025-ClosePaw-RC11-Compile-Fix.yml')
+          if not workflow_path.exists():
+              raise SystemExit('027 missing required 025 workflow')
+
+          lines = workflow_path.read_text(encoding='utf-8').splitlines()
+          step_starts = [i for i, line in enumerate(lines) if line.startswith('      - name: ')]
+
+          def run_step(wanted: str):
+              for pos, start_i in enumerate(step_starts):
+                  end_i = step_starts[pos + 1] if pos + 1 < len(step_starts) else len(lines)
+                  name = lines[start_i].split('- name:', 1)[1].strip()
+                  if name != wanted:
+                      continue
+
+                  run_i = None
+                  inline = None
+                  for rel_i, line in enumerate(lines[start_i + 1:end_i], start=1):
+                      stripped = line.strip()
+                      if stripped == 'run: |':
+                          run_i = start_i + rel_i
+                          break
+                      if stripped.startswith('run: '):
+                          run_i = start_i + rel_i
+                          inline = stripped[len('run: '):]
+                          break
+                  if run_i is None:
+                      raise SystemExit(f'027 source step has no run body: {wanted}')
+
+                  if inline is not None:
+                      body = inline
+                  else:
+                      body_indent = len(lines[run_i]) - len(lines[run_i].lstrip()) + 2
+                      body_lines = []
+                      for line in lines[run_i + 1:end_i]:
+                          if line.strip() and (len(line) - len(line.lstrip())) < body_indent:
+                              break
+                          body_lines.append('' if not line.strip() else line[body_indent:])
+                      body = '\n'.join(body_lines) + '\n'
+
+                  print(f'::group::027 replay: {wanted}', flush=True)
+                  result = subprocess.run(
+                      ['bash', '-e', '-o', 'pipefail', '-c', body],
+                      text=True,
+                      check=False,
+                  )
+                  print('::endgroup::', flush=True)
+                  if result.returncode != 0:
+                      raise SystemExit(f'027 replay failed in {wanted} (exit {result.returncode})')
+                  return
+
+              raise SystemExit(f'027 source step not found: {wanted}')
+
+          # Produce exactly the source that reached 025's Kotlin compiler.
+          run_step('Reconstruct 024 and apply compile-only fix')
+
+          engine_path = Path('app/src/main/kotlin/ai/closepaw/app/HybridAgentEngine.kt')
+          policy_path = Path('app/src/main/kotlin/ai/closepaw/app/RC11CorrectnessPolicy.kt')
+          gradle_path = Path('app/build.gradle.kts')
+          strings_path = Path('app/src/main/res/values/strings.xml')
+
+          e = engine_path.read_text(encoding='utf-8')
+          p = policy_path.read_text(encoding='utf-8')
+
+          # Locate both scope anchors without depending on a fixed indentation width.
+          outer_matches = list(re.finditer(
+              r'(?m)^([ \t]*)var performedUiActionSincePlan = false[ \t]*$', e
+          ))
+          inner_matches = list(re.finditer(
+              r'(?m)^([ \t]*)var selectedPlanSource = ""[ \t]*$', e
+          ))
+          if len(outer_matches) != 1:
+              raise SystemExit(f'027 performedUiActionSincePlan anchor count={len(outer_matches)}')
+          if len(inner_matches) != 1:
+              raise SystemExit(f'027 inner selectedPlanSource declaration count={len(inner_matches)}')
+
+          outer = outer_matches[0]
+          inner = inner_matches[0]
+          outer_indent = outer.group(1)
+          inner_indent = inner.group(1)
+          if len(inner_indent) <= len(outer_indent):
+              raise SystemExit(
+                  f'027 unexpected scope geometry: outerIndent={len(outer_indent)} innerIndent={len(inner_indent)}'
+              )
+          if inner.start() <= outer.end():
+              raise SystemExit('027 selectedPlanSource declaration is not inside the expected planning scope')
+
+          # Replace the inner declaration first so the earlier outer span remains valid.
+          e = e[:inner.start()] + inner_indent + 'selectedPlanSource = ""' + e[inner.end():]
+          e = e[:outer.end()] + '\n' + outer_indent + 'var selectedPlanSource = ""' + e[outer.end():]
+
+          # Scope/provenance checks against the exact candidate that will be compiled.
+          decl_matches = list(re.finditer(
+              r'(?m)^([ \t]*)var selectedPlanSource = ""[ \t]*$', e
+          ))
+          reset_matches = list(re.finditer(
+              r'(?m)^([ \t]*)selectedPlanSource = ""[ \t]*$', e
+          ))
+          if len(decl_matches) != 1:
+              raise SystemExit(f'027 final selectedPlanSource declaration count={len(decl_matches)}')
+          if len(reset_matches) != 1:
+              raise SystemExit(f'027 final selectedPlanSource reset count={len(reset_matches)}')
+          if decl_matches[0].group(1) != outer_indent:
+              raise SystemExit('027 selectedPlanSource declaration was not lifted to the execution-loop scope')
+          if len(reset_matches[0].group(1)) <= len(decl_matches[0].group(1)):
+              raise SystemExit('027 selectedPlanSource reset is not inside the planning scope')
+
+          required = [
+              'selectedPlanSource = "PRIMARY"',
+              'selectedPlanSource = "CHAT_BRAIN"',
+              'selectedPlanSource = "CHAT_BRAIN_RESUME"',
+              'history += "PLAN_TRUNCATED_TO_ONE_ACTION|source=$selectedPlanSource|original=${plan.actions.size}"',
+              'val actionId = "${task.id}-v9-${selectedPlanSource.lowercase()}-${primaryCalls + brainCalls}-${history.size + 1}"',
+              'RC11CorrectnessPolicy.admitSingleObservationAction(plan.actions)',
+              'RC11CorrectnessPolicy.modelActionAllowed(action)',
+          ]
+          for token in required:
+              if token not in e:
+                  raise SystemExit('027 required contract missing: ' + token)
+
+          action_id_pos = e.find(
+              'val actionId = "${task.id}-v9-${selectedPlanSource.lowercase()}-${primaryCalls + brainCalls}-${history.size + 1}"'
+          )
+          if not (decl_matches[0].start() < reset_matches[0].start() < action_id_pos):
+              raise SystemExit('027 selectedPlanSource declaration/reset/use ordering is invalid')
+
+          forbidden = ['currentPlanSource', 'HybridAction.Notifications']
+          for token in forbidden:
+              if token in e or token in p:
+                  raise SystemExit('027 invalid compile token remains: ' + token)
+
+          engine_path.write_text(e, encoding='utf-8')
+
+          # Side-by-side identity. 027 reconstructs 025 directly, so replace only 025 identity.
+          g = gradle_path.read_text(encoding='utf-8')
+          if g.count('applicationIdSuffix = ".rc11c025"') != 1:
+              raise SystemExit('027 expected exactly one 025 applicationIdSuffix')
+          if g.count('versionNameSuffix = "-rc11-c025"') != 1:
+              raise SystemExit('027 expected exactly one 025 versionNameSuffix')
+          g = g.replace('applicationIdSuffix = ".rc11c025"', 'applicationIdSuffix = ".rc11c027"', 1)
+          g = g.replace('versionNameSuffix = "-rc11-c025"', 'versionNameSuffix = "-rc11-c027"', 1)
+          gradle_path.write_text(g, encoding='utf-8')
+
+          s = strings_path.read_text(encoding='utf-8')
+          old_name = '<string name="app_name">ClosePaw RC11 025</string>'
+          if s.count(old_name) != 1:
+              raise SystemExit(f'027 expected exactly one 025 app_name, got {s.count(old_name)}')
+          s = s.replace(old_name, '<string name="app_name">ClosePaw RC11 027</string>', 1)
+          strings_path.write_text(s, encoding='utf-8')
+
+          print(
+              '027 SCOPE FIX: PASS | '
+              f'declOffset={decl_matches[0].start()} resetOffset={reset_matches[0].start()} actionIdOffset={action_id_pos}',
+              flush=True,
+          )
+          PY027
+
+      - name: 027 frozen RC11 correctness gate
+        shell: bash
+        run: |
+          python3 - <<'PYGATE027'
+          from pathlib import Path
+          import re
+
+          e = Path('app/src/main/kotlin/ai/closepaw/app/HybridAgentEngine.kt').read_text(encoding='utf-8')
+          p = Path('app/src/main/kotlin/ai/closepaw/app/RC11CorrectnessPolicy.kt').read_text(encoding='utf-8')
+          t = Path('app/src/test/kotlin/ai/closepaw/app/RC11CorrectnessPolicyTest.kt').read_text(encoding='utf-8')
+
+          # Same frozen invariants as 024, rerun AFTER the 027 scope patch.
+          required_engine = [
+              'val runEpochV11 = executionEpochV11.incrementAndGet()',
+              'executionEpochV11.incrementAndGet()',
+              'Plan lease expired because work UI changed during model call',
+              'RC11CorrectnessPolicy.admitSingleObservationAction(plan.actions)',
+              'RC11CorrectnessPolicy.modelActionAllowed(action)',
+              'MODEL_DONE_NOT_AUTHORITY',
+              'MODEL_FAIL_NOT_AUTHORITY',
+              'confirmationKeyV11',
+              'exact app not found',
+              'ambiguous exact click text',
+              'return native is ActionResult.Success',
+              'STALE_ACTION_REVALIDATION_FAILED',
+              'is HybridAction.TypeText, is HybridAction.SetTextNode -> inputVerified',
+              'RC11 provenance mismatch is non-repairable',
+              'RECOVERY_REQUIRED: could not preserve ambiguous Brain-send state',
+              'Configured Brain conversation lease changed before Send',
+              'primaryContextScoreV11',
+          ]
+          missing = [x for x in required_engine if x not in e]
+          if missing:
+              raise SystemExit('027 RC11 engine invariant missing: ' + ', '.join(missing))
+
+          forbidden_engine = [
+              'task.goal.take(600)',
+              'planQueue.addAll(plan.actions)',
+              'return performTap(platform, element.center.x, element.center.y)',
+              'categoryMatch || c == wanted',
+              'finishFailure(action.reason, impossible = true)',
+              'inputVerified || (executorSuccess && contentChanged)',
+          ]
+          present = [x for x in forbidden_engine if x in e]
+          if present:
+              raise SystemExit('027 RC11 forbidden legacy behavior remains: ' + ', '.join(present))
+
+          m = re.search(r'(?s)private suspend fun parseWithSingleRepair\(.*?\n    private ', e)
+          if not m:
+              raise SystemExit('027 RC11 parseWithSingleRepair region not found')
+          region = m.group(0)
+          mismatch = region.find('provenance mismatch is non-repairable')
+          repair_id = region.find('repairRequestId')
+          if mismatch < 0 or repair_id < 0 or mismatch > repair_id:
+              raise SystemExit('027 RC11 provenance mismatch can still flow into repair')
+
+          required_policy = [
+              'actions.firstOrNull()?.let(::listOf).orEmpty()',
+              'is HybridAction.Tap',
+              'is HybridAction.TypeText',
+              'exactConfirmationMatch',
+          ]
+          if any(x not in p for x in required_policy):
+              raise SystemExit('027 RC11 policy object incomplete')
+          if t.count('@Test') < 3:
+              raise SystemExit('027 RC11 behavioral policy tests incomplete')
+
+          if len(re.findall(r'(?m)^[ \t]*var selectedPlanSource = ""[ \t]*$', e)) != 1:
+              raise SystemExit('027 selectedPlanSource declaration invariant failed')
+          if len(re.findall(r'(?m)^[ \t]*selectedPlanSource = ""[ \t]*$', e)) != 1:
+              raise SystemExit('027 selectedPlanSource reset invariant failed')
+
+          print('027 FROZEN RC11 CORRECTNESS GATE: PASS', flush=True)
+          PYGATE027
+
+      - name: 027 compile gate
+        shell: bash
+        run: |
+          chmod +x ./gradlew
+          ./gradlew :app:compileDebugKotlin --stacktrace --no-daemon
+
+      - name: 027 unit tests and rebuild
+        shell: bash
+        run: |
+          ./gradlew :app:testDebugUnitTest :app:assembleDebug --stacktrace --no-daemon
+
+      - name: Upload generated sources on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: 027-ClosePaw-RC11-failure-sources
+          path: |
+            app/src/main/kotlin/ai/closepaw/app/HybridAgentEngine.kt
+            app/src/main/kotlin/ai/closepaw/app/HybridAgentProtocol.kt
+            app/src/main/kotlin/ai/closepaw/app/RC11CorrectnessPolicy.kt
+            app/src/test/kotlin/ai/closepaw/app/RC11CorrectnessPolicyTest.kt
+            app/build.gradle.kts
+            app/src/main/res/values/strings.xml
+          if-no-files-found: warn
+
+      - name: Upload APK
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: 027-ClosePaw-RC11-APK
+          path: app/build/outputs/apk/debug/*.apk
+          if-no-files-found: error
