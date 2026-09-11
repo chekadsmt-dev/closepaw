@@ -1,0 +1,439 @@
+name: 028 - ClosePaw RC11 Full Release Verification
+
+'on':
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Setup Java 17
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Reconstruct exact 027 candidate and promote identity to 028
+        shell: bash
+        run: |
+          python3 - <<'PY028'
+          from pathlib import Path
+          import hashlib
+          import subprocess
+
+          workflow_path = Path('.github/workflows/027-ClosePaw-RC11-Plan-Source-Scope-Fix-v2.yml')
+          if not workflow_path.exists():
+              raise SystemExit('028 missing required proven 027 workflow')
+
+          lines = workflow_path.read_text(encoding='utf-8').splitlines()
+          step_starts = [i for i, line in enumerate(lines) if line.startswith('      - name: ')]
+
+          def run_step(wanted: str):
+              for pos, start_i in enumerate(step_starts):
+                  end_i = step_starts[pos + 1] if pos + 1 < len(step_starts) else len(lines)
+                  name = lines[start_i].split('- name:', 1)[1].strip()
+                  if name != wanted:
+                      continue
+
+                  run_i = None
+                  inline = None
+                  for rel_i, line in enumerate(lines[start_i + 1:end_i], start=1):
+                      stripped = line.strip()
+                      if stripped == 'run: |':
+                          run_i = start_i + rel_i
+                          break
+                      if stripped.startswith('run: '):
+                          run_i = start_i + rel_i
+                          inline = stripped[len('run: '):]
+                          break
+                  if run_i is None:
+                      raise SystemExit(f'028 source step has no run body: {wanted}')
+
+                  if inline is not None:
+                      body = inline
+                  else:
+                      body_indent = len(lines[run_i]) - len(lines[run_i].lstrip()) + 2
+                      body_lines = []
+                      for line in lines[run_i + 1:end_i]:
+                          if line.strip() and (len(line) - len(line.lstrip())) < body_indent:
+                              break
+                          body_lines.append('' if not line.strip() else line[body_indent:])
+                      body = '\n'.join(body_lines) + '\n'
+
+                  print(f'::group::028 replay proven 027: {wanted}', flush=True)
+                  result = subprocess.run(
+                      ['bash', '-e', '-o', 'pipefail', '-c', body],
+                      text=True,
+                      check=False,
+                  )
+                  print('::endgroup::', flush=True)
+                  if result.returncode != 0:
+                      raise SystemExit(f'028 replay failed in proven 027 step {wanted} (exit {result.returncode})')
+                  return
+
+              raise SystemExit(f'028 proven 027 step not found: {wanted}')
+
+          # Reproduce exactly the source and scope fix that passed 027's real GitHub build.
+          run_step('Reconstruct 025 and apply verified plan-source scope fix')
+          run_step('027 frozen RC11 correctness gate')
+
+          engine_path = Path('app/src/main/kotlin/ai/closepaw/app/HybridAgentEngine.kt')
+          protocol_path = Path('app/src/main/kotlin/ai/closepaw/app/HybridAgentProtocol.kt')
+          policy_path = Path('app/src/main/kotlin/ai/closepaw/app/RC11CorrectnessPolicy.kt')
+          test_path = Path('app/src/test/kotlin/ai/closepaw/app/RC11CorrectnessPolicyTest.kt')
+          gradle_path = Path('app/build.gradle.kts')
+          strings_path = Path('app/src/main/res/values/strings.xml')
+
+          required_files = [engine_path, protocol_path, policy_path, test_path, gradle_path, strings_path]
+          missing = [str(p) for p in required_files if not p.exists()]
+          if missing:
+              raise SystemExit('028 reconstructed source missing files: ' + ', '.join(missing))
+
+          def sha(path: Path) -> str:
+              return hashlib.sha256(path.read_bytes()).hexdigest()
+
+          # Functional-source hashes before identity-only promotion.
+          engine_sha = sha(engine_path)
+          protocol_sha = sha(protocol_path)
+          policy_sha = sha(policy_path)
+          test_sha = sha(test_path)
+
+          g = gradle_path.read_text(encoding='utf-8')
+          s = strings_path.read_text(encoding='utf-8')
+
+          if g.count('applicationIdSuffix = ".rc11c027"') != 1:
+              raise SystemExit('028 expected exactly one 027 applicationIdSuffix')
+          if g.count('versionNameSuffix = "-rc11-c027"') != 1:
+              raise SystemExit('028 expected exactly one 027 versionNameSuffix')
+          old_name = '<string name="app_name">ClosePaw RC11 027</string>'
+          if s.count(old_name) != 1:
+              raise SystemExit(f'028 expected exactly one 027 app_name, got {s.count(old_name)}')
+
+          g2 = g.replace('applicationIdSuffix = ".rc11c027"', 'applicationIdSuffix = ".rc11c028"', 1)
+          g2 = g2.replace('versionNameSuffix = "-rc11-c027"', 'versionNameSuffix = "-rc11-c028"', 1)
+          s2 = s.replace(old_name, '<string name="app_name">ClosePaw RC11 028</string>', 1)
+
+          # Identity promotion must be exactly two Gradle substitutions and one app-name substitution.
+          if g2.count('.rc11c027') or g2.count('-rc11-c027') or 'ClosePaw RC11 027' in s2:
+              raise SystemExit('028 stale 027 identity remains')
+          if g2.count('applicationIdSuffix = ".rc11c028"') != 1:
+              raise SystemExit('028 applicationIdSuffix promotion failed')
+          if g2.count('versionNameSuffix = "-rc11-c028"') != 1:
+              raise SystemExit('028 versionNameSuffix promotion failed')
+          if s2.count('<string name="app_name">ClosePaw RC11 028</string>') != 1:
+              raise SystemExit('028 app_name promotion failed')
+
+          gradle_path.write_text(g2, encoding='utf-8')
+          strings_path.write_text(s2, encoding='utf-8')
+
+          # Prove no functional source file changed while moving 027 -> 028.
+          for path, expected in [
+              (engine_path, engine_sha),
+              (protocol_path, protocol_sha),
+              (policy_path, policy_sha),
+              (test_path, test_sha),
+          ]:
+              actual = sha(path)
+              if actual != expected:
+                  raise SystemExit(f'028 identity promotion unexpectedly changed functional source: {path}')
+
+          report = Path('028-verification-report.txt')
+          report.write_text(
+              'ClosePaw RC11 028 verification report\n'
+              '=====================================\n'
+              'Base candidate: proven 027 GitHub-success candidate\n'
+              'Promotion: identity only (027 -> 028)\n'
+              f'HybridAgentEngine.kt SHA256: {engine_sha}\n'
+              f'HybridAgentProtocol.kt SHA256: {protocol_sha}\n'
+              f'RC11CorrectnessPolicy.kt SHA256: {policy_sha}\n'
+              f'RC11CorrectnessPolicyTest.kt SHA256: {test_sha}\n',
+              encoding='utf-8',
+          )
+
+          print('028 RECONSTRUCT + IDENTITY-ONLY PROMOTION: PASS', flush=True)
+          PY028
+
+      - name: 028 deep RC11 source and routing audit
+        shell: bash
+        run: |
+          python3 - <<'PYAUDIT028'
+          from pathlib import Path
+          import re
+
+          engine_path = Path('app/src/main/kotlin/ai/closepaw/app/HybridAgentEngine.kt')
+          policy_path = Path('app/src/main/kotlin/ai/closepaw/app/RC11CorrectnessPolicy.kt')
+          test_path = Path('app/src/test/kotlin/ai/closepaw/app/RC11CorrectnessPolicyTest.kt')
+          gradle_path = Path('app/build.gradle.kts')
+          strings_path = Path('app/src/main/res/values/strings.xml')
+          report_path = Path('028-verification-report.txt')
+
+          e = engine_path.read_text(encoding='utf-8')
+          p = policy_path.read_text(encoding='utf-8')
+          t = test_path.read_text(encoding='utf-8')
+          g = gradle_path.read_text(encoding='utf-8')
+          s = strings_path.read_text(encoding='utf-8')
+
+          # A. Identity is exact and side-by-side installable.
+          identity_required = [
+              'applicationIdSuffix = ".rc11c028"',
+              'versionNameSuffix = "-rc11-c028"',
+          ]
+          for token in identity_required:
+              if g.count(token) != 1:
+                  raise SystemExit('028 identity contract failed: ' + token)
+          if s.count('<string name="app_name">ClosePaw RC11 028</string>') != 1:
+              raise SystemExit('028 app label contract failed')
+
+          # B. RC11 safety/correctness invariants.
+          required_engine = [
+              'val runEpochV11 = executionEpochV11.incrementAndGet()',
+              'executionEpochV11.incrementAndGet()',
+              'Plan lease expired because work UI changed during model call',
+              'RC11CorrectnessPolicy.admitSingleObservationAction(plan.actions)',
+              'RC11CorrectnessPolicy.modelActionAllowed(action)',
+              'MODEL_DONE_NOT_AUTHORITY',
+              'MODEL_FAIL_NOT_AUTHORITY',
+              'confirmationKeyV11',
+              'exact app not found',
+              'ambiguous exact click text',
+              'return native is ActionResult.Success',
+              'STALE_ACTION_REVALIDATION_FAILED',
+              'is HybridAction.TypeText, is HybridAction.SetTextNode -> inputVerified',
+              'RC11 provenance mismatch is non-repairable',
+              'RECOVERY_REQUIRED: could not preserve ambiguous Brain-send state',
+              'Configured Brain conversation lease changed before Send',
+              'primaryContextScoreV11',
+              'isSensitiveElement',
+          ]
+          missing = [x for x in required_engine if x not in e]
+          if missing:
+              raise SystemExit('028 missing RC11 invariant(s): ' + ', '.join(missing))
+
+          forbidden_engine = [
+              'currentPlanSource',
+              'HybridAction.Notifications',
+              'task.goal.take(600)',
+              'planQueue.addAll(plan.actions)',
+              'return performTap(platform, element.center.x, element.center.y)',
+              'categoryMatch || c == wanted',
+              'finishFailure(action.reason, impossible = true)',
+              'inputVerified || (executorSuccess && contentChanged)',
+          ]
+          present = [x for x in forbidden_engine if x in e or x in p]
+          if present:
+              raise SystemExit('028 forbidden legacy/compile behavior remains: ' + ', '.join(present))
+
+          # C. Plan source is live across plan->dispatch, but reset for every fresh observation.
+          decl = list(re.finditer(r'(?m)^([ \t]*)var selectedPlanSource = ""[ \t]*$', e))
+          reset = list(re.finditer(r'(?m)^([ \t]*)selectedPlanSource = ""[ \t]*$', e))
+          if len(decl) != 1 or len(reset) != 1:
+              raise SystemExit(f'028 plan-source declaration/reset count invalid: decl={len(decl)} reset={len(reset)}')
+          if len(reset[0].group(1)) <= len(decl[0].group(1)):
+              raise SystemExit('028 plan-source reset is not nested inside planning scope')
+
+          assignments = {
+              'PRIMARY': e.find('selectedPlanSource = "PRIMARY"'),
+              'CHAT_BRAIN': e.find('selectedPlanSource = "CHAT_BRAIN"'),
+              'CHAT_BRAIN_RESUME': e.find('selectedPlanSource = "CHAT_BRAIN_RESUME"'),
+          }
+          if any(v < 0 for v in assignments.values()):
+              raise SystemExit('028 one or more plan-source assignments are missing')
+
+          action_id_token = 'val actionId = "${task.id}-v9-${selectedPlanSource.lowercase()}-${primaryCalls + brainCalls}-${history.size + 1}"'
+          action_id = e.find(action_id_token)
+          if action_id < 0:
+              raise SystemExit('028 plan-source actionId provenance is missing')
+          if not (decl[0].start() < reset[0].start() < min(assignments.values()) < action_id):
+              raise SystemExit('028 plan-source declaration/reset/assignment/use ordering invalid')
+
+          # D. Primary-first local/custom server routing remains present, Brain remains fallback.
+          local_primary_required = [
+              'customChatBaseUrl',
+              'customApiKey',
+              'requestPrimaryPlanV9(',
+              'PRIMARY_ESCALATE',
+              'MAX_PRIMARY_UI_NODES = 36',
+              'MAX_PRIMARY_UI_CHARS = 6_000',
+              'MAX_PRIMARY_HISTORY = 4',
+              'PRIMARY_MAX_OUTPUT_TOKENS = 96L',
+          ]
+          missing_local = [x for x in local_primary_required if x not in e]
+          if missing_local:
+              raise SystemExit('028 Local Primary contract missing: ' + ', '.join(missing_local))
+
+          planning = e.find('if (planQueue.isEmpty())')
+          primary = e.find('requestPrimaryPlanV9(', planning)
+          brain = e.find('consultBrain(', primary)
+          if planning < 0 or primary < 0 or brain < 0 or not (planning < primary < brain):
+              raise SystemExit('028 Primary -> External Chat Brain fallback ordering is invalid')
+
+          brain_build = e.find('val request = buildBrainRequest(', primary)
+          if brain_build < 0 or e.find('snapshot = snapshotText,', brain_build) < 0:
+              raise SystemExit('028 External Chat Brain no longer receives the full snapshot')
+
+          # E. Provenance mismatch cannot flow into repair.
+          m = re.search(r'(?s)private suspend fun parseWithSingleRepair\(.*?\n    private ', e)
+          if not m:
+              raise SystemExit('028 parseWithSingleRepair region not found')
+          region = m.group(0)
+          mismatch = region.find('provenance mismatch is non-repairable')
+          repair_id = region.find('repairRequestId')
+          if mismatch < 0 or repair_id < 0 or mismatch > repair_id:
+              raise SystemExit('028 provenance mismatch can still flow into repair')
+
+          # F. Behavioral policy tests remain real tests, not source-only assertions.
+          required_policy = [
+              'actions.firstOrNull()?.let(::listOf).orEmpty()',
+              'is HybridAction.Tap',
+              'is HybridAction.TypeText',
+              'exactConfirmationMatch',
+          ]
+          if any(x not in p for x in required_policy):
+              raise SystemExit('028 RC11 policy object incomplete')
+          if t.count('@Test') < 3:
+              raise SystemExit('028 RC11 behavioral policy test count < 3')
+
+          with report_path.open('a', encoding='utf-8') as f:
+              f.write('Deep source audit: PASS\n')
+              f.write('RC11 safety/correctness invariants: PASS\n')
+              f.write('Plan-source scope/provenance: PASS\n')
+              f.write('Local Primary -> Brain fallback routing: PASS\n')
+              f.write('Full Brain snapshot fallback contract: PASS\n')
+              f.write('Behavioral policy tests present: PASS\n')
+
+          print('028 DEEP RC11 SOURCE + ROUTING AUDIT: PASS', flush=True)
+          PYAUDIT028
+
+      - name: 028 clean Kotlin compile gate
+        shell: bash
+        run: |
+          chmod +x ./gradlew
+          ./gradlew clean :app:compileDebugKotlin --stacktrace --no-daemon --no-configuration-cache
+          echo 'Clean Kotlin compile: PASS' >> 028-verification-report.txt
+
+      - name: 028 unit tests and clean rebuild
+        shell: bash
+        run: |
+          ./gradlew :app:testDebugUnitTest :app:assembleDebug --stacktrace --no-daemon --no-configuration-cache
+          echo 'Unit tests: PASS' >> 028-verification-report.txt
+          echo 'Debug APK rebuild: PASS' >> 028-verification-report.txt
+
+      - name: 028 APK identity integrity native-runtime and signature gate
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          mapfile -t APKS < <(find app/build/outputs/apk/debug -maxdepth 1 -type f -name '*.apk' -print)
+          if [ "${#APKS[@]}" -ne 1 ]; then
+            echo "Expected exactly one debug APK, found ${#APKS[@]}" >&2
+            exit 1
+          fi
+          APK="${APKS[0]}"
+
+          unzip -tq "$APK" >/dev/null
+          SIZE="$(stat -c %s "$APK")"
+          if [ "$SIZE" -lt 50000000 ]; then
+            echo "APK unexpectedly small: $SIZE bytes" >&2
+            exit 1
+          fi
+
+          CONTENTS="$(zipinfo -1 "$APK")"
+          for ENTRY in \
+            AndroidManifest.xml \
+            classes.dex \
+            lib/arm64-v8a/libllama.so \
+            lib/arm64-v8a/libggml.so \
+            lib/arm64-v8a/libinference_engine.so \
+            lib/arm64-v8a/libinference_engine_jni.so \
+            lib/arm64-v8a/libinference_engine_llamacpp_backend.so
+          do
+            if ! grep -Fxq "$ENTRY" <<<"$CONTENTS"; then
+              echo "Required APK entry missing: $ENTRY" >&2
+              exit 1
+            fi
+          done
+
+          AAPT="$(find "$ANDROID_HOME/build-tools" -type f -name aapt -print | sort -V | tail -n 1)"
+          APKSIGNER="$(find "$ANDROID_HOME/build-tools" -type f -name apksigner -print | sort -V | tail -n 1)"
+          if [ -z "$AAPT" ] || [ ! -x "$AAPT" ]; then
+            echo 'aapt not found in Android build-tools' >&2
+            exit 1
+          fi
+          if [ -z "$APKSIGNER" ] || [ ! -x "$APKSIGNER" ]; then
+            echo 'apksigner not found in Android build-tools' >&2
+            exit 1
+          fi
+
+          BADGING="$($AAPT dump badging "$APK")"
+          grep -Fq "package: name='ai.closepaw.rc11c028'" <<<"$BADGING"
+          grep -Fq "application-label:'ClosePaw RC11 028'" <<<"$BADGING"
+          grep -Fq "sdkVersion:'31'" <<<"$BADGING"
+          grep -Fq "targetSdkVersion:'36'" <<<"$BADGING"
+
+          "$APKSIGNER" verify --verbose "$APK" > 028-apksigner-verification.txt
+
+          APK_SHA="$(sha256sum "$APK" | awk '{print $1}')"
+          {
+            echo "APK path: $APK"
+            echo "APK size bytes: $SIZE"
+            echo "APK SHA256: $APK_SHA"
+            echo 'APK ZIP integrity: PASS'
+            echo 'APK package identity ai.closepaw.rc11c028: PASS'
+            echo 'APK app label ClosePaw RC11 028: PASS'
+            echo 'minSdk 31 / targetSdk 36: PASS'
+            echo 'arm64 local-inference runtime libraries: PASS'
+            echo 'APK signature verification: PASS'
+          } >> 028-verification-report.txt
+
+          echo "028 APK FULL INTEGRITY GATE: PASS | size=$SIZE | sha256=$APK_SHA"
+
+      - name: Upload 028 verification proof
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: 028-ClosePaw-RC11-verification-proof
+          path: |
+            028-verification-report.txt
+            028-apksigner-verification.txt
+          if-no-files-found: warn
+
+      - name: Upload generated sources on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: 028-ClosePaw-RC11-failure-sources
+          path: |
+            app/src/main/kotlin/ai/closepaw/app/HybridAgentEngine.kt
+            app/src/main/kotlin/ai/closepaw/app/HybridAgentProtocol.kt
+            app/src/main/kotlin/ai/closepaw/app/RC11CorrectnessPolicy.kt
+            app/src/test/kotlin/ai/closepaw/app/RC11CorrectnessPolicyTest.kt
+            app/build.gradle.kts
+            app/src/main/res/values/strings.xml
+            028-verification-report.txt
+          if-no-files-found: warn
+
+      - name: Upload verified source snapshot
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: 028-ClosePaw-RC11-verified-sources
+          path: |
+            app/src/main/kotlin/ai/closepaw/app/HybridAgentEngine.kt
+            app/src/main/kotlin/ai/closepaw/app/HybridAgentProtocol.kt
+            app/src/main/kotlin/ai/closepaw/app/RC11CorrectnessPolicy.kt
+            app/src/test/kotlin/ai/closepaw/app/RC11CorrectnessPolicyTest.kt
+            app/build.gradle.kts
+            app/src/main/res/values/strings.xml
+          if-no-files-found: error
+
+      - name: Upload 028 APK
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: 028-ClosePaw-RC11-APK
+          path: app/build/outputs/apk/debug/*.apk
+          if-no-files-found: error
