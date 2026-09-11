@@ -1,0 +1,173 @@
+name: 026 - ClosePaw RC11 Plan Source Scope Fix
+
+'on':
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Setup Java 17
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Reconstruct 025 and fix plan-source scope
+        shell: bash
+        run: |
+          python3 - <<'PY026'
+          from pathlib import Path
+          import subprocess
+
+          workflow_path = Path('.github/workflows/025-ClosePaw-RC11-Compile-Fix.yml')
+          if not workflow_path.exists():
+              raise SystemExit('026 missing required 025 workflow')
+
+          lines = workflow_path.read_text(encoding='utf-8').splitlines()
+          step_starts = [i for i, line in enumerate(lines) if line.startswith('      - name: ')]
+
+          def run_step(wanted: str):
+              for pos, start_i in enumerate(step_starts):
+                  end_i = step_starts[pos + 1] if pos + 1 < len(step_starts) else len(lines)
+                  name = lines[start_i].split('- name:', 1)[1].strip()
+                  if name != wanted:
+                      continue
+                  run_i = None
+                  inline = None
+                  for rel_i, line in enumerate(lines[start_i + 1:end_i], start=1):
+                      stripped = line.strip()
+                      if stripped == 'run: |':
+                          run_i = start_i + rel_i
+                          break
+                      if stripped.startswith('run: '):
+                          run_i = start_i + rel_i
+                          inline = stripped[len('run: '):]
+                          break
+                  if run_i is None:
+                      raise SystemExit(f'026 source step has no run body: {wanted}')
+                  if inline is not None:
+                      body = inline
+                  else:
+                      body_indent = len(lines[run_i]) - len(lines[run_i].lstrip()) + 2
+                      body_lines = []
+                      for line in lines[run_i + 1:end_i]:
+                          if line.strip() and (len(line) - len(line.lstrip())) < body_indent:
+                              break
+                          body_lines.append('' if not line.strip() else line[body_indent:])
+                      body = '\n'.join(body_lines) + '\n'
+                  print(f'::group::026 replay: {wanted}', flush=True)
+                  result = subprocess.run(['bash', '-e', '-o', 'pipefail', '-c', body], text=True, check=False)
+                  print('::endgroup::', flush=True)
+                  if result.returncode != 0:
+                      raise SystemExit(f'026 replay failed in {wanted} (exit {result.returncode})')
+                  return
+              raise SystemExit(f'026 source step not found: {wanted}')
+
+          # Produce the exact source that reached 025's compile gate.
+          run_step('Reconstruct 024 and apply compile-only fix')
+
+          engine_path = Path('app/src/main/kotlin/ai/closepaw/app/HybridAgentEngine.kt')
+          gradle_path = Path('app/build.gradle.kts')
+          strings_path = Path('app/src/main/res/values/strings.xml')
+          e = engine_path.read_text(encoding='utf-8')
+
+          # 025's only compiler error is line 849: selectedPlanSource is declared
+          # inside if (planQueue.isEmpty()) but used later in the execution loop.
+          # Lift that same variable one lexical scope outward; do not change routing.
+          outer_anchor = '''            val planQueue = mutableListOf<HybridAction>()
+            var lastSuccessfulAction: HybridAction? = null
+            var performedUiActionSincePlan = false
+
+            while (totalModelTurns < MAX_TOTAL_MODEL_TURNS && brainCalls < V7_MAX_BRAIN_CALLS) {'''
+          outer_replacement = '''            val planQueue = mutableListOf<HybridAction>()
+            var lastSuccessfulAction: HybridAction? = null
+            var performedUiActionSincePlan = false
+            var selectedPlanSource = ""
+
+            while (totalModelTurns < MAX_TOTAL_MODEL_TURNS && brainCalls < V7_MAX_BRAIN_CALLS) {'''
+          if e.count(outer_anchor) != 1:
+              raise SystemExit(f'026 outer selectedPlanSource anchor count={e.count(outer_anchor)}')
+          e = e.replace(outer_anchor, outer_replacement, 1)
+
+          inner_decl = '                    var selectedPlanSource = ""\n'
+          inner_reset = '                    selectedPlanSource = ""\n'
+          if e.count(inner_decl) != 1:
+              raise SystemExit(f'026 inner selectedPlanSource declaration count={e.count(inner_decl)}')
+          e = e.replace(inner_decl, inner_reset, 1)
+
+          # Guard the exact failing use and the routing assignments.
+          required = [
+              'var selectedPlanSource = ""',
+              'selectedPlanSource = "PRIMARY"',
+              'selectedPlanSource = "CHAT_BRAIN"',
+              'selectedPlanSource = "CHAT_BRAIN_RESUME"',
+              'val actionId = "${task.id}-v9-${selectedPlanSource.lowercase()}-${primaryCalls + brainCalls}-${history.size + 1}"',
+          ]
+          for token in required:
+              if token not in e:
+                  raise SystemExit('026 required plan-source contract missing: ' + token)
+          if e.count('var selectedPlanSource = ""') != 1:
+              raise SystemExit('026 selectedPlanSource must have exactly one declaration')
+
+          engine_path.write_text(e, encoding='utf-8')
+
+          # Side-by-side identity only.
+          g = gradle_path.read_text(encoding='utf-8')
+          if 'applicationIdSuffix = ".rc11c025"' not in g:
+              raise SystemExit('026 expected 025 applicationIdSuffix anchor missing')
+          g = g.replace('applicationIdSuffix = ".rc11c025"', 'applicationIdSuffix = ".rc11c026"', 1)
+          if 'versionNameSuffix = "-rc11-c025"' not in g:
+              raise SystemExit('026 expected 025 versionNameSuffix anchor missing')
+          g = g.replace('versionNameSuffix = "-rc11-c025"', 'versionNameSuffix = "-rc11-c026"', 1)
+          gradle_path.write_text(g, encoding='utf-8')
+
+          s = strings_path.read_text(encoding='utf-8')
+          if '<string name="app_name">ClosePaw RC11 025</string>' not in s:
+              raise SystemExit('026 expected 025 app_name anchor missing')
+          s = s.replace(
+              '<string name="app_name">ClosePaw RC11 025</string>',
+              '<string name="app_name">ClosePaw RC11 026</string>',
+              1,
+          )
+          strings_path.write_text(s, encoding='utf-8')
+
+          print('026 PLAN-SOURCE SCOPE FIX: PASS', flush=True)
+          PY026
+
+      - name: 026 compile gate
+        shell: bash
+        run: |
+          chmod +x ./gradlew
+          ./gradlew :app:compileDebugKotlin --stacktrace --no-daemon
+
+      - name: 026 unit tests and rebuild
+        shell: bash
+        run: |
+          ./gradlew :app:testDebugUnitTest :app:assembleDebug --stacktrace --no-daemon
+
+      - name: Upload generated sources on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: 026-ClosePaw-RC11-failure-sources
+          path: |
+            app/src/main/kotlin/ai/closepaw/app/HybridAgentEngine.kt
+            app/src/main/kotlin/ai/closepaw/app/HybridAgentProtocol.kt
+            app/src/main/kotlin/ai/closepaw/app/RC11CorrectnessPolicy.kt
+            app/src/test/kotlin/ai/closepaw/app/RC11CorrectnessPolicyTest.kt
+            app/build.gradle.kts
+            app/src/main/res/values/strings.xml
+          if-no-files-found: warn
+
+      - name: Upload APK
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: 026-ClosePaw-RC11-APK
+          path: app/build/outputs/apk/debug/*.apk
+          if-no-files-found: error
