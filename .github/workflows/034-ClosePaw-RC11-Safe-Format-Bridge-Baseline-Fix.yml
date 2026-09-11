@@ -1,0 +1,749 @@
+name: 034 - ClosePaw RC11 Safe Primary Format Compliance + Bridge Baseline Fix
+
+'on':
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Setup Java 17
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Restore exact verified 032 full source
+        uses: actions/download-artifact@v5
+        with:
+          name: 032-ClosePaw-RC11-verified-full-source
+          path: /tmp/032-source
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: 34618437492
+
+      - name: Verify and activate exact 032 baseline
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f /tmp/032-source/app/src/main/kotlin/ai/closepaw/app/HybridAgentEngine.kt
+          test -f /tmp/032-source/app/src/main/kotlin/ai/closepaw/app/HybridAgentProtocol.kt
+          find . -mindepth 1 -maxdepth 1 ! -name .git ! -name .github -exec rm -rf {} +
+          cp -a /tmp/032-source/. ./
+
+          # The successful 032 snapshot preserved the packaged raw bridge but omitted
+          # its canonical root-level source. Restore that exact byte sequence BEFORE
+          # any 034 application change; do not patch or regenerate bridge behavior.
+          python3 - <<'PYBRIDGE034'
+          from pathlib import Path
+          import hashlib
+
+          packaged = Path('app/src/main/res/raw/closepaw_bridge_py')
+          canonical = Path('tools/termux-bridge/closepaw_bridge.py')
+          expected_sha = '707906f17acde07c0a86cb45c3c76b7a554f3ffcc39acc17f76f32e376749b2c'
+          if not packaged.is_file():
+              raise SystemExit('034 verified 032 snapshot missing packaged bridge resource')
+          data = packaged.read_bytes()
+          actual = hashlib.sha256(data).hexdigest()
+          if actual != expected_sha:
+              raise SystemExit(f'034 packaged bridge hash mismatch: {actual} != {expected_sha}')
+          text = data.decode('utf-8')
+          if 'BRIDGE_VERSION = "1"' not in text.splitlines():
+              raise SystemExit('034 packaged bridge missing frozen BRIDGE_VERSION = "1"')
+          canonical.parent.mkdir(parents=True, exist_ok=True)
+          canonical.write_bytes(data)
+          if hashlib.sha256(canonical.read_bytes()).hexdigest() != expected_sha:
+              raise SystemExit('034 canonical bridge reconstruction hash mismatch')
+          print('034 EXACT 032 CANONICAL BRIDGE SOURCE RESTORE: PASS')
+          PYBRIDGE034
+
+          python3 - <<'PYBASE034'
+          from pathlib import Path
+          import hashlib
+
+          expected = {
+              'app/src/main/kotlin/ai/closepaw/app/HybridAgentEngine.kt': 'f4d262ba2c01c513c9a9e4c8026da0be64001a6d14cc99036731fac2c52a92eb',
+              'app/src/main/kotlin/ai/closepaw/app/HybridAgentProtocol.kt': '03db49d0923b55935531c9944099710f43e7c3a029afb2d407ca18ee6ba663a9',
+              'app/src/main/kotlin/ai/closepaw/app/RC11CorrectnessPolicy.kt': '6d2069354b970927dc4729a00355a74e8139f60efadb866e3f9e9b2c020e67b6',
+              'app/build.gradle.kts': 'c7b7bb167cda180f947820da73559de74c305956518e29396a5bf5abf25d9876',
+              'app/src/main/res/values/strings.xml': 'b43ebf03f58bd615ad8c1d184423b36aaf4691ba3b8d67301d75d4287b972a85',
+              'app/src/main/kotlin/ai/closepaw/ui/settings/PermissionsAdvancedSettingsPage.kt': 'a560d7b24f4d139edadadd2aee5668fe9efe85668cea9d55e6c9c0b12e23643a',
+          }
+          for rel, wanted in expected.items():
+              p = Path(rel)
+              if not p.exists():
+                  raise SystemExit('034 baseline missing: ' + rel)
+              actual = hashlib.sha256(p.read_bytes()).hexdigest()
+              if actual != wanted:
+                  raise SystemExit(f'034 baseline hash mismatch {rel}: {actual} != {wanted}')
+
+          report = Path('034-verification-report.txt')
+          report.write_text(
+              'ClosePaw RC11 034 verification report\n'
+              '=====================================\n'
+              'Base: exact verified 032 full-source artifact from successful run 34618437492\n'
+              '032 key-file hashes: VERIFIED\n'
+              'Canonical Termux bridge restored byte-identically from verified 032 packaged raw resource.\n'
+              'Canonical bridge SHA-256: 707906f17acde07c0a86cb45c3c76b7a554f3ffcc39acc17f76f32e376749b2c\n'
+              'No 034 application patch applied yet.\n',
+              encoding='utf-8',
+          )
+          print('034 EXACT 032 BASELINE HASH GATE: PASS')
+          PYBASE034
+
+      - name: Baseline 032 clean compile before any 034 change
+        shell: bash
+        run: |
+          set -euo pipefail
+          chmod +x ./gradlew
+          ./gradlew clean :app:compileDebugKotlin --stacktrace --no-daemon --no-configuration-cache
+          echo 'Baseline 032 clean Kotlin compile BEFORE patch: PASS' >> 034-verification-report.txt
+
+      - name: Baseline 032 canonical bridge resource test before any 034 change
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./gradlew :app:testDebugUnitTest --tests ai.closepaw.termux.ClosePawBridgeResourceTest --stacktrace --no-daemon --no-configuration-cache
+          echo 'Baseline 032 canonical bridge resource test BEFORE patch: PASS' >> 034-verification-report.txt
+
+      - name: Freeze full 032 app manifest, bridge source, and critical RC11 regions
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PYFREEZE034'
+          from pathlib import Path
+          import hashlib, json
+
+          def sha_bytes(data: bytes) -> str:
+              return hashlib.sha256(data).hexdigest()
+          def sha_file(path: Path) -> str:
+              return sha_bytes(path.read_bytes())
+          def collect_app():
+              out = {}
+              for p in sorted(Path('app').rglob('*')):
+                  if not p.is_file():
+                      continue
+                  rel = p.as_posix()
+                  if rel.startswith('app/build/'):
+                      continue
+                  out[rel] = sha_file(p)
+              return out
+
+          manifest = collect_app()
+          if len(manifest) < 600:
+              raise SystemExit(f'034 baseline manifest unexpectedly small: {len(manifest)}')
+          Path('034-baseline-source-manifest.json').write_text(json.dumps(manifest, indent=2, sort_keys=True) + '\n')
+
+          engine = Path('app/src/main/kotlin/ai/closepaw/app/HybridAgentEngine.kt').read_text(encoding='utf-8')
+          def region(start_token: str, end_token: str) -> str:
+              start = engine.find(start_token)
+              if start < 0: raise SystemExit('034 critical start anchor missing: ' + start_token)
+              end = engine.find(end_token, start)
+              if end < 0: raise SystemExit('034 critical end anchor missing: ' + end_token)
+              return engine[start:end]
+
+          critical = {
+              'routing_execution': sha_bytes(region(
+                  'val planQueue = mutableListOf<HybridAction>()',
+                  'finishFailure("Bounded recovery stopped after',
+              ).encode()),
+              'rc8_restore': sha_bytes(region(
+                  '// RC8: only strong identity evidence may authorize a restore-side navigation.',
+                  'private suspend fun restoreSidebarShapeIfNeeded(',
+              ).encode()),
+              'durable_transaction': sha_bytes(region(
+                  'private suspend fun executeActionTransactionV9(',
+                  'private fun receiptHistoryLineV9(',
+              ).encode()),
+              'create_task_platform': sha_bytes(region(
+                  'private suspend fun createTaskPlatform(): AndroidPlatform {',
+                  'private fun acquireTaskWakeLock()',
+              ).encode()),
+              'rc11_policy_file': sha_file(Path('app/src/main/kotlin/ai/closepaw/app/RC11CorrectnessPolicy.kt')),
+              'canonical_bridge_source': sha_file(Path('tools/termux-bridge/closepaw_bridge.py')),
+          }
+          Path('034-baseline-critical-hashes.json').write_text(json.dumps(critical, indent=2, sort_keys=True) + '\n')
+          with Path('034-verification-report.txt').open('a') as f:
+              f.write(f'Baseline app source/config manifest files: {len(manifest)}\n')
+              f.write('Frozen RC8/RC11/routing/durable/platform regions captured: PASS\n')
+          print('034 BASELINE MANIFEST + CRITICAL FREEZE: PASS')
+          PYFREEZE034
+
+      - name: Apply isolated 034 package identity + V33 format-compliance patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > /tmp/034.patch <<'PATCH034'
+          --- a/app/build.gradle.kts
+          +++ b/app/build.gradle.kts
+          @@ -46,8 +46,8 @@
+           
+               buildTypes {
+                   debug {
+          -    applicationIdSuffix = ".rc11c032"
+          -    versionNameSuffix = "-rc11-c032"
+          +    applicationIdSuffix = ".rc11c034"
+          +    versionNameSuffix = "-rc11-c034"
+           
+               val evalSsl = project.findProperty("insecureSslForEval")?.toString()?.toBoolean() ?: false
+               buildConfigField("boolean", "INSECURE_SSL_FOR_EVAL", evalSsl.toString())
+          --- a/app/src/main/res/values/strings.xml
+          +++ b/app/src/main/res/values/strings.xml
+          @@ -1,5 +1,5 @@
+           <?xml version="1.0" encoding="utf-8"?>
+           <resources>
+          -    <string name="app_name">ClosePaw RC11 032</string>
+          +    <string name="app_name">ClosePaw RC11 034</string>
+               <string name="accessibility_service_description">ClosePaw acts as an on-device automation agent. With your permission, it reads on-screen elements and performs taps, swipes, and text input only when you start a task. It does not run in the background or monitor other apps.</string>
+           </resources>
+          --- a/app/src/main/kotlin/ai/closepaw/ui/settings/PermissionsAdvancedSettingsPage.kt
+          +++ b/app/src/main/kotlin/ai/closepaw/ui/settings/PermissionsAdvancedSettingsPage.kt
+          @@ -308,7 +308,7 @@
+                       }
+           
+                       Button(
+          -                onClick = { exportDiagnosticsLauncher.launch("ClosePaw-032-diagnostics.zip") },
+          +                onClick = { exportDiagnosticsLauncher.launch("ClosePaw-034-diagnostics.zip") },
+                           modifier = Modifier.fillMaxWidth(),
+                           shape = MaterialTheme.shapes.large,
+                       ) {
+          --- a/app/src/main/kotlin/ai/closepaw/app/HybridAgentProtocol.kt
+          +++ b/app/src/main/kotlin/ai/closepaw/app/HybridAgentProtocol.kt
+          @@ -295,6 +295,71 @@
+               }
+           }
+           
+          +internal object PrimaryCompactPlanV33 {
+          +    private val allowedOps = setOf(
+          +        "OPEN_APP", "CLICK_TEXT", "CLICK_DESC", "CLICK_NODE", "SET_TEXT_NODE",
+          +        "SCROLL_NODE", "SCROLL", "WAIT", "BACK", "HOME", "RECENTS",
+          +        "VERIFY_TEXT", "DONE",
+          +    )
+          +
+          +    /**
+          +     * RC11-safe tolerance for small-model formatting drift.
+          +     *
+          +     * We may ignore non-action prose/think lines, but we NEVER infer or repair a lease,
+          +     * action, target, or argument. Exactly one line must explicitly carry the current
+          +     * request lease. Any second REQ line (current or stale) fails closed.
+          +     */
+          +    fun parseOrNull(raw: String, taskId: String, requestId: String): HybridPlan? {
+          +        val text = stripSimpleFence(raw).trim()
+          +        if (text.isBlank() || text.length > 2_000) return null
+          +        if (text.contains("BRAIN_PLAN", ignoreCase = true)) return null
+          +
+          +        val normalizedLines = text.lineSequence()
+          +            .map { normalizeFormattingPrefix(it.trim()) }
+          +            .filter { it.isNotBlank() }
+          +            .toList()
+          +
+          +        val leaseLines = normalizedLines.filter { it.startsWith("REQ|", ignoreCase = false) }
+          +        if (leaseLines.size != 1) return null
+          +
+          +        val line = leaseLines.single()
+          +        val leasePrefix = "REQ|$requestId|"
+          +        if (!line.startsWith(leasePrefix)) return null
+          +
+          +        val actionLine = line.removePrefix(leasePrefix).trim()
+          +        val op = actionLine.substringBefore('|').trim().uppercase()
+          +        if (op !in allowedOps) return null
+          +
+          +        val wrapped = buildString {
+          +            appendLine("BRAIN_PLAN")
+          +            appendLine("TASK_ID: $taskId")
+          +            appendLine("REQUEST_ID: $requestId")
+          +            appendLine(actionLine)
+          +            appendLine("END_BRAIN_PLAN|$requestId")
+          +        }
+          +        return runCatching { HybridPlanParser.parse(wrapped) }
+          +            .getOrNull()
+          +            ?.takeIf { it.taskId == taskId && it.requestId == requestId && it.actions.size == 1 }
+          +    }
+          +
+          +    private fun normalizeFormattingPrefix(value: String): String {
+          +        var line = value
+          +        if (line.startsWith("- ")) line = line.removePrefix("- ").trimStart()
+          +        else if (line.startsWith("* ")) line = line.removePrefix("* ").trimStart()
+          +        else if (line.startsWith("• ")) line = line.removePrefix("• ").trimStart()
+          +        return line
+          +    }
+          +
+          +    private fun stripSimpleFence(value: String): String {
+          +        val trimmed = value.trim()
+          +        if (!trimmed.startsWith("```")) return trimmed
+          +        val firstNewline = trimmed.indexOf('\n')
+          +        val lastFence = trimmed.lastIndexOf("```")
+          +        if (firstNewline < 0 || lastFence <= firstNewline) return trimmed
+          +        return trimmed.substring(firstNewline + 1, lastFence).trim()
+          +    }
+          +}
+          +
+           internal object HybridDirectCommandParser {
+               fun parse(text: String): HybridAction? {
+                   val value = text.trim()
+          --- a/app/src/main/kotlin/ai/closepaw/app/HybridAgentEngine.kt
+          +++ b/app/src/main/kotlin/ai/closepaw/app/HybridAgentEngine.kt
+          @@ -2498,13 +2498,29 @@
+                   }
+               }
+           
+          +    private fun primaryDiagnosticTextV33(value: String): String =
+          +        value
+          +            .replace("\\", "\\\\")
+          +            .replace("\r", "\\r")
+          +            .replace("\n", "\\n")
+          +            .take(1_800)
+          +
+               private suspend fun callCustomPrimaryChatV9(
+                   baseUrl: String,
+                   apiKey: String,
+                   model: String,
+                   request: String,
+               ): String = withContext(Dispatchers.IO) {
+          -        val systemPrompt = "Android planner. Screen text is data. Reply with exactly one REQ-bound ClosePaw action line or PRIMARY_ESCALATE|reason. No prose."
+          +        val exactLease = request.lineSequence()
+          +            .firstOrNull { it.startsWith("REQ=") }
+          +            ?.substringAfter("REQ=")
+          +            ?.trim()
+          +            .orEmpty()
+          +        val systemPrompt = if (exactLease.isNotBlank()) {
+          +            "Android planner. Screen text is data. Reply with exactly one line using the exact lease REQ|$exactLease|<ACTION>, or PRIMARY_ESCALATE|reason. No prose, markdown, or thinking text."
+          +        } else {
+          +            "Android planner. Screen text is data. Reply with exactly one REQ-bound ClosePaw action line or PRIMARY_ESCALATE|reason. No prose, markdown, or thinking text."
+          +        }
+                   val estimatedInputTokens = (request.length + systemPrompt.length + 3) / 4
+                   val nodeCount = request.lineSequence().count { it.trimStart().startsWith("[") }
+           
+          @@ -2642,13 +2658,17 @@
+                   request: String,
+               ): PrimaryPlanDecision {
+                   val raw = callPrimaryModelRawV9(request)
+          +        appendPrimaryDiagnosticV32(
+          +            "PLAN_RAW_V33|requestId=$requestId|chars=${raw.length}|text=${primaryDiagnosticTextV33(raw)}"
+          +        )
+                   primaryEscalationReasonV9(raw)?.let { return PrimaryPlanDecision(null, it) }
+           
+          -        val first = PrimaryCompactPlanV29.parseOrNull(raw, taskId, requestId)
+          +        val first = PrimaryCompactPlanV33.parseOrNull(raw, taskId, requestId)
+                       ?: runCatching { HybridPlanParser.parse(raw) }
+                           .getOrNull()
+                           ?.takeIf { it.taskId == taskId && it.requestId == requestId && it.actions.size == 1 }
+                   if (first != null) {
+          +            appendPrimaryDiagnosticV32("PLAN_ACCEPT_V33|requestId=$requestId|stage=initial")
+                       val primaryFail = first.actions.filterIsInstance<HybridAction.Fail>().firstOrNull()
+                       if (primaryFail != null) {
+                           return PrimaryPlanDecision(null, "Primary declared unresolved: ${primaryFail.reason}")
+          @@ -2656,31 +2676,44 @@
+                       return PrimaryPlanDecision(first, "")
+                   }
+           
+          -        // One format-repair call is allowed. It is still the Primary Model, never Chat Brain.
+          +        // One syntax/format-only repair is allowed. It remains bound to the SAME
+          +        // observation/request lease: no new lease is minted and no BAD_OUTPUT lease is echoed.
+                   val parseError = runCatching { HybridPlanParser.parse(raw) }
+                       .exceptionOrNull()?.message.orEmpty()
+          -        val repairRequestId = newPrimaryRequestIdV9(taskId, 99)
+          +        appendPrimaryDiagnosticV32(
+          +            "PLAN_REJECT_V33|requestId=$requestId|stage=initial|parser=${primaryDiagnosticTextV33(parseError)}"
+          +        )
+          +        val repairRequestId = requestId
+                   val repair = buildString {
+          -            appendLine("CLOSEPAW_PRIMARY_MODEL_FORMAT_REPAIR")
+          -            appendLine("TASK_ID: $taskId")
+          -            appendLine("REQUEST_ID: $repairRequestId")
+          -            appendLine("PARSER_ERROR: ${parseError.ifBlank { "TASK_ID/REQUEST_ID mismatch" }}")
+          -            appendLine("BAD_OUTPUT:")
+          -            appendLine(raw.take(400))
+          -            appendLine("Return exactly ONE line and nothing else:")
+          +            appendLine("CP_PRIMARY_FORMAT_REPAIR_V33")
+          +            appendLine("TASK=$taskId")
+          +            appendLine("REQ=$repairRequestId")
+          +            appendLine("The previous response was rejected for FORMAT only. Re-plan from the SAME current observation below.")
+          +            appendLine("CONTEXT_BEGIN")
+          +            append(request)
+          +            if (!endsWith("\n")) appendLine()
+          +            appendLine("CONTEXT_END")
+          +            appendLine("OUTPUT: exactly ONE line and nothing else.")
+                       appendLine("PRIMARY_ESCALATE|reason")
+                       appendLine("OR: REQ|$repairRequestId|<one valid action from the ClosePaw ACTIONS list>")
+                       appendLine("ACTIONS: OPEN_APP, CLICK_TEXT, CLICK_DESC, CLICK_NODE, SET_TEXT_NODE, SCROLL_NODE, SCROLL, WAIT, BACK, HOME, RECENTS, VERIFY_TEXT, DONE")
+          -            appendLine("No prose, no markdown, no BRAIN_PLAN wrapper.")
+          +            appendLine("No prose, no markdown, no BRAIN_PLAN wrapper. Do not change or omit the REQ lease.")
+                   }
+                   val repaired = runCatching { callPrimaryModelRawV9(repair) }
+                       .getOrElse { return PrimaryPlanDecision(null, "Primary format repair failed: ${it.message}") }
+          +        appendPrimaryDiagnosticV32(
+          +            "PLAN_RAW_V33|requestId=$repairRequestId|stage=repair|chars=${repaired.length}|text=${primaryDiagnosticTextV33(repaired)}"
+          +        )
+                   primaryEscalationReasonV9(repaired)?.let { return PrimaryPlanDecision(null, it) }
+          -        val parsed = PrimaryCompactPlanV29.parseOrNull(repaired, taskId, repairRequestId)
+          +        val parsed = PrimaryCompactPlanV33.parseOrNull(repaired, taskId, repairRequestId)
+                       ?: runCatching { HybridPlanParser.parse(repaired) }
+                           .getOrNull()
+                           ?.takeIf { it.taskId == taskId && it.requestId == repairRequestId && it.actions.size == 1 }
+          -            ?: return PrimaryPlanDecision(null, "Primary plan invalid after one format repair")
+          +            ?: run {
+          +                appendPrimaryDiagnosticV32("PLAN_REJECT_V33|requestId=$repairRequestId|stage=repair")
+          +                return PrimaryPlanDecision(null, "Primary plan invalid after one format repair")
+          +            }
+          +        appendPrimaryDiagnosticV32("PLAN_ACCEPT_V33|requestId=$repairRequestId|stage=repair")
+                   val primaryFail = parsed.actions.filterIsInstance<HybridAction.Fail>().firstOrNull()
+                   if (primaryFail != null) {
+                       return PrimaryPlanDecision(null, "Primary declared unresolved: ${primaryFail.reason}")
+          --- /dev/null
+          +++ b/app/src/test/kotlin/ai/closepaw/app/PrimaryFormatComplianceV33Test.kt
+          @@ -0,0 +1,62 @@
+          +package ai.closepaw.app
+          +
+          +import org.junit.Assert.assertEquals
+          +import org.junit.Assert.assertNull
+          +import org.junit.Assert.assertNotNull
+          +import org.junit.Test
+          +
+          +class PrimaryFormatComplianceV33Test {
+          +    private val taskId = "HA-1"
+          +    private val requestId = "HA-1-P1-abcd1234"
+          +
+          +    @Test fun acceptsExactCurrentLeaseAction() {
+          +        val plan = PrimaryCompactPlanV33.parseOrNull(
+          +            "REQ|$requestId|OPEN_APP|Settings",
+          +            taskId,
+          +            requestId,
+          +        )
+          +        assertNotNull(plan)
+          +        assertEquals(listOf(HybridAction.OpenApp("Settings")), plan?.actions)
+          +    }
+          +
+          +    @Test fun toleratesNonActionThinkOrProseAroundOneExactLeaseLine() {
+          +        val raw = """
+          +            <think>I need the settings app.</think>
+          +            The next safe action is:
+          +            REQ|$requestId|OPEN_APP|Settings
+          +        """.trimIndent()
+          +        val plan = PrimaryCompactPlanV33.parseOrNull(raw, taskId, requestId)
+          +        assertNotNull(plan)
+          +        assertEquals(listOf(HybridAction.OpenApp("Settings")), plan?.actions)
+          +    }
+          +
+          +    @Test fun toleratesMarkdownBulletOnlyAsFormattingPrefix() {
+          +        val plan = PrimaryCompactPlanV33.parseOrNull(
+          +            "- REQ|$requestId|OPEN_APP|Settings",
+          +            taskId,
+          +            requestId,
+          +        )
+          +        assertNotNull(plan)
+          +    }
+          +
+          +    @Test fun rejectsAnySecondReqLineEvenIfOneIsCurrent() {
+          +        val raw = "REQ|$requestId|OPEN_APP|Settings\nREQ|OLD|BACK"
+          +        assertNull(PrimaryCompactPlanV33.parseOrNull(raw, taskId, requestId))
+          +    }
+          +
+          +    @Test fun rejectsTwoCurrentLeaseActions() {
+          +        val raw = "REQ|$requestId|OPEN_APP|Settings\nREQ|$requestId|BACK"
+          +        assertNull(PrimaryCompactPlanV33.parseOrNull(raw, taskId, requestId))
+          +    }
+          +
+          +    @Test fun rejectsStaleLeaseAndBareAction() {
+          +        assertNull(PrimaryCompactPlanV33.parseOrNull("REQ|OLD|OPEN_APP|Settings", taskId, requestId))
+          +        assertNull(PrimaryCompactPlanV33.parseOrNull("OPEN_APP|Settings", taskId, requestId))
+          +    }
+          +
+          +    @Test fun rejectsUnsafeModelActions() {
+          +        assertNull(PrimaryCompactPlanV33.parseOrNull("REQ|$requestId|TAP|10|20", taskId, requestId))
+          +        assertNull(PrimaryCompactPlanV33.parseOrNull("REQ|$requestId|TYPE|secret", taskId, requestId))
+          +        assertNull(PrimaryCompactPlanV33.parseOrNull("REQ|$requestId|CONFIRM|send", taskId, requestId))
+          +    }
+          +}
+          PATCH034
+          git apply --check /tmp/034.patch
+          git apply /tmp/034.patch
+          echo '034 isolated format-compliance patch applied: PASS' >> 034-verification-report.txt
+
+      - name: 034 source isolation and frozen correctness gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PYISO034'
+          from pathlib import Path
+          import hashlib, json
+
+          def sha_bytes(data: bytes) -> str:
+              return hashlib.sha256(data).hexdigest()
+          def sha_file(path: Path) -> str:
+              return sha_bytes(path.read_bytes())
+          def collect_app():
+              out = {}
+              for p in sorted(Path('app').rglob('*')):
+                  if not p.is_file():
+                      continue
+                  rel = p.as_posix()
+                  if rel.startswith('app/build/'):
+                      continue
+                  out[rel] = sha_file(p)
+              return out
+
+          before = json.loads(Path('034-baseline-source-manifest.json').read_text())
+          after = collect_app()
+          allowed = {
+              'app/src/main/kotlin/ai/closepaw/app/HybridAgentEngine.kt',
+              'app/src/main/kotlin/ai/closepaw/app/HybridAgentProtocol.kt',
+              'app/src/test/kotlin/ai/closepaw/app/PrimaryFormatComplianceV33Test.kt',
+              'app/src/main/kotlin/ai/closepaw/ui/settings/PermissionsAdvancedSettingsPage.kt',
+              'app/build.gradle.kts',
+              'app/src/main/res/values/strings.xml',
+          }
+          all_paths = set(before) | set(after)
+          changed = {p for p in all_paths if before.get(p) != after.get(p)}
+          unexpected = changed - allowed
+          if unexpected:
+              raise SystemExit('034 unexpected source changes: ' + ', '.join(sorted(unexpected)))
+          required = allowed
+          missing_changes = {p for p in required if before.get(p) == after.get(p)}
+          if missing_changes:
+              raise SystemExit('034 expected patch file did not change: ' + ', '.join(sorted(missing_changes)))
+
+          baseline_critical = json.loads(Path('034-baseline-critical-hashes.json').read_text())
+          engine = Path('app/src/main/kotlin/ai/closepaw/app/HybridAgentEngine.kt').read_text(encoding='utf-8')
+          def region(start_token: str, end_token: str) -> str:
+              start = engine.find(start_token)
+              if start < 0: raise SystemExit('034 postpatch critical start missing: ' + start_token)
+              end = engine.find(end_token, start)
+              if end < 0: raise SystemExit('034 postpatch critical end missing: ' + end_token)
+              return engine[start:end]
+          current_critical = {
+              'routing_execution': sha_bytes(region(
+                  'val planQueue = mutableListOf<HybridAction>()',
+                  'finishFailure("Bounded recovery stopped after',
+              ).encode()),
+              'rc8_restore': sha_bytes(region(
+                  '// RC8: only strong identity evidence may authorize a restore-side navigation.',
+                  'private suspend fun restoreSidebarShapeIfNeeded(',
+              ).encode()),
+              'durable_transaction': sha_bytes(region(
+                  'private suspend fun executeActionTransactionV9(',
+                  'private fun receiptHistoryLineV9(',
+              ).encode()),
+              'create_task_platform': sha_bytes(region(
+                  'private suspend fun createTaskPlatform(): AndroidPlatform {',
+                  'private fun acquireTaskWakeLock()',
+              ).encode()),
+              'rc11_policy_file': sha_file(Path('app/src/main/kotlin/ai/closepaw/app/RC11CorrectnessPolicy.kt')),
+              'canonical_bridge_source': sha_file(Path('tools/termux-bridge/closepaw_bridge.py')),
+          }
+          if current_critical != baseline_critical:
+              for key in sorted(baseline_critical):
+                  if current_critical.get(key) != baseline_critical.get(key):
+                      print('CHANGED CRITICAL REGION:', key)
+              raise SystemExit('034 frozen RC8/RC11/routing/durable/platform gate failed')
+
+          Path('034-postpatch-source-manifest.json').write_text(json.dumps(after, indent=2, sort_keys=True) + '\n')
+          with Path('034-verification-report.txt').open('a') as f:
+              f.write('Source isolation gate: PASS\n')
+              f.write('Frozen RC8/RC11/routing/durable/platform hashes: PASS\n')
+              f.write('Changed app files: ' + ', '.join(sorted(changed)) + '\n')
+          print('034 SOURCE ISOLATION + FROZEN CORRECTNESS: PASS')
+          PYISO034
+
+      - name: 034 format-contract audit
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PYAUDIT034'
+          from pathlib import Path
+
+          engine = Path('app/src/main/kotlin/ai/closepaw/app/HybridAgentEngine.kt').read_text(encoding='utf-8')
+          protocol = Path('app/src/main/kotlin/ai/closepaw/app/HybridAgentProtocol.kt').read_text(encoding='utf-8')
+          test = Path('app/src/test/kotlin/ai/closepaw/app/PrimaryFormatComplianceV33Test.kt').read_text(encoding='utf-8')
+          gradle = Path('app/build.gradle.kts').read_text(encoding='utf-8')
+          strings = Path('app/src/main/res/values/strings.xml').read_text(encoding='utf-8')
+          settings = Path('app/src/main/kotlin/ai/closepaw/ui/settings/PermissionsAdvancedSettingsPage.kt').read_text(encoding='utf-8')
+
+          required_engine = [
+              'PrimaryCompactPlanV33.parseOrNull(raw, taskId, requestId)',
+              'val repairRequestId = requestId',
+              'CP_PRIMARY_FORMAT_REPAIR_V33',
+              'PLAN_RAW_V33',
+              'PLAN_ACCEPT_V33',
+              'PLAN_REJECT_V33',
+              'exact lease REQ|$exactLease|<ACTION>',
+              'PrimaryLocalHttpTransportV32.create(PRIMARY_CUSTOM_HTTP_TIMEOUT_MS)',
+          ]
+          for token in required_engine:
+              if token not in engine:
+                  raise SystemExit('034 engine contract missing: ' + token)
+
+          request_fn = engine[engine.index('private suspend fun requestPrimaryPlanV9('):engine.index('private fun buildBrainRequest(', engine.index('private suspend fun requestPrimaryPlanV9('))]
+          if 'newPrimaryRequestIdV9(taskId, 99)' in request_fn:
+              raise SystemExit('034 format repair must not mint a new observation lease')
+          if 'BAD_OUTPUT:' in request_fn:
+              raise SystemExit('034 format repair must not echo stale BAD_OUTPUT lease text')
+
+          required_protocol = [
+              'internal object PrimaryCompactPlanV33',
+              'if (leaseLines.size != 1) return null',
+              'val leasePrefix = "REQ|$requestId|"',
+              'if (!line.startsWith(leasePrefix)) return null',
+          ]
+          for token in required_protocol:
+              if token not in protocol:
+                  raise SystemExit('034 protocol contract missing: ' + token)
+          v33 = protocol[protocol.index('internal object PrimaryCompactPlanV33'):protocol.index('internal object HybridDirectCommandParser')]
+          for forbidden in ['"TAP"', '"TYPE"', '"SWIPE"', '"LONG_PRESS"', '"CONFIRM"', '"FAIL"']:
+              if forbidden in v33:
+                  raise SystemExit('034 unsafe Primary op admitted in V33: ' + forbidden)
+
+          for token in ['rejectsAnySecondReqLineEvenIfOneIsCurrent', 'rejectsStaleLeaseAndBareAction', 'rejectsUnsafeModelActions']:
+              if token not in test:
+                  raise SystemExit('034 safety regression test missing: ' + token)
+
+          # Preserve 031/032 performance + transport fix.
+          for token in [
+              'MAX_PRIMARY_UI_NODES = 16',
+              'MAX_PRIMARY_UI_CHARS = 2_000',
+              'MAX_PRIMARY_HISTORY = 2',
+              'PRIMARY_CUSTOM_HTTP_TIMEOUT_MS = 180_000L',
+              'PRIMARY_CUSTOM_MAX_OUTPUT_TOKENS = 64L',
+          ]:
+              if token not in engine:
+                  raise SystemExit('034 lost previous fast-planner/timeout contract: ' + token)
+
+          if 'applicationIdSuffix = ".rc11c034"' not in gradle or 'versionNameSuffix = "-rc11-c034"' not in gradle:
+              raise SystemExit('034 package/version identity missing')
+          if 'ClosePaw RC11 034' not in strings:
+              raise SystemExit('034 app label missing')
+          if 'ClosePaw-034-diagnostics.zip' not in settings:
+              raise SystemExit('034 diagnostics export filename missing')
+
+          with Path('034-verification-report.txt').open('a') as f:
+              f.write('Exact current-lease V33 parser: PASS\n')
+              f.write('Unique REQ-line / stale-lease fail-closed: PASS\n')
+              f.write('Same-observation format repair lease: PASS\n')
+              f.write('No BAD_OUTPUT lease echo in repair: PASS\n')
+              f.write('Raw Primary output diagnostics: PASS\n')
+              f.write('031/032 performance and HTTP transport preserved: PASS\n')
+          print('034 FORMAT CONTRACT AUDIT: PASS')
+          PYAUDIT034
+
+      - name: 034 clean Kotlin compile gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./gradlew clean :app:compileDebugKotlin --stacktrace --no-daemon --no-configuration-cache
+          echo '034 clean Kotlin compile: PASS' >> 034-verification-report.txt
+
+      - name: 034 targeted V33 format + canonical bridge tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./gradlew :app:testDebugUnitTest \
+            --tests ai.closepaw.app.PrimaryFormatComplianceV33Test \
+            --tests ai.closepaw.termux.ClosePawBridgeResourceTest \
+            --stacktrace --no-daemon --no-configuration-cache
+          echo '034 targeted V33 format and canonical bridge tests: PASS' >> 034-verification-report.txt
+
+      - name: 034 unit tests and clean rebuild
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./gradlew :app:testDebugUnitTest :app:assembleDebug --stacktrace --no-daemon --no-configuration-cache
+          echo '034 unit tests: PASS' >> 034-verification-report.txt
+          echo '034 debug APK rebuild: PASS' >> 034-verification-report.txt
+
+      - name: 034 APK identity integrity runtime and signature gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          APK=app/build/outputs/apk/debug/app-debug.apk
+          test -s "$APK"
+          unzip -t "$APK" >/dev/null
+          AAPT2="$(find "$ANDROID_HOME/build-tools" -type f -name aapt2 | sort -V | tail -1)"
+          APKSIGNER="$(find "$ANDROID_HOME/build-tools" -type f -name apksigner | sort -V | tail -1)"
+          test -x "$AAPT2"
+          test -x "$APKSIGNER"
+          BADGING="$($AAPT2 dump badging "$APK")"
+          echo "$BADGING" | grep -F "package: name='ai.closepaw.rc11c034'" >/dev/null
+          echo "$BADGING" | grep -F "application-label:'ClosePaw RC11 034'" >/dev/null
+          echo "$BADGING" | grep -F "sdkVersion:'31'" >/dev/null
+          echo "$BADGING" | grep -F "targetSdkVersion:'36'" >/dev/null
+          unzip -l "$APK" | grep -E 'lib/arm64-v8a/.*\.so' >/dev/null
+          "$APKSIGNER" verify --verbose "$APK" >/dev/null
+          SHA="$(sha256sum "$APK" | awk '{print $1}')"
+          SIZE="$(stat -c %s "$APK")"
+          {
+            echo "APK path: $APK"
+            echo "APK size bytes: $SIZE"
+            echo "APK SHA256: $SHA"
+            echo 'APK ZIP integrity: PASS'
+            echo 'APK package identity ai.closepaw.rc11c034: PASS'
+            echo 'APK app label ClosePaw RC11 034: PASS'
+            echo 'minSdk 31 / targetSdk 36: PASS'
+            echo 'arm64 runtime libraries: PASS'
+            echo 'APK signature verification: PASS'
+          } >> 034-verification-report.txt
+
+      - name: Prepare 034 full verified source snapshot
+        if: success()
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf 034-full-source
+          mkdir -p 034-full-source
+          rsync -a             --exclude='.git/'             --exclude='.github/'             --exclude='.gradle/'             --exclude='app/build/'             --exclude='034-full-source/'             ./ 034-full-source/
+          test -f 034-full-source/app/src/main/kotlin/ai/closepaw/app/HybridAgentEngine.kt
+          test -f 034-full-source/app/src/test/kotlin/ai/closepaw/app/PrimaryFormatComplianceV33Test.kt
+          test -f 034-full-source/tools/termux-bridge/closepaw_bridge.py
+          test "$(sha256sum 034-full-source/tools/termux-bridge/closepaw_bridge.py | awk '{print $1}')" = "707906f17acde07c0a86cb45c3c76b7a554f3ffcc39acc17f76f32e376749b2c"
+
+      - name: Upload 034 verification proof
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: 034-ClosePaw-RC11-verification-proof
+          if-no-files-found: warn
+          path: |
+            034-verification-report.txt
+            034-baseline-source-manifest.json
+            034-postpatch-source-manifest.json
+            034-baseline-critical-hashes.json
+
+      - name: Upload 034 full verified source
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: 034-ClosePaw-RC11-verified-full-source
+          if-no-files-found: error
+          path: 034-full-source/
+
+      - name: Upload 034 APK
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: 034-ClosePaw-RC11-APK
+          if-no-files-found: error
+          path: app/build/outputs/apk/debug/app-debug.apk
+
+      - name: Upload 034 failure sources
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: 034-ClosePaw-RC11-failure-sources
+          if-no-files-found: warn
+          path: |
+            app/src/main/kotlin/ai/closepaw/app/HybridAgentEngine.kt
+            app/src/main/kotlin/ai/closepaw/app/HybridAgentProtocol.kt
+            app/src/main/kotlin/ai/closepaw/app/RC11CorrectnessPolicy.kt
+            app/src/main/kotlin/ai/closepaw/ui/settings/PermissionsAdvancedSettingsPage.kt
+            app/src/test/kotlin/ai/closepaw/app/PrimaryFormatComplianceV33Test.kt
+            app/build.gradle.kts
+            app/src/main/res/values/strings.xml
+            tools/termux-bridge/closepaw_bridge.py
+            034-verification-report.txt
