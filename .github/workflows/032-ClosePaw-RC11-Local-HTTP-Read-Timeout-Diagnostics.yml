@@ -1,0 +1,756 @@
+name: 032 - ClosePaw RC11 Local HTTP Read Timeout + Diagnostics
+
+'on':
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Setup Java 17
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Download exact verified 031 full source
+        uses: actions/download-artifact@v4
+        with:
+          name: 031-ClosePaw-RC11-verified-full-source
+          path: /tmp/closepaw031
+          github-token: ${{ github.token }}
+          repository: chekadsmt-dev/closepaw
+          run-id: 34593238195
+
+      - name: Restore and verify exact 031 baseline
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f /tmp/closepaw031/031-postpatch-source-manifest.json
+          test -f /tmp/closepaw031/app/src/main/kotlin/ai/closepaw/app/HybridAgentEngine.kt
+
+          rm -rf app gradle
+          cp -a /tmp/closepaw031/app ./app
+          cp -a /tmp/closepaw031/gradle ./gradle
+          cp /tmp/closepaw031/build.gradle.kts ./build.gradle.kts
+          cp /tmp/closepaw031/settings.gradle.kts ./settings.gradle.kts
+          cp /tmp/closepaw031/gradle.properties ./gradle.properties
+          cp /tmp/closepaw031/gradlew ./gradlew
+          cp /tmp/closepaw031/gradlew.bat ./gradlew.bat
+          cp /tmp/closepaw031/031-postpatch-source-manifest.json ./032-baseline-source-manifest.json
+          cp /tmp/closepaw031/031-baseline-critical-hashes.json ./032-baseline-critical-hashes.json
+          chmod +x ./gradlew
+
+          python3 - <<'PYBASE032'
+          from pathlib import Path
+          import hashlib, json
+
+          baseline = json.loads(Path('032-baseline-source-manifest.json').read_text(encoding='utf-8'))
+          failures = []
+          for rel, expected in baseline.items():
+              p = Path(rel)
+              if not p.exists():
+                  failures.append(f'missing:{rel}')
+                  continue
+              actual = hashlib.sha256(p.read_bytes()).hexdigest()
+              if actual != expected:
+                  failures.append(f'hash:{rel}:{actual}!={expected}')
+          if failures:
+              raise SystemExit('032 exact 031 baseline verification failed: ' + '; '.join(failures[:20]))
+
+          root_expected = {
+              'build.gradle.kts': 'b952902c220e480a79f6e8a7128f7ff8f6d35eae0b7897b54072ebca97c0e87d',
+              'settings.gradle.kts': 'afd2c39af119b584ee203aa089feb378f6645bd7773023fd71ce654470eecf68',
+              'gradle.properties': '20828fa44d88de15d1592d095d7ca2933913969e7d0f160ef275cb55cc1edde2',
+              'gradlew': 'fc977a94723af68aaffa4e5d60496fb4aeed1884b6b19e5e2f2fd7612673313d',
+          }
+          for rel, expected in root_expected.items():
+              actual = hashlib.sha256(Path(rel).read_bytes()).hexdigest()
+              if actual != expected:
+                  raise SystemExit(f'032 root baseline hash mismatch {rel}: {actual} != {expected}')
+
+          Path('032-verification-report.txt').write_text(
+              'ClosePaw RC11 032 verification report\n'
+              '=====================================\n'
+              'Base: exact verified 031 full-source artifact from successful run 34593238195\n'
+              f'Baseline app source/config files verified: {len(baseline)}\n'
+              'No 032 patch applied yet.\n',
+              encoding='utf-8',
+          )
+          print('032 EXACT VERIFIED 031 BASELINE: PASS')
+          PYBASE032
+
+      - name: Baseline 031 clean compile before any 032 change
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./gradlew clean :app:compileDebugKotlin --stacktrace --no-daemon --no-configuration-cache
+          echo 'Baseline 031 clean Kotlin compile before patch: PASS' >> 032-verification-report.txt
+
+      - name: Apply narrowly scoped 032 transport and diagnostics patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > /tmp/032.patch <<'PATCH032'
+          --- a/app/src/main/kotlin/ai/closepaw/app/HybridAgentEngine.kt
+          +++ b/app/src/main/kotlin/ai/closepaw/app/HybridAgentEngine.kt
+          @@ -47,16 +47,15 @@
+           import kotlinx.coroutines.launch
+           import kotlinx.coroutines.withContext
+           import okhttp3.MediaType.Companion.toMediaType
+          -import okhttp3.OkHttpClient
+           import okhttp3.Request
+           import okhttp3.RequestBody.Companion.toRequestBody
+           import org.json.JSONArray
+           import org.json.JSONObject
+          +import java.io.File
+           import java.security.MessageDigest
+           import java.text.Normalizer
+           import java.util.Locale
+           import java.util.UUID
+          -import java.util.concurrent.TimeUnit
+           import java.util.concurrent.atomic.AtomicLong
+           import kotlin.math.abs
+           
+          @@ -2481,6 +2480,24 @@
+                   return next
+               }
+           
+          +    private fun appendPrimaryDiagnosticV32(event: String) {
+          +        runCatching {
+          +            val dir = service.getExternalFilesDir("closepaw-diagnostics") ?: return@runCatching
+          +            if (!dir.exists() && !dir.mkdirs()) return@runCatching
+          +            val file = File(dir, "hybrid-primary-latest.log")
+          +            if (file.length() > 512_000L) {
+          +                file.writeText("ClosePaw primary diagnostics rotated\n", Charsets.UTF_8)
+          +            }
+          +            val clean = event.replace('\n', ' ').replace('\r', ' ').take(1_500)
+          +            file.appendText(
+          +                "${System.currentTimeMillis()}|${BuildConfig.VERSION_NAME}|$clean\n",
+          +                Charsets.UTF_8,
+          +            )
+          +        }.onFailure {
+          +            Log.w(TAG, "PRIMARY_DIAG_V32 write failed", it)
+          +        }
+          +    }
+          +
+               private suspend fun callCustomPrimaryChatV9(
+                   baseUrl: String,
+                   apiKey: String,
+          @@ -2511,9 +2528,9 @@
+                       "PRIMARY_LOCAL_REQUEST_V29|model=$model|requestChars=${request.length}|estimatedTokens=$estimatedInputTokens|nodes=$nodeCount|maxOutput=$PRIMARY_CUSTOM_MAX_OUTPUT_TOKENS|timeoutMs=$PRIMARY_CUSTOM_HTTP_TIMEOUT_MS"
+                   )
+           
+          -        val http = OkHttpClient.Builder()
+          -            .callTimeout(PRIMARY_CUSTOM_HTTP_TIMEOUT_MS, TimeUnit.MILLISECONDS)
+          -            .build()
+          +        // V32: callTimeout alone does not replace OkHttp's short default read timeout.
+          +        // Phone-local inference can legitimately take >10s before response bytes arrive.
+          +        val http = PrimaryLocalHttpTransportV32.create(PRIMARY_CUSTOM_HTTP_TIMEOUT_MS)
+                   val endpoint = baseUrl.trimEnd('/') + "/chat/completions"
+                   val requestBuilder = Request.Builder()
+                       .url(endpoint)
+          @@ -2524,43 +2541,62 @@
+                       requestBuilder.header("Authorization", "Bearer $apiKey")
+                   }
+           
+          -        http.newCall(requestBuilder.build()).execute().use { response ->
+          -            val headersMs = android.os.SystemClock.elapsedRealtime() - started
+          -            val raw = response.body?.string().orEmpty()
+          -            val totalMs = android.os.SystemClock.elapsedRealtime() - started
+          -            Log.i(
+          -                TAG,
+          -                "PRIMARY_LOCAL_RESPONSE_V29|code=${response.code}|headersMs=$headersMs|totalMs=$totalMs|responseChars=${raw.length}"
+          -            )
+          -            if (!response.isSuccessful) {
+          -                error("Primary Local Server HTTP ${response.code}: ${raw.take(500)}")
+          -            }
+          +        appendPrimaryDiagnosticV32(
+          +            "REQUEST_START|endpoint=$endpoint|model=$model|requestChars=${request.length}|estimatedTokens=$estimatedInputTokens|nodes=$nodeCount|callTimeoutMs=${http.callTimeoutMillis}|readTimeoutMs=${http.readTimeoutMillis}"
+          +        )
+           
+          -            val root = runCatching { JSONObject(raw) }.getOrElse {
+          -                error("Primary Local Server returned invalid JSON: ${raw.take(500)}")
+          -            }
+          -            val message = root.optJSONArray("choices")
+          -                ?.optJSONObject(0)
+          -                ?.optJSONObject("message")
+          -                ?: error("Primary Local Server response missing choices[0].message: ${raw.take(500)}")
+          -
+          -            val content = when (val value = message.opt("content")) {
+          -                is String -> value
+          -                is JSONArray -> buildString {
+          -                    for (i in 0 until value.length()) {
+          -                        val part = value.optJSONObject(i) ?: continue
+          -                        if (part.optString("type") == "text" || part.has("text")) {
+          -                            append(part.optString("text"))
+          +        try {
+          +            http.newCall(requestBuilder.build()).execute().use { response ->
+          +                val headersMs = android.os.SystemClock.elapsedRealtime() - started
+          +                appendPrimaryDiagnosticV32(
+          +                    "RESPONSE_HEADERS|code=${response.code}|headersMs=$headersMs|protocol=${response.protocol}|contentType=${response.body?.contentType()}|contentLength=${response.body?.contentLength()}|transferEncoding=${response.header("Transfer-Encoding").orEmpty()}|connection=${response.header("Connection").orEmpty()}"
+          +                )
+          +                val raw = response.body?.string().orEmpty()
+          +                val totalMs = android.os.SystemClock.elapsedRealtime() - started
+          +                Log.i(
+          +                    TAG,
+          +                    "PRIMARY_LOCAL_RESPONSE_V32|code=${response.code}|headersMs=$headersMs|totalMs=$totalMs|responseChars=${raw.length}"
+          +                )
+          +                appendPrimaryDiagnosticV32(
+          +                    "RESPONSE_BODY_DONE|code=${response.code}|headersMs=$headersMs|totalMs=$totalMs|responseChars=${raw.length}"
+          +                )
+          +                if (!response.isSuccessful) {
+          +                    error("Primary Local Server HTTP ${response.code}: ${raw.take(500)}")
+          +                }
+          +
+          +                val root = runCatching { JSONObject(raw) }.getOrElse {
+          +                    error("Primary Local Server returned invalid JSON: ${raw.take(500)}")
+          +                }
+          +                val message = root.optJSONArray("choices")
+          +                    ?.optJSONObject(0)
+          +                    ?.optJSONObject("message")
+          +                    ?: error("Primary Local Server response missing choices[0].message: ${raw.take(500)}")
+          +
+          +                val content = when (val value = message.opt("content")) {
+          +                    is String -> value
+          +                    is JSONArray -> buildString {
+          +                        for (i in 0 until value.length()) {
+          +                            val part = value.optJSONObject(i) ?: continue
+          +                            if (part.optString("type") == "text" || part.has("text")) {
+          +                                append(part.optString("text"))
+          +                            }
+                                   }
+                               }
+          -                }
+          -                else -> ""
+          -            }.trim()
+          +                    else -> ""
+          +                }.trim()
+           
+          -            if (content.isBlank()) {
+          -                error("Primary Local Server response has no text content: ${raw.take(500)}")
+          +                if (content.isBlank()) {
+          +                    error("Primary Local Server response has no text content: ${raw.take(500)}")
+          +                }
+          +                appendPrimaryDiagnosticV32("RESPONSE_PARSED|contentChars=${content.length}")
+          +                content
+                       }
+          -            content
+          +        } catch (error: Throwable) {
+          +            val elapsedMs = android.os.SystemClock.elapsedRealtime() - started
+          +            appendPrimaryDiagnosticV32(
+          +                "HTTP_ERROR|elapsedMs=$elapsedMs|type=${error.javaClass.name}|message=${error.message.orEmpty()}"
+          +            )
+          +            throw error
+                   }
+               }
+           
+          --- a/app/src/main/kotlin/ai/closepaw/ui/settings/PermissionsAdvancedSettingsPage.kt
+          +++ b/app/src/main/kotlin/ai/closepaw/ui/settings/PermissionsAdvancedSettingsPage.kt
+          @@ -1,5 +1,10 @@
+           package ai.closepaw.ui.settings
+           
+          +import android.content.Context
+          +import android.net.Uri
+          +import android.widget.Toast
+          +import androidx.activity.compose.rememberLauncherForActivityResult
+          +import androidx.activity.result.contract.ActivityResultContracts
+           import androidx.compose.foundation.layout.Arrangement
+           import androidx.compose.foundation.layout.Column
+           import androidx.compose.foundation.layout.Row
+          @@ -46,7 +51,10 @@
+           import kotlinx.coroutines.Dispatchers
+           import kotlinx.coroutines.withContext
+           import kotlinx.coroutines.launch
+          +import java.io.BufferedOutputStream
+           import java.io.File
+          +import java.util.zip.ZipEntry
+          +import java.util.zip.ZipOutputStream
+           
+           @Composable
+           internal fun PermissionsAdvancedSettingsPage(
+          @@ -166,6 +174,20 @@
+               var showClearTracesConfirm by remember { mutableStateOf(false) }
+               var showClearSessionsConfirm by remember { mutableStateOf(false) }
+           
+          +    val exportDiagnosticsLauncher = rememberLauncherForActivityResult(
+          +        contract = ActivityResultContracts.CreateDocument("application/zip")
+          +    ) { uri ->
+          +        if (uri == null) return@rememberLauncherForActivityResult
+          +        scope.launch {
+          +            val error = withContext(Dispatchers.IO) { exportDiagnosticsZipV32(context, uri) }
+          +            Toast.makeText(
+          +                context,
+          +                error ?: "Diagnostics exported",
+          +                Toast.LENGTH_LONG,
+          +            ).show()
+          +        }
+          +    }
+          +
+               fun clearTraces() {
+                   if (traceClearState is ClearDataState.Clearing) return
+                   traceClearState = ClearDataState.Clearing
+          @@ -285,6 +307,14 @@
+                           }
+                       }
+           
+          +            Button(
+          +                onClick = { exportDiagnosticsLauncher.launch("ClosePaw-032-diagnostics.zip") },
+          +                modifier = Modifier.fillMaxWidth(),
+          +                shape = MaterialTheme.shapes.large,
+          +            ) {
+          +                Text("Export Diagnostics ZIP")
+          +            }
+          +
+                       // Clear traces button
+                       ClearDataButton(
+                           label = clearDataButtonLabel(traceClearState, idle = "Clear Traces", clearing = "Clearing Traces", cleared = "Traces Cleared"),
+          @@ -304,6 +334,58 @@
+               }
+           }
+           
+          +private fun exportDiagnosticsZipV32(context: Context, uri: Uri): String? {
+          +    return try {
+          +        val output = context.contentResolver.openOutputStream(uri)
+          +            ?: return "Could not open the selected destination."
+          +        output.use { raw ->
+          +            ZipOutputStream(BufferedOutputStream(raw)).use { zip ->
+          +                val info = buildString {
+          +                    appendLine("ClosePaw diagnostics export")
+          +                    appendLine("version=${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE})")
+          +                    appendLine("createdAtMs=${System.currentTimeMillis()}")
+          +                    appendLine("hybridPrimaryLog=closepaw-diagnostics/hybrid-primary-latest.log")
+          +                    appendLine("sessionTraces=inspection-trace/")
+          +                    appendLine("NOTE: Session traces may include screenshots and user inputs.")
+          +                }
+          +                zip.putNextEntry(ZipEntry("export-info.txt"))
+          +                zip.write(info.toByteArray(Charsets.UTF_8))
+          +                zip.closeEntry()
+          +
+          +                addDirectoryToZipV32(
+          +                    zip = zip,
+          +                    directory = context.getExternalFilesDir("closepaw-diagnostics"),
+          +                    zipPrefix = "closepaw-diagnostics",
+          +                )
+          +                addDirectoryToZipV32(
+          +                    zip = zip,
+          +                    directory = context.getExternalFilesDir(TRACE_DIR),
+          +                    zipPrefix = "inspection-trace",
+          +                )
+          +            }
+          +        }
+          +        null
+          +    } catch (error: Exception) {
+          +        "Diagnostics export failed: ${error.message ?: error.javaClass.simpleName}"
+          +    }
+          +}
+          +
+          +private fun addDirectoryToZipV32(zip: ZipOutputStream, directory: File?, zipPrefix: String) {
+          +    if (directory == null || !directory.exists()) return
+          +    val root = directory.canonicalFile
+          +    root.walkTopDown()
+          +        .filter { it.isFile }
+          +        .forEach { file ->
+          +            val canonical = file.canonicalFile
+          +            if (!canonical.path.startsWith(root.path + File.separator)) return@forEach
+          +            val relative = canonical.relativeTo(root).invariantSeparatorsPath
+          +            val entryName = "$zipPrefix/$relative"
+          +            zip.putNextEntry(ZipEntry(entryName))
+          +            canonical.inputStream().use { input -> input.copyTo(zip) }
+          +            zip.closeEntry()
+          +        }
+          +}
+          +
+           private fun clearDirectory(directory: File?, label: String): ClearDataState {
+               if (directory == null) {
+                   return ClearDataState.Failed("Could not access $label storage. Retry from Settings.")
+          --- a/app/build.gradle.kts
+          +++ b/app/build.gradle.kts
+          @@ -46,8 +46,8 @@
+           
+               buildTypes {
+                   debug {
+          -    applicationIdSuffix = ".rc11c031"
+          -    versionNameSuffix = "-rc11-c031"
+          +    applicationIdSuffix = ".rc11c032"
+          +    versionNameSuffix = "-rc11-c032"
+           
+               val evalSsl = project.findProperty("insecureSslForEval")?.toString()?.toBoolean() ?: false
+               buildConfigField("boolean", "INSECURE_SSL_FOR_EVAL", evalSsl.toString())
+          --- a/app/src/main/res/values/strings.xml
+          +++ b/app/src/main/res/values/strings.xml
+          @@ -1,5 +1,5 @@
+           <?xml version="1.0" encoding="utf-8"?>
+           <resources>
+          -    <string name="app_name">ClosePaw RC11 031</string>
+          +    <string name="app_name">ClosePaw RC11 032</string>
+               <string name="accessibility_service_description">ClosePaw acts as an on-device automation agent. With your permission, it reads on-screen elements and performs taps, swipes, and text input only when you start a task. It does not run in the background or monitor other apps.</string>
+           </resources>
+          PATCH032
+          patch -p1 --fuzz=0 < /tmp/032.patch
+
+          cat > app/src/main/kotlin/ai/closepaw/app/PrimaryLocalHttpTransportV32.kt <<'KOTLIN032TRANSPORT'
+          package ai.closepaw.app
+          
+          import okhttp3.OkHttpClient
+          import java.util.concurrent.TimeUnit
+          
+          /**
+           * Transport settings for a same-phone OpenAI-compatible Primary server.
+           *
+           * 031 raised only callTimeout. OkHttp still retained its much shorter default read timeout,
+           * which can expire while phone-local inference is still doing prefill/generation before the
+           * response arrives. Keep every other OkHttp transport default unchanged and raise only the
+           * read timeout to the already-approved overall Primary budget.
+           */
+          internal object PrimaryLocalHttpTransportV32 {
+              fun create(callTimeoutMs: Long): OkHttpClient =
+                  OkHttpClient.Builder()
+                      .readTimeout(callTimeoutMs, TimeUnit.MILLISECONDS)
+                      .callTimeout(callTimeoutMs, TimeUnit.MILLISECONDS)
+                      .build()
+          }
+          KOTLIN032TRANSPORT
+
+          cat > app/src/test/kotlin/ai/closepaw/app/PrimaryLocalHttpTransportV32Test.kt <<'KOTLIN032TEST'
+          package ai.closepaw.app
+          
+          import org.junit.Assert.assertEquals
+          import org.junit.Test
+          
+          class PrimaryLocalHttpTransportV32Test {
+              @Test
+              fun localPrimaryUsesFullPhoneInferenceBudgetForReads() {
+                  val client = PrimaryLocalHttpTransportV32.create(180_000L)
+          
+                  assertEquals(180_000, client.readTimeoutMillis)
+                  assertEquals(180_000, client.callTimeoutMillis)
+              }
+          }
+          KOTLIN032TEST
+
+      - name: 032 source isolation, RC11 freeze, and root-cause audit
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PYAUDIT032'
+          from pathlib import Path
+          import hashlib, json
+
+          baseline = json.loads(Path('032-baseline-source-manifest.json').read_text(encoding='utf-8'))
+          allowed_changed = {
+              'app/src/main/kotlin/ai/closepaw/app/HybridAgentEngine.kt',
+              'app/src/main/kotlin/ai/closepaw/ui/settings/PermissionsAdvancedSettingsPage.kt',
+              'app/build.gradle.kts',
+              'app/src/main/res/values/strings.xml',
+          }
+          allowed_added = {
+              'app/src/main/kotlin/ai/closepaw/app/PrimaryLocalHttpTransportV32.kt',
+              'app/src/test/kotlin/ai/closepaw/app/PrimaryLocalHttpTransportV32Test.kt',
+          }
+
+          current = {}
+          for p in sorted(Path('app').rglob('*')):
+              if not p.is_file() or p.as_posix().startswith('app/build/'):
+                  continue
+              current[p.as_posix()] = hashlib.sha256(p.read_bytes()).hexdigest()
+
+          unexpected = []
+          all_paths = set(baseline) | set(current)
+          for rel in sorted(all_paths):
+              before = baseline.get(rel)
+              after = current.get(rel)
+              if before == after:
+                  continue
+              if before is None and rel in allowed_added:
+                  continue
+              if before is not None and after is not None and rel in allowed_changed:
+                  continue
+              unexpected.append((rel, before, after))
+          if unexpected:
+              raise SystemExit('032 changed an unapproved source/config path: ' + repr(unexpected[:20]))
+
+          for rel in allowed_changed:
+              if baseline.get(rel) == current.get(rel):
+                  raise SystemExit('032 expected changed path did not change: ' + rel)
+          for rel in allowed_added:
+              if rel not in current:
+                  raise SystemExit('032 expected added path missing: ' + rel)
+
+          engine_path = Path('app/src/main/kotlin/ai/closepaw/app/HybridAgentEngine.kt')
+          engine = engine_path.read_text(encoding='utf-8')
+          transport = Path('app/src/main/kotlin/ai/closepaw/app/PrimaryLocalHttpTransportV32.kt').read_text(encoding='utf-8')
+          ui = Path('app/src/main/kotlin/ai/closepaw/ui/settings/PermissionsAdvancedSettingsPage.kt').read_text(encoding='utf-8')
+          gradle = Path('app/build.gradle.kts').read_text(encoding='utf-8')
+          strings = Path('app/src/main/res/values/strings.xml').read_text(encoding='utf-8')
+
+          # Root-cause contract: the 031 client set only callTimeout; 032 must explicitly
+          # raise readTimeout above OkHttp's short default for phone-local inference.
+          required_transport = [
+              'PrimaryLocalHttpTransportV32.create(PRIMARY_CUSTOM_HTTP_TIMEOUT_MS)',
+              'PRIMARY_LOCAL_RESPONSE_V32',
+              'REQUEST_START|endpoint=',
+              'RESPONSE_HEADERS|code=',
+              'RESPONSE_BODY_DONE|code=',
+              'HTTP_ERROR|elapsedMs=',
+          ]
+          missing = [x for x in required_transport if x not in engine]
+          if missing:
+              raise SystemExit('032 engine transport/diagnostic contract incomplete: ' + ', '.join(missing))
+          helper_required = [
+              '.readTimeout(callTimeoutMs, TimeUnit.MILLISECONDS)',
+              '.callTimeout(callTimeoutMs, TimeUnit.MILLISECONDS)',
+          ]
+          missing = [x for x in helper_required if x not in transport]
+          if missing:
+              raise SystemExit('032 explicit HTTP timeout helper incomplete: ' + ', '.join(missing))
+          if 'OkHttpClient.Builder()\n            .callTimeout(PRIMARY_CUSTOM_HTTP_TIMEOUT_MS' in engine:
+              raise SystemExit('032 still uses 031 callTimeout-only custom Primary client')
+
+          # 031 Fast Planner behavior must remain present and unchanged in contract.
+          for token in [
+              'MAX_PRIMARY_UI_NODES = 16',
+              'MAX_PRIMARY_UI_CHARS = 2_000',
+              'MAX_PRIMARY_HISTORY = 2',
+              'PRIMARY_CUSTOM_HTTP_TIMEOUT_MS = 180_000L',
+              'PRIMARY_CUSTOM_MAX_OUTPUT_TOKENS = 64L',
+              'CP_PRIMARY_V29',
+              'REQ|$requestId|<ACTION>',
+              'PrimaryCompactPlanV29.parseOrNull',
+          ]:
+              if token not in engine:
+                  raise SystemExit('032 lost verified 031 Fast Planner token: ' + token)
+
+          # Export exists without changing task routing or execution semantics.
+          for token in [
+              'Export Diagnostics ZIP',
+              'ActivityResultContracts.CreateDocument("application/zip")',
+              'exportDiagnosticsZipV32',
+              'closepaw-diagnostics',
+              'inspection-trace',
+          ]:
+              if token not in ui:
+                  raise SystemExit('032 diagnostics export incomplete: ' + token)
+
+          # Exact frozen critical regions from 031/028 remain byte-identical.
+          expected_critical = json.loads(Path('032-baseline-critical-hashes.json').read_text(encoding='utf-8'))
+          def shab(data: bytes): return hashlib.sha256(data).hexdigest()
+          def region(start_token, end_token):
+              start = engine.find(start_token)
+              if start < 0: raise SystemExit('032 critical start anchor missing: ' + start_token)
+              end = engine.find(end_token, start)
+              if end < 0: raise SystemExit('032 critical end anchor missing: ' + end_token)
+              return engine[start:end].encode()
+          current_critical = {
+              'routing_execution': shab(region('val planQueue = mutableListOf<HybridAction>()', 'finishFailure("Bounded recovery stopped after')),
+              'rc8_restore': shab(region('// RC8: only strong identity evidence may authorize a restore-side navigation.', 'private suspend fun restoreSidebarShapeIfNeeded(')),
+              'durable_transaction': shab(region('private suspend fun executeActionTransactionV9(', 'private fun receiptHistoryLineV9(')),
+              'rc11_policy_file': hashlib.sha256(Path('app/src/main/kotlin/ai/closepaw/app/RC11CorrectnessPolicy.kt').read_bytes()).hexdigest(),
+          }
+          if current_critical != expected_critical:
+              raise SystemExit('032 modified frozen RC8/RC11/routing/durable regions')
+
+          # Identity only advances 031 -> 032.
+          if 'applicationIdSuffix = ".rc11c032"' not in gradle:
+              raise SystemExit('032 application id suffix missing')
+          if 'versionNameSuffix = "-rc11-c032"' not in gradle:
+              raise SystemExit('032 version suffix missing')
+          if '<string name="app_name">ClosePaw RC11 032</string>' not in strings:
+              raise SystemExit('032 app label missing')
+
+          Path('032-postpatch-source-manifest.json').write_text(
+              json.dumps(current, indent=2, sort_keys=True) + '\n', encoding='utf-8'
+          )
+          with Path('032-verification-report.txt').open('a', encoding='utf-8') as f:
+              f.write('Source isolation gate: PASS\n')
+              f.write('Frozen RC8/RC11/routing/durable hashes: PASS\n')
+              f.write('031 Fast Planner contract preserved: PASS\n')
+              f.write('Explicit Local Server readTimeout = 180s: PASS\n')
+              f.write('On-device Primary HTTP diagnostics: PASS\n')
+              f.write('System & Debug diagnostics ZIP export: PASS\n')
+          print('032 SOURCE ISOLATION + ROOT-CAUSE AUDIT: PASS')
+          PYAUDIT032
+
+      - name: 032 clean Kotlin compile gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./gradlew clean :app:compileDebugKotlin --stacktrace --no-daemon --no-configuration-cache
+          echo '032 clean Kotlin compile: PASS' >> 032-verification-report.txt
+
+      - name: 032 unit tests and clean rebuild
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./gradlew :app:testDebugUnitTest :app:assembleDebug --stacktrace --no-daemon --no-configuration-cache
+          echo '032 unit tests: PASS' >> 032-verification-report.txt
+          echo '032 debug APK rebuild: PASS' >> 032-verification-report.txt
+
+      - name: 032 APK identity integrity native-runtime and signature gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          mapfile -t APKS < <(find app/build/outputs/apk/debug -maxdepth 1 -type f -name '*.apk' -print)
+          if [ "${#APKS[@]}" -ne 1 ]; then
+            echo "Expected exactly one debug APK, found ${#APKS[@]}" >&2
+            exit 1
+          fi
+          APK="${APKS[0]}"
+          unzip -tq "$APK" >/dev/null
+          SIZE="$(stat -c %s "$APK")"
+          if [ "$SIZE" -lt 50000000 ]; then
+            echo "APK unexpectedly small: $SIZE bytes" >&2
+            exit 1
+          fi
+
+          CONTENTS="$(zipinfo -1 "$APK")"
+          for ENTRY in \
+            AndroidManifest.xml \
+            classes.dex \
+            lib/arm64-v8a/libllama.so \
+            lib/arm64-v8a/libggml.so \
+            lib/arm64-v8a/libinference_engine.so \
+            lib/arm64-v8a/libinference_engine_jni.so \
+            lib/arm64-v8a/libinference_engine_llamacpp_backend.so
+          do
+            if ! grep -Fxq "$ENTRY" <<<"$CONTENTS"; then
+              echo "Required APK entry missing: $ENTRY" >&2
+              exit 1
+            fi
+          done
+
+          AAPT="$(find "$ANDROID_HOME/build-tools" -type f -name aapt -print | sort -V | tail -n 1)"
+          APKSIGNER="$(find "$ANDROID_HOME/build-tools" -type f -name apksigner -print | sort -V | tail -n 1)"
+          test -x "$AAPT"
+          test -x "$APKSIGNER"
+
+          BADGING="$($AAPT dump badging "$APK")"
+          grep -Fq "package: name='ai.closepaw.rc11c032'" <<<"$BADGING"
+          grep -Fq "application-label:'ClosePaw RC11 032'" <<<"$BADGING"
+          grep -Fq "sdkVersion:'31'" <<<"$BADGING"
+          grep -Fq "targetSdkVersion:'36'" <<<"$BADGING"
+
+          "$APKSIGNER" verify --verbose "$APK" > 032-apksigner-verification.txt
+          APK_SHA="$(sha256sum "$APK" | awk '{print $1}')"
+          {
+            echo "APK path: $APK"
+            echo "APK size bytes: $SIZE"
+            echo "APK SHA256: $APK_SHA"
+            echo 'APK ZIP integrity: PASS'
+            echo 'APK package identity ai.closepaw.rc11c032: PASS'
+            echo 'APK app label ClosePaw RC11 032: PASS'
+            echo 'minSdk 31 / targetSdk 36: PASS'
+            echo 'arm64 local-inference runtime libraries: PASS'
+            echo 'APK signature verification: PASS'
+          } >> 032-verification-report.txt
+          echo "032 APK FULL INTEGRITY GATE: PASS | size=$SIZE | sha256=$APK_SHA"
+
+      - name: Write 032 runtime diagnostic instructions
+        if: success()
+        shell: bash
+        run: |
+          cat > 032-runtime-diagnostic-instructions.txt <<'EOF032TEST'
+          ClosePaw RC11 032 Local HTTP read-timeout diagnostic
+          ====================================================
+
+          Why 032 exists:
+          031 gave the Local Server a 180s callTimeout but left OkHttp readTimeout at its
+          short default. Phone-local inference observed in the real server log took about
+          20s for 608 prompt tokens + 63 output tokens, so the client could time out while
+          llama.cpp continued to completion.
+
+          032 changes ONLY the custom Local Server transport/debug surface:
+          - explicit readTimeout = 180s
+          - callTimeout remains 180s
+          - bounded Primary HTTP diagnostic log
+          - System & Debug -> Export Diagnostics ZIP
+
+          Keep your current LLM AI Server model/performance settings unchanged for this test.
+          External Chat Brain: OFF.
+
+          Test:
+          Open Settings.
+          Stop when Settings is visible.
+
+          If it still fails:
+          1. Open ClosePaw -> System & Debug.
+          2. Tap Export Diagnostics ZIP.
+          3. Save ClosePaw-032-diagnostics.zip.
+          4. Send that ZIP together with the LLM AI Server log from the same run.
+
+          Expected hybrid-primary-latest.log sequence on success:
+          REQUEST_START
+          RESPONSE_HEADERS
+          RESPONSE_BODY_DONE
+          RESPONSE_PARSED
+          EOF032TEST
+
+      - name: Upload 032 verification proof
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: 032-ClosePaw-RC11-verification-proof
+          path: |
+            032-verification-report.txt
+            032-apksigner-verification.txt
+            032-runtime-diagnostic-instructions.txt
+            032-baseline-source-manifest.json
+            032-postpatch-source-manifest.json
+            032-baseline-critical-hashes.json
+          if-no-files-found: warn
+
+      - name: Upload full generated source tree on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: 032-ClosePaw-RC11-failure-full-source
+          path: |
+            app/**
+            !app/build/**
+            build.gradle.kts
+            settings.gradle.kts
+            gradle.properties
+            gradle/**
+            gradlew
+            gradlew.bat
+            032-verification-report.txt
+            032-baseline-source-manifest.json
+            032-postpatch-source-manifest.json
+            032-baseline-critical-hashes.json
+          if-no-files-found: warn
+
+      - name: Upload 032 verified FULL source snapshot
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: 032-ClosePaw-RC11-verified-full-source
+          path: |
+            app/**
+            !app/build/**
+            build.gradle.kts
+            settings.gradle.kts
+            gradle.properties
+            gradle/**
+            gradlew
+            gradlew.bat
+            032-verification-report.txt
+            032-baseline-source-manifest.json
+            032-postpatch-source-manifest.json
+            032-baseline-critical-hashes.json
+          if-no-files-found: error
+
+      - name: Upload 032 APK
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: 032-ClosePaw-RC11-APK
+          path: app/build/outputs/apk/debug/*.apk
+          if-no-files-found: error
