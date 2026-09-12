@@ -1,0 +1,1013 @@
+name: 046 - ClosePaw RC11 Overlay-Safe Foreground + Semantic Page Completion + Brain Recovery
+
+'on':
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Setup Java 17
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Restore exact verified 045 full source
+        uses: actions/download-artifact@v5
+        with:
+          name: 045-ClosePaw-RC11-verified-full-source
+          path: /tmp/045-source
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: 34706780151
+
+      - name: Verify and activate exact 045 baseline
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f /tmp/045-source/app/src/main/kotlin/ai/closepaw/app/HybridAgentEngine.kt
+          test -f /tmp/045-source/app/src/main/kotlin/ai/closepaw/app/GoalAppPrerequisiteV45.kt
+          test -f /tmp/045-source/app/src/main/kotlin/ai/closepaw/app/DeterministicUiNavigatorV43.kt
+          find . -mindepth 1 -maxdepth 1 ! -name .git ! -name .github -exec rm -rf {} +
+          cp -a /tmp/045-source/. ./
+          python3 - <<'PYBASE'
+          from pathlib import Path
+          import hashlib
+          expected={
+            'app/src/main/kotlin/ai/closepaw/app/HybridAgentEngine.kt':'65f59cc09b3559362c2096b86a3b836716b45c05b209665fec2e77ae39ddd31e',
+            'app/src/main/kotlin/ai/closepaw/app/GoalPostconditionV41.kt':'42378756c3b51de1acadc0c00e4102541108436bb196c5991e111b3c1375dc53',
+            'app/src/main/kotlin/ai/closepaw/app/DeterministicUiNavigatorV43.kt':'945670dd4f8818b10933245a27298dfe0de4b9da590c54f06a9ba4657e11301f',
+            'app/src/main/kotlin/ai/closepaw/app/PrimaryLocalGrammarV43.kt':'fdfdae46f9fd865336e2f57e65c6f62684fc1b7ffd909eba1d1b49ad8937dab3',
+            'app/src/main/kotlin/ai/closepaw/app/GoalAppPrerequisiteV45.kt':'b1be3b8953bc0620a921d6e639e68ee1ae4a61952d20a52943da148a3edbee37',
+            'app/build.gradle.kts':'bbda0ec1de77b7ff68e1d17543f3de2561e57fd6bd25c2f6bdf291c55a1d07dc',
+            'app/src/main/res/values/strings.xml':'601f1b3eb2b75e4f91da3ec12111661be5175c9b441348eed0e4ac09726a1056',
+            'tools/termux-bridge/closepaw_bridge.py':'707906f17acde07c0a86cb45c3c76b7a554f3ffcc39acc17f76f32e376749b2c',
+          }
+          for rel,w in expected.items():
+            p=Path(rel); got=hashlib.sha256(p.read_bytes()).hexdigest()
+            if got!=w: raise SystemExit(f'046 baseline mismatch {rel}: {got} != {w}')
+          Path('046-verification-report.txt').write_text(
+            'ClosePaw RC11 046 verification report\n'
+            'Base: exact verified 045 full-source artifact, successful run 34706780151.\n'
+            'Evidence fixes: overlay-safe foreground identity; PAGE_REACHED-only label alias; cross-task Brain recovery without same-task resend.\n',
+            encoding='utf-8')
+          print('046 EXACT VERIFIED 045 BASELINE: PASS')
+          PYBASE
+
+      - name: Baseline 045 clean compile before any 046 change
+        shell: bash
+        run: |
+          set -euo pipefail
+          chmod +x ./gradlew
+          ./gradlew clean :app:compileDebugKotlin --stacktrace --no-daemon --no-configuration-cache
+          echo 'Baseline 045 clean compile: PASS' >> 046-verification-report.txt
+
+      - name: Freeze 045 source and protected correctness surfaces
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PYFREEZE'
+          from pathlib import Path
+          import hashlib,json
+          def h(b): return hashlib.sha256(b).hexdigest()
+          def sf(p): return h(Path(p).read_bytes())
+          manifest={}
+          for p in sorted(Path('app').rglob('*')):
+            if p.is_file() and not p.as_posix().startswith('app/build/'):
+              manifest[p.as_posix()]=sf(p)
+          if len(manifest)<700: raise SystemExit(f'baseline app manifest too small: {len(manifest)}')
+          Path('046-baseline-source-manifest.json').write_text(json.dumps(manifest,indent=2,sort_keys=True)+'\n')
+          eng=Path('app/src/main/kotlin/ai/closepaw/app/HybridAgentEngine.kt').read_text()
+          def reg(a,b):
+            s=eng.find(a); e=eng.find(b,s)
+            if s<0 or e<0: raise SystemExit('protected region missing')
+            return h(eng[s:e].encode())
+          protected={
+            'rc8_restore':reg('// RC8: only strong identity evidence may authorize a restore-side navigation.','private suspend fun restoreSidebarShapeIfNeeded('),
+            'durable_transaction':reg('private suspend fun executeActionTransactionV9(','private fun receiptHistoryLineV9('),
+            'v33_validation':reg('private suspend fun requestPrimaryPlanV9(','private fun buildBrainRequest('),
+            'brain_restore':reg('private suspend fun restoreAfterBrainExcursion(','private fun configuredBrainV9(): ChatBrainSettings'),
+            'brain_send':reg('private suspend fun sendConfiguredBrainMessageV9(','private suspend fun waitForMatchingBrainResponseV9('),
+            'open_app_exact':reg('private suspend fun openApp(platform: AndroidPlatform, name: String): ActionOutcome {','private suspend fun clickByText('),
+            'navigator_v43':sf('app/src/main/kotlin/ai/closepaw/app/DeterministicUiNavigatorV43.kt'),
+            'grammar_v43':sf('app/src/main/kotlin/ai/closepaw/app/PrimaryLocalGrammarV43.kt'),
+            'prereq_v45':sf('app/src/main/kotlin/ai/closepaw/app/GoalAppPrerequisiteV45.kt'),
+            'goal_v41':sf('app/src/main/kotlin/ai/closepaw/app/GoalPostconditionV41.kt'),
+            'protocol':sf('app/src/main/kotlin/ai/closepaw/app/HybridAgentProtocol.kt'),
+            'rc11':sf('app/src/main/kotlin/ai/closepaw/app/RC11CorrectnessPolicy.kt'),
+            'transport':sf('app/src/main/kotlin/ai/closepaw/app/PrimaryLocalHttpTransportV32.kt'),
+            'brain_target':sf('app/src/main/kotlin/ai/closepaw/app/ConfiguredBrainTargetResolverV40.kt'),
+            'accessibility_platform':sf('app/src/main/kotlin/ai/closepaw/platform/AccessibilityPlatform.kt'),
+            'bridge':sf('tools/termux-bridge/closepaw_bridge.py'),
+          }
+          Path('046-baseline-critical-hashes.json').write_text(json.dumps(protected,indent=2,sort_keys=True)+'\n')
+          print('046 FREEZE: PASS')
+          PYFREEZE
+
+      - name: Apply isolated 046 evidence-driven patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > /tmp/046.patch <<'PATCH046'
+          diff --git a/app/build.gradle.kts b/app/build.gradle.kts
+          index e2ca8be..022a72f 100644
+          --- a/app/build.gradle.kts
+          +++ b/app/build.gradle.kts
+          @@ -46,8 +46,8 @@ android {
+           
+               buildTypes {
+                   debug {
+          -    applicationIdSuffix = ".rc11c045"
+          -    versionNameSuffix = "-rc11-c045"
+          +    applicationIdSuffix = ".rc11c046"
+          +    versionNameSuffix = "-rc11-c046"
+           
+               val evalSsl = project.findProperty("insecureSslForEval")?.toString()?.toBoolean() ?: false
+               buildConfigField("boolean", "INSECURE_SSL_FOR_EVAL", evalSsl.toString())
+          diff --git a/app/src/main/kotlin/ai/closepaw/app/BrainExcursionRecoveryV46.kt b/app/src/main/kotlin/ai/closepaw/app/BrainExcursionRecoveryV46.kt
+          new file mode 100644
+          index 0000000..8a88df6
+          --- /dev/null
+          +++ b/app/src/main/kotlin/ai/closepaw/app/BrainExcursionRecoveryV46.kt
+          @@ -0,0 +1,46 @@
+          +package ai.closepaw.app
+          +
+          +/**
+          + * Pure decision table for reconciling durable External-Brain excursion state before a NEW consult.
+          + *
+          + * The key safety distinction is task identity:
+          + * - the same task must never resend a request that may already have been sent;
+          + * - a different task may abandon the stale request because every Brain request has an exact new
+          + *   TASK_ID/REQUEST_ID and late output from the abandoned request cannot validate for the new task.
+          + */
+          +internal object BrainExcursionRecoveryV46 {
+          +    internal enum class Decision {
+          +        PROCEED,
+          +        CLEAR_AND_PROCEED,
+          +        BLOCK_SAME_TASK,
+          +        BLOCK_CORRUPT,
+          +    }
+          +
+          +    fun decide(stateName: String?, staleTaskId: String?, currentTaskId: String): Decision {
+          +        val state = stateName?.trim().orEmpty()
+          +        if (state.isBlank() || state == "WORK") return Decision.PROCEED
+          +        val staleTask = staleTaskId?.trim()?.takeIf { it.isNotBlank() }
+          +            ?: return Decision.BLOCK_CORRUPT
+          +
+          +        return when (state) {
+          +            // Send was not yet authorized/persisted; safe to abandon for either same or new task.
+          +            "BRAIN_ENTERING" -> Decision.CLEAR_AND_PROCEED
+          +
+          +            // Send may already have happened. Never resend for the same task. A foreign/new task
+          +            // uses a new exact TASK_ID/REQUEST_ID, so the stale response cannot validate for it.
+          +            "BRAIN_AWAITING_RESPONSE", "RECOVERY_REQUIRED" -> {
+          +                if (staleTask == currentTaskId) Decision.BLOCK_SAME_TASK
+          +                else Decision.CLEAR_AND_PROCEED
+          +            }
+          +
+          +            // A canonical plan may already be durable. Same-task caller must resume it rather than
+          +            // overwrite it; a foreign task cannot consume it and may clear it.
+          +            "BRAIN_RETURNING" -> {
+          +                if (staleTask == currentTaskId) Decision.BLOCK_SAME_TASK
+          +                else Decision.CLEAR_AND_PROCEED
+          +            }
+          +
+          +            else -> Decision.BLOCK_CORRUPT
+          +        }
+          +    }
+          +}
+          diff --git a/app/src/main/kotlin/ai/closepaw/app/CausalDestinationV46.kt b/app/src/main/kotlin/ai/closepaw/app/CausalDestinationV46.kt
+          new file mode 100644
+          index 0000000..5cc6dd6
+          --- /dev/null
+          +++ b/app/src/main/kotlin/ai/closepaw/app/CausalDestinationV46.kt
+          @@ -0,0 +1,139 @@
+          +package ai.closepaw.app
+          +
+          +import java.text.Normalizer
+          +import java.util.Locale
+          +import kotlin.math.max
+          +
+          +/**
+          + * Causal destination aliasing for one verified grounded navigation click.
+          + *
+          + * Some Android/Samsung rows intentionally use an action phrase while the destination title omits
+          + * the leading verb (for example a row like "Choose default apps" opens a page titled
+          + * "Default apps"). We must not globally loosen PAGE_REACHED matching, because that would recreate
+          + * the V40 false-positive where a visible row was mistaken for an opened destination.
+          + *
+          + * Instead, an alias is authorized only after:
+          + *   1) the exact semantic row was grounded and clicked,
+          + *   2) the post-action UI contains exactly one non-clickable top-page header matching either the
+          + *      exact row label or the row label with one conservative leading action verb removed, and
+          + *   3) later completion is checked in the same package against that exact verified header.
+          + */
+          +internal object CausalDestinationV46 {
+          +    internal data class Alias(
+          +        val sourceTarget: String,
+          +        val destinationHeader: String,
+          +        val packageName: String,
+          +    )
+          +
+          +    fun prove(
+          +        sourceTarget: String,
+          +        packageName: String?,
+          +        nodes: List<DeterministicUiNavigatorV43.NodeEvidence>,
+          +    ): Alias? {
+          +        val pkg = packageName?.trim()?.takeIf { it.isNotBlank() } ?: return null
+          +        val source = normalizeTarget(sourceTarget)
+          +        if (source.isBlank()) return null
+          +        val allowedHeaders = linkedSetOf(source)
+          +        stripOneLeadingActionVerb(source)?.let(allowedHeaders::add)
+          +
+          +        val headers = topHeaders(nodes)
+          +            .filter { normalizeTarget(it) in allowedHeaders }
+          +            .distinctBy(::normalizeTarget)
+          +        if (headers.size != 1) return null
+          +        return Alias(
+          +            sourceTarget = sourceTarget.trim(),
+          +            destinationHeader = headers.single(),
+          +            packageName = pkg,
+          +        )
+          +    }
+          +
+          +    fun provesStopTarget(
+          +        stopTarget: String,
+          +        currentPackage: String?,
+          +        nodes: List<DeterministicUiNavigatorV43.NodeEvidence>,
+          +        aliases: Collection<Alias>,
+          +    ): Boolean {
+          +        val pkg = currentPackage?.trim()?.takeIf { it.isNotBlank() } ?: return false
+          +        val wantedSource = normalizeTarget(stopTarget)
+          +        if (wantedSource.isBlank()) return false
+          +        return aliases.any { alias ->
+          +            alias.packageName == pkg &&
+          +                normalizeTarget(alias.sourceTarget) == wantedSource &&
+          +                topHeaders(nodes).any { header ->
+          +                    normalizeTarget(header) == normalizeTarget(alias.destinationHeader)
+          +                }
+          +        }
+          +    }
+          +
+          +    private fun topHeaders(nodes: List<DeterministicUiNavigatorV43.NodeEvidence>): List<String> {
+          +        val screenBottom = nodes.maxOfOrNull { it.bottom }?.coerceAtLeast(1) ?: 1
+          +        val headerLimit = max(280, (screenBottom * 22) / 100)
+          +        return nodes.asSequence()
+          +            .filter { node ->
+          +                node.enabled && !node.clickable && node.width > 0 && node.height > 0 &&
+          +                    node.top <= headerLimit && !insideClickableContainer(node, nodes)
+          +            }
+          +            .flatMap { node -> sequenceOf(node.text, node.description, node.hint) }
+          +            .map(String::trim)
+          +            .filter { it.isNotBlank() }
+          +            .distinctBy(::normalizeTarget)
+          +            .toList()
+          +    }
+          +
+          +    private fun insideClickableContainer(
+          +        candidate: DeterministicUiNavigatorV43.NodeEvidence,
+          +        nodes: List<DeterministicUiNavigatorV43.NodeEvidence>,
+          +    ): Boolean = nodes.any { parent ->
+          +        parent.enabled && parent.clickable && parent.index != candidate.index &&
+          +            parent.width > 0 && parent.height > 0 &&
+          +            candidate.centerX in parent.left..parent.right &&
+          +            candidate.centerY in parent.top..parent.bottom &&
+          +            parent.width >= candidate.width && parent.height >= candidate.height
+          +    }
+          +
+          +    private fun stripOneLeadingActionVerb(value: String): String? {
+          +        val parts = value.split(' ').filter { it.isNotBlank() }
+          +        if (parts.size < 2) return null
+          +        if (parts.first() !in SAFE_LEADING_ACTION_VERBS) return null
+          +        return parts.drop(1).joinToString(" ").takeIf { it.isNotBlank() }
+          +    }
+          +
+          +    private fun normalizeTarget(raw: String): String {
+          +        var value = normalize(raw)
+          +        value = value.removePrefix("the ").trim()
+          +        val suffixes = listOf(
+          +            " settings page", " setting page", " settings screen", " setting screen",
+          +            " page", " screen", " menu", " section",
+          +            " صفحه", " تنظیمات", " منو", " بخش",
+          +        ).map(::normalize)
+          +        var changed = true
+          +        while (changed) {
+          +            changed = false
+          +            for (suffix in suffixes) {
+          +                if (value.endsWith(suffix) && value.length > suffix.length + 1) {
+          +                    value = value.removeSuffix(suffix).trim()
+          +                    changed = true
+          +                    break
+          +                }
+          +            }
+          +        }
+          +        return value
+          +    }
+          +
+          +    private fun normalize(value: String): String {
+          +        val deaccented = Normalizer.normalize(value, Normalizer.Form.NFKD)
+          +            .replace(Regex("\\p{M}+"), "")
+          +            .lowercase(Locale.ROOT)
+          +            .replace('ي', 'ی')
+          +            .replace('ك', 'ک')
+          +        return deaccented
+          +            .replace(Regex("[^\\p{L}\\p{N}._-]+"), " ")
+          +            .replace(Regex("\\s+"), " ")
+          +            .trim()
+          +    }
+          +
+          +    private val SAFE_LEADING_ACTION_VERBS = setOf(
+          +        "choose", "select", "pick",
+          +        "انتخاب", // supports short labels such as "انتخاب برنامه ..." without broad fuzzy matching.
+          +    ).map(::normalize).toSet()
+          +}
+          diff --git a/app/src/main/kotlin/ai/closepaw/app/ForegroundPackageV46.kt b/app/src/main/kotlin/ai/closepaw/app/ForegroundPackageV46.kt
+          new file mode 100644
+          index 0000000..c7429fd
+          --- /dev/null
+          +++ b/app/src/main/kotlin/ai/closepaw/app/ForegroundPackageV46.kt
+          @@ -0,0 +1,16 @@
+          +package ai.closepaw.app
+          +
+          +/**
+          + * Chooses the authoritative foreground package for Accessibility mode.
+          + *
+          + * AccessibilityPlatform.getCurrentPackageName() already enumerates windows and excludes
+          + * accessibility-overlay and IME windows. rootInActiveWindow is useful only as a fallback because
+          + * OEMs can transiently report an overlay/auxiliary root as the active root during page changes.
+          + */
+          +internal object ForegroundPackageV46 {
+          +    fun choose(windowPackage: String?, activeRootPackage: String?): String? {
+          +        val window = windowPackage?.trim()?.takeIf { it.isNotBlank() }
+          +        val root = activeRootPackage?.trim()?.takeIf { it.isNotBlank() }
+          +        return window ?: root
+          +    }
+          +}
+          diff --git a/app/src/main/kotlin/ai/closepaw/app/HybridAgentEngine.kt b/app/src/main/kotlin/ai/closepaw/app/HybridAgentEngine.kt
+          index 37a3f24..58d331b 100644
+          --- a/app/src/main/kotlin/ai/closepaw/app/HybridAgentEngine.kt
+          +++ b/app/src/main/kotlin/ai/closepaw/app/HybridAgentEngine.kt
+          @@ -438,6 +438,7 @@ internal class HybridAgentEngine(private val service: AgentService) {
+                       val brainStateConsults = mutableMapOf<String, Int>()
+                       val primaryStateConsults = mutableMapOf<String, Int>()
+                       val deterministicScansV43 = mutableMapOf<String, DeterministicUiNavigatorV43.ScanProgress>()
+          +            val verifiedPageAliasesV46 = mutableListOf<CausalDestinationV46.Alias>()
+                       val installedAppsForTaskV45 = runCatching { platform.getInstalledApps() }.getOrDefault(emptyList())
+                       val appPrerequisiteV45 = GoalAppPrerequisiteV45.resolve(task.goal, installedAppsForTaskV45)
+                       var deterministicActionCountV43 = 0
+          @@ -591,7 +592,7 @@ internal class HybridAgentEngine(private val service: AgentService) {
+                               // V41: prove typed explicit stop conditions from a fresh observation BEFORE
+                               // spending another Primary/External model turn. This is local/deterministic.
+                               if (targetChat == null &&
+          -                        evaluateGoalLocallyV11(platform, task.goal, null) == V11GoalVerdict.ACHIEVED
+          +                        evaluateGoalLocallyV11(platform, task.goal, null, verifiedPageAliasesV46) == V11GoalVerdict.ACHIEVED
+                               ) {
+                                   history += "LOCAL_GOAL_COMPLETE_V41|typed_fresh_observation_before_model"
+                                   finishSuccess("Goal verified locally from fresh observation")
+          @@ -879,7 +880,7 @@ internal class HybridAgentEngine(private val service: AgentService) {
+                                   return
+                               }
+                               if (targetChat == null &&
+          -                        evaluateGoalLocallyV11(platform, task.goal, null) == V11GoalVerdict.ACHIEVED
+          +                        evaluateGoalLocallyV11(platform, task.goal, null, verifiedPageAliasesV46) == V11GoalVerdict.ACHIEVED
+                               ) {
+                                   history += "MODEL_RETURN_LOCAL_COMPLETION_V41|$selectedPlanSource"
+                                   finishSuccess("Goal verified locally after model return")
+          @@ -941,7 +942,7 @@ internal class HybridAgentEngine(private val service: AgentService) {
+           
+                                   is HybridAction.Done -> {
+                                       val summary = action.summary.ifBlank { "Task completed" }
+          -                            when (evaluateGoalLocallyV11(platform, task.goal, targetChat)) {
+          +                            when (evaluateGoalLocallyV11(platform, task.goal, targetChat, verifiedPageAliasesV46)) {
+                                           V11GoalVerdict.ACHIEVED -> {
+                                               finishSuccess(summary)
+                                               return
+          @@ -957,7 +958,7 @@ internal class HybridAgentEngine(private val service: AgentService) {
+                                   }
+           
+                                   is HybridAction.Fail -> {
+          -                            when (evaluateGoalLocallyV11(platform, task.goal, targetChat)) {
+          +                            when (evaluateGoalLocallyV11(platform, task.goal, targetChat, verifiedPageAliasesV46)) {
+                                           V11GoalVerdict.ACHIEVED -> {
+                                               finishSuccess("Goal verified locally despite model FAIL")
+                                               return
+          @@ -1038,7 +1039,26 @@ internal class HybridAgentEngine(private val service: AgentService) {
+                                                   }
+                                               }
+                                               is DeterministicUiNavigatorV43.Decision.Click -> {
+          -                                        if (receipt.accepted) deterministicScansV43.clear()
+          +                                        if (receipt.accepted) {
+          +                                            deterministicScansV43.clear()
+          +                                            // V46 causal page alias: never globally loosen PAGE_REACHED.
+          +                                            // Only a grounded, receipt-accepted click may authorize a
+          +                                            // row-label -> destination-header alias in the same foreground app.
+          +                                            val postClickSnapshotV46 = platform.captureScreen()
+          +                                            val postClickPackageV46 = observedPackage(platform)
+          +                                            CausalDestinationV46.prove(
+          +                                                sourceTarget = deterministic.target,
+          +                                                packageName = postClickPackageV46,
+          +                                                nodes = deterministicNavigatorNodesV43(postClickSnapshotV46),
+          +                                            )?.let { alias ->
+          +                                                verifiedPageAliasesV46.removeAll { existing ->
+          +                                                    existing.sourceTarget.equals(alias.sourceTarget, ignoreCase = true)
+          +                                                }
+          +                                                verifiedPageAliasesV46 += alias
+          +                                                history +=
+          +                                                    "CAUSAL_DESTINATION_V46|${alias.sourceTarget}|${alias.destinationHeader}|${alias.packageName}"
+          +                                            }
+          +                                        }
+                                               }
+                                               else -> Unit
+                                           }
+          @@ -1669,35 +1689,38 @@ internal class HybridAgentEngine(private val service: AgentService) {
+                * Reconciles a Brain excursion left over from a previous process/service instance.
+                * Must be called before persisting BRAIN_ENTERING for a NEW dispatch, never after.
+                *
+          -     * BRAIN_ENTERING / BRAIN_AWAITING_RESPONSE: we cannot prove whether a request reached the
+          -     * Brain app, so the excursion is cleared and abandoned. This is safe because the next real
+          -     * consult always mints a brand-new REQUEST_ID (newBrainRequestIdV9) — the old ID is never
+          -     * reused, so even a late response to the abandoned request cannot match extractPlanV9's
+          -     * REQUEST_ID check and cannot be mistaken for a current one.
+          +     * BRAIN_ENTERING can be abandoned because Send has not yet been authorized/persisted.
+          +     * BRAIN_AWAITING_RESPONSE / RECOVERY_REQUIRED may represent an already-sent request: the
+          +     * SAME task is therefore blocked from automatic resend, while a DIFFERENT task may abandon
+          +     * the stale excursion because it mints a new exact TASK_ID/REQUEST_ID pair and late old output
+          +     * cannot validate for the new task.
+                *
+          -     * BRAIN_RETURNING with a persisted plan: the plan is NOT discarded here. It stays available
+          -     * via pendingBrainPlanForTaskV9() for one resume attempt by the caller before falling back
+          -     * to a fresh Brain consult.
+          +     * BRAIN_RETURNING for the same task remains available through pendingBrainPlanForTaskV9()
+          +     * before this method is reached; a foreign task cannot consume that plan and may clear it.
+                */
+          -    private fun reconcileStaleBrainExcursionV9() {
+          -        val stateName = prefs.getString("v9_excursion_state", null) ?: return
+          -        val state = runCatching { V9ExcursionState.valueOf(stateName) }.getOrNull()
+          -        if (state == null || state == V9ExcursionState.WORK) return
+          +    private fun reconcileStaleBrainExcursionV9(currentTaskId: String) {
+          +        val stateName = prefs.getString("v9_excursion_state", null)
+                   val staleTask = prefs.getString("v9_excursion_task", null)
+                   val staleRequest = prefs.getString("v9_excursion_request", null)
+          -        Log.w(TAG, "Reconciling stale Brain excursion after restart: state=$stateName task=$staleTask request=$staleRequest")
+          -        when (state) {
+          -            V9ExcursionState.BRAIN_ENTERING -> clearBrainExcursionV9()
+          -            V9ExcursionState.BRAIN_AWAITING_RESPONSE -> {
+          -                if (!prefs.edit().putString("v9_excursion_state", V9ExcursionState.RECOVERY_REQUIRED.name).commit()) {
+          -                    error("RECOVERY_REQUIRED: could not persist ambiguous Brain-send state")
+          -                }
+          -                error("RECOVERY_REQUIRED: Brain request may already have been sent; same REQUEST_ID will not be resent")
+          +        when (BrainExcursionRecoveryV46.decide(stateName, staleTask, currentTaskId)) {
+          +            BrainExcursionRecoveryV46.Decision.PROCEED -> return
+          +            BrainExcursionRecoveryV46.Decision.CLEAR_AND_PROCEED -> {
+          +                Log.w(
+          +                    TAG,
+          +                    "V46 abandoning stale foreign/safe Brain excursion: " +
+          +                        "state=$stateName task=$staleTask request=$staleRequest currentTask=$currentTaskId",
+          +                )
+          +                clearBrainExcursionV9()
+          +            }
+          +            BrainExcursionRecoveryV46.Decision.BLOCK_SAME_TASK -> {
+          +                error(
+          +                    "RECOVERY_REQUIRED: unresolved Brain dispatch belongs to this same task; " +
+          +                        "automatic resend is blocked"
+          +                )
+          +            }
+          +            BrainExcursionRecoveryV46.Decision.BLOCK_CORRUPT -> {
+          +                error("RECOVERY_REQUIRED: Brain excursion state is incomplete or invalid")
+                       }
+          -            V9ExcursionState.BRAIN_RETURNING -> Unit
+          -            V9ExcursionState.RECOVERY_REQUIRED ->
+          -                error("RECOVERY_REQUIRED: unresolved prior Brain dispatch")
+          -            V9ExcursionState.WORK -> Unit
+                   }
+               }
+           
+          @@ -3065,8 +3088,10 @@ internal class HybridAgentEngine(private val service: AgentService) {
+                   requestId: String,
+                   consultKey: String? = null,
+               ): String {
+          -        // Reconcile any Brain excursion left by a crash/restart BEFORE starting a new one.
+          -        reconcileStaleBrainExcursionV9()
+          +        // V46: reconcile stale Brain state against this exact NEW task before starting a consult.
+          +        // Same-task maybe-sent requests remain blocked; foreign-task stale state is safely
+          +        // abandoned because exact TASK_ID/REQUEST_ID validation prevents cross-task reuse.
+          +        reconcileStaleBrainExcursionV9(taskId)
+                   val frame = captureBrainExcursionFrame(platform, returnPackage)
+                   persistBrainExcursionV9(V9ExcursionState.BRAIN_ENTERING, taskId, requestId, null, frame)
+                   var response: String? = null
+          @@ -3972,13 +3997,19 @@ internal class HybridAgentEngine(private val service: AgentService) {
+                * In foreground mode rootInActiveWindow is the authoritative signal; VD must use its own root.
+                */
+               private fun observedPackage(platform: AndroidPlatform): String? {
+          -        if (platform.mode != PlatformMode.ACCESSIBILITY) return platform.getCurrentPackageName()
+          -        val root = service.rootInActiveWindow ?: return platform.getCurrentPackageName()
+          -        return try {
+          -            root.packageName?.toString() ?: platform.getCurrentPackageName()
+          +        // V46: AccessibilityPlatform.getCurrentPackageName() enumerates the current window stack
+          +        // and explicitly excludes accessibility-overlay and IME windows. Prefer that fresh
+          +        // window-level observation. rootInActiveWindow is OEM-fragile during page transitions and
+          +        // is now fallback-only instead of overriding the robust window result.
+          +        val windowPackage = runCatching { platform.getCurrentPackageName() }.getOrNull()
+          +        if (platform.mode != PlatformMode.ACCESSIBILITY) return windowPackage
+          +        val root = service.rootInActiveWindow
+          +        val rootPackage = if (root == null) null else try {
+          +            root.packageName?.toString()
+                   } finally {
+                       runCatching { root.recycle() }
+                   }
+          +        return ForegroundPackageV46.choose(windowPackage, rootPackage)
+               }
+           
+               private suspend fun awaitPackage(
+          @@ -4837,6 +4868,7 @@ internal class HybridAgentEngine(private val service: AgentService) {
+                   platform: AndroidPlatform,
+                   goal: String,
+                   targetChat: String?,
+          +        verifiedPageAliasesV46: Collection<CausalDestinationV46.Alias> = emptyList(),
+               ): V11GoalVerdict {
+                   if (!targetChat.isNullOrBlank()) {
+                       return if (isExactChatActiveV7(platform, targetChat)) V11GoalVerdict.ACHIEVED else V11GoalVerdict.NOT_ACHIEVED
+          @@ -4866,13 +4898,23 @@ internal class HybridAgentEngine(private val service: AgentService) {
+                               bottom = element.bounds.bottom,
+                           )
+                       }
+          -            val achieved = GoalPostconditionV41.evaluate(
+          +            val currentPackageV46 = observedPackage(platform)
+          +            val typedAchieved = GoalPostconditionV41.evaluate(
+                           spec = spec,
+          -                currentPackage = observedPackage(platform),
+          +                currentPackage = currentPackageV46,
+                           nodes = nodes,
+                           installedApps = apps,
+                           goal = goal,
+                       )
+          +            val causalPageAchievedV46 =
+          +                !typedAchieved && spec.kind == GoalPostconditionV41.Kind.PAGE_REACHED &&
+          +                    CausalDestinationV46.provesStopTarget(
+          +                        stopTarget = spec.target,
+          +                        currentPackage = currentPackageV46,
+          +                        nodes = deterministicNavigatorNodesV43(snapshot),
+          +                        aliases = verifiedPageAliasesV46,
+          +                    )
+          +            val achieved = typedAchieved || causalPageAchievedV46
+                       return if (achieved && scopeVerifiedV9(goal, snapshot)) {
+                           V11GoalVerdict.ACHIEVED
+                       } else {
+          diff --git a/app/src/main/res/values/strings.xml b/app/src/main/res/values/strings.xml
+          index 5dcf066..2fa1a87 100644
+          --- a/app/src/main/res/values/strings.xml
+          +++ b/app/src/main/res/values/strings.xml
+          @@ -1,5 +1,5 @@
+           <?xml version="1.0" encoding="utf-8"?>
+           <resources>
+          -    <string name="app_name">ClosePaw RC11 045</string>
+          +    <string name="app_name">ClosePaw RC11 046</string>
+               <string name="accessibility_service_description">ClosePaw acts as an on-device automation agent. With your permission, it reads on-screen elements and performs taps, swipes, and text input only when you start a task. It does not run in the background or monitor other apps.</string>
+           </resources>
+          diff --git a/app/src/test/kotlin/ai/closepaw/app/BrainExcursionRecoveryV46Test.kt b/app/src/test/kotlin/ai/closepaw/app/BrainExcursionRecoveryV46Test.kt
+          new file mode 100644
+          index 0000000..43e057d
+          --- /dev/null
+          +++ b/app/src/test/kotlin/ai/closepaw/app/BrainExcursionRecoveryV46Test.kt
+          @@ -0,0 +1,45 @@
+          +package ai.closepaw.app
+          +
+          +import org.junit.Assert.assertEquals
+          +import org.junit.Test
+          +
+          +class BrainExcursionRecoveryV46Test {
+          +    @Test fun `foreign recovery-required state does not brick future tasks`() {
+          +        assertEquals(
+          +            BrainExcursionRecoveryV46.Decision.CLEAR_AND_PROCEED,
+          +            BrainExcursionRecoveryV46.decide("RECOVERY_REQUIRED", "old-task", "new-task"),
+          +        )
+          +    }
+          +
+          +    @Test fun `same task maybe-sent request never auto resends`() {
+          +        assertEquals(
+          +            BrainExcursionRecoveryV46.Decision.BLOCK_SAME_TASK,
+          +            BrainExcursionRecoveryV46.decide("BRAIN_AWAITING_RESPONSE", "task-a", "task-a"),
+          +        )
+          +        assertEquals(
+          +            BrainExcursionRecoveryV46.Decision.BLOCK_SAME_TASK,
+          +            BrainExcursionRecoveryV46.decide("RECOVERY_REQUIRED", "task-a", "task-a"),
+          +        )
+          +    }
+          +
+          +    @Test fun `foreign returning plan is cleared not consumed`() {
+          +        assertEquals(
+          +            BrainExcursionRecoveryV46.Decision.CLEAR_AND_PROCEED,
+          +            BrainExcursionRecoveryV46.decide("BRAIN_RETURNING", "old-task", "new-task"),
+          +        )
+          +    }
+          +
+          +    @Test fun `same task returning state is preserved for resume path`() {
+          +        assertEquals(
+          +            BrainExcursionRecoveryV46.Decision.BLOCK_SAME_TASK,
+          +            BrainExcursionRecoveryV46.decide("BRAIN_RETURNING", "task-a", "task-a"),
+          +        )
+          +    }
+          +
+          +    @Test fun `incomplete durable state fails closed`() {
+          +        assertEquals(
+          +            BrainExcursionRecoveryV46.Decision.BLOCK_CORRUPT,
+          +            BrainExcursionRecoveryV46.decide("RECOVERY_REQUIRED", null, "new-task"),
+          +        )
+          +    }
+          +}
+          diff --git a/app/src/test/kotlin/ai/closepaw/app/CausalDestinationV46Test.kt b/app/src/test/kotlin/ai/closepaw/app/CausalDestinationV46Test.kt
+          new file mode 100644
+          index 0000000..fbc4db3
+          --- /dev/null
+          +++ b/app/src/test/kotlin/ai/closepaw/app/CausalDestinationV46Test.kt
+          @@ -0,0 +1,91 @@
+          +package ai.closepaw.app
+          +
+          +import org.junit.Assert.assertFalse
+          +import org.junit.Assert.assertNotNull
+          +import org.junit.Assert.assertNull
+          +import org.junit.Assert.assertTrue
+          +import org.junit.Test
+          +
+          +class CausalDestinationV46Test {
+          +    private fun n(
+          +        index: Int,
+          +        text: String = "",
+          +        top: Int,
+          +        bottom: Int,
+          +        left: Int = 20,
+          +        right: Int = 700,
+          +        clickable: Boolean = false,
+          +    ) = DeterministicUiNavigatorV43.NodeEvidence(
+          +        index = index,
+          +        text = text,
+          +        description = "",
+          +        hint = "",
+          +        resourceId = "",
+          +        className = "TextView",
+          +        clickable = clickable,
+          +        scrollable = false,
+          +        enabled = true,
+          +        left = left,
+          +        top = top,
+          +        right = right,
+          +        bottom = bottom,
+          +    )
+          +
+          +    @Test fun `grounded Choose row may causally prove Default apps destination`() {
+          +        val alias = CausalDestinationV46.prove(
+          +            sourceTarget = "Choose default apps",
+          +            packageName = "com.android.settings",
+          +            nodes = listOf(
+          +                n(1, "Default apps", 60, 150),
+          +                n(2, "Browser app", 420, 540, clickable = true),
+          +            ),
+          +        )
+          +        assertNotNull(alias)
+          +        assertTrue(
+          +            CausalDestinationV46.provesStopTarget(
+          +                stopTarget = "Choose default apps page",
+          +                currentPackage = "com.android.settings",
+          +                nodes = listOf(n(1, "Default apps", 60, 150)),
+          +                aliases = listOf(alias!!),
+          +            )
+          +        )
+          +    }
+          +
+          +    @Test fun `visible row alone never proves destination`() {
+          +        val alias = CausalDestinationV46.prove(
+          +            sourceTarget = "Choose default apps",
+          +            packageName = "com.android.settings",
+          +            nodes = listOf(
+          +                n(10, "", 400, 560, clickable = true),
+          +                n(11, "Choose default apps", 425, 500, left = 120, right = 500),
+          +            ),
+          +        )
+          +        assertNull(alias)
+          +    }
+          +
+          +    @Test fun `alias is package scoped`() {
+          +        val alias = CausalDestinationV46.prove(
+          +            sourceTarget = "Choose default apps",
+          +            packageName = "com.android.settings",
+          +            nodes = listOf(n(1, "Default apps", 60, 150)),
+          +        )!!
+          +        assertFalse(
+          +            CausalDestinationV46.provesStopTarget(
+          +                stopTarget = "Choose default apps page",
+          +                currentPackage = "ai.closepaw.rc11c046",
+          +                nodes = listOf(n(1, "Default apps", 60, 150)),
+          +                aliases = listOf(alias),
+          +            )
+          +        )
+          +    }
+          +
+          +    @Test fun `unrelated lexical shortening is not accepted`() {
+          +        assertNull(
+          +            CausalDestinationV46.prove(
+          +                sourceTarget = "Samsung app settings",
+          +                packageName = "com.android.settings",
+          +                nodes = listOf(n(1, "App settings", 60, 150)),
+          +            )
+          +        )
+          +    }
+          +}
+          diff --git a/app/src/test/kotlin/ai/closepaw/app/ForegroundPackageV46Test.kt b/app/src/test/kotlin/ai/closepaw/app/ForegroundPackageV46Test.kt
+          new file mode 100644
+          index 0000000..8cb151b
+          --- /dev/null
+          +++ b/app/src/test/kotlin/ai/closepaw/app/ForegroundPackageV46Test.kt
+          @@ -0,0 +1,25 @@
+          +package ai.closepaw.app
+          +
+          +import org.junit.Assert.assertEquals
+          +import org.junit.Assert.assertNull
+          +import org.junit.Test
+          +
+          +class ForegroundPackageV46Test {
+          +    @Test fun `window package wins over transient active-root package`() {
+          +        assertEquals(
+          +            "com.android.settings",
+          +            ForegroundPackageV46.choose("com.android.settings", "ai.closepaw.rc11c046"),
+          +        )
+          +    }
+          +
+          +    @Test fun `active root is fallback only when window package unavailable`() {
+          +        assertEquals(
+          +            "com.android.settings",
+          +            ForegroundPackageV46.choose(null, "com.android.settings"),
+          +        )
+          +    }
+          +
+          +    @Test fun `blank sources do not manufacture foreground identity`() {
+          +        assertNull(ForegroundPackageV46.choose("  ", ""))
+          +    }
+          +}
+          PATCH046
+          EXPECTED_PATCH_SHA='72d501e55b41fdba1f950aed17081f5e84c27eb704151af8a5083575220af218'
+          ACTUAL_PATCH_SHA="$(sha256sum /tmp/046.patch | awk '{print $1}')"
+          [ "$ACTUAL_PATCH_SHA" = "$EXPECTED_PATCH_SHA" ] || { echo "046 patch SHA mismatch: $ACTUAL_PATCH_SHA" >&2; exit 1; }
+          git apply --check /tmp/046.patch
+          git apply /tmp/046.patch
+          test -f app/src/main/kotlin/ai/closepaw/app/ForegroundPackageV46.kt
+          test -f app/src/main/kotlin/ai/closepaw/app/CausalDestinationV46.kt
+          test -f app/src/main/kotlin/ai/closepaw/app/BrainExcursionRecoveryV46.kt
+          grep -Fq 'applicationIdSuffix = ".rc11c046"' app/build.gradle.kts
+          grep -Fq 'ClosePaw RC11 046' app/src/main/res/values/strings.xml
+          echo "046 isolated patch applied sha256=$ACTUAL_PATCH_SHA" >> 046-verification-report.txt
+
+      - name: 046 source isolation and frozen correctness gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PYISO'
+          from pathlib import Path
+          import hashlib,json
+          def sf(p): return hashlib.sha256(Path(p).read_bytes()).hexdigest()
+          base=json.loads(Path('046-baseline-source-manifest.json').read_text())
+          cur={}
+          for p in sorted(Path('app').rglob('*')):
+            if p.is_file() and not p.as_posix().startswith('app/build/'):
+              cur[p.as_posix()]=sf(p)
+          changed={p for p in base.keys()&cur.keys() if base[p]!=cur[p]}
+          added=set(cur)-set(base); removed=set(base)-set(cur)
+          expected_changed={
+            'app/build.gradle.kts','app/src/main/res/values/strings.xml',
+            'app/src/main/kotlin/ai/closepaw/app/HybridAgentEngine.kt',
+          }
+          expected_added={
+            'app/src/main/kotlin/ai/closepaw/app/ForegroundPackageV46.kt',
+            'app/src/main/kotlin/ai/closepaw/app/CausalDestinationV46.kt',
+            'app/src/main/kotlin/ai/closepaw/app/BrainExcursionRecoveryV46.kt',
+            'app/src/test/kotlin/ai/closepaw/app/ForegroundPackageV46Test.kt',
+            'app/src/test/kotlin/ai/closepaw/app/CausalDestinationV46Test.kt',
+            'app/src/test/kotlin/ai/closepaw/app/BrainExcursionRecoveryV46Test.kt',
+          }
+          if changed!=expected_changed: raise SystemExit(f'unexpected changed: {sorted(changed)}')
+          if added!=expected_added: raise SystemExit(f'unexpected added: {sorted(added)}')
+          if removed: raise SystemExit(f'unexpected removed: {sorted(removed)}')
+          post={
+            'app/build.gradle.kts':'ac10466c9e847c3ae61882a71b5a77d6b6b507c93269df2661e2f92fae6dec4b',
+            'app/src/main/res/values/strings.xml':'691f95ac532859a5c49639073cb7f635d0308bd22be8485281800fe3b8389338',
+            'app/src/main/kotlin/ai/closepaw/app/HybridAgentEngine.kt':'207445d933ffdc22b074429d44c90c06314073b9055c80aeace0f58ecf4360ee',
+            'app/src/main/kotlin/ai/closepaw/app/ForegroundPackageV46.kt':'04aaf90450345edb7964e53aa3929fbeb99517ef2b3c96ba81e4dfa65cab8e74',
+            'app/src/main/kotlin/ai/closepaw/app/CausalDestinationV46.kt':'eed7423a080b1d8b8b8a40ac943f88a62db658c5eb12f9a638fc3974cc938e73',
+            'app/src/main/kotlin/ai/closepaw/app/BrainExcursionRecoveryV46.kt':'69a0e3bc752d3ef72c25e3814c5aa6d58f420fe3ae6c6e40f563f12f62233dd9',
+            'app/src/test/kotlin/ai/closepaw/app/ForegroundPackageV46Test.kt':'48d82de357c24fec665b8377f321c8a6603bcd25f3650012b24531d9390f2ef8',
+            'app/src/test/kotlin/ai/closepaw/app/CausalDestinationV46Test.kt':'3306211d52354122ee44b96aa390b526dacccde3c0febd110b0b3e30eac16b1e',
+            'app/src/test/kotlin/ai/closepaw/app/BrainExcursionRecoveryV46Test.kt':'caf710c6bbbb07ef1f9ee95c5971c5a456219629ba097c76c0b1d9bb95e8bc7e',
+          }
+          for p,w in post.items():
+            got=sf(p)
+            if got!=w: raise SystemExit(f'post hash mismatch {p}: {got} != {w}')
+          frozen=json.loads(Path('046-baseline-critical-hashes.json').read_text())
+          eng=Path('app/src/main/kotlin/ai/closepaw/app/HybridAgentEngine.kt').read_text()
+          def h(b): return hashlib.sha256(b).hexdigest()
+          def reg(a,b):
+            s=eng.find(a); e=eng.find(b,s)
+            if s<0 or e<0: raise SystemExit('protected region missing after patch')
+            return h(eng[s:e].encode())
+          now={
+            'rc8_restore':reg('// RC8: only strong identity evidence may authorize a restore-side navigation.','private suspend fun restoreSidebarShapeIfNeeded('),
+            'durable_transaction':reg('private suspend fun executeActionTransactionV9(','private fun receiptHistoryLineV9('),
+            'v33_validation':reg('private suspend fun requestPrimaryPlanV9(','private fun buildBrainRequest('),
+            'brain_restore':reg('private suspend fun restoreAfterBrainExcursion(','private fun configuredBrainV9(): ChatBrainSettings'),
+            'brain_send':reg('private suspend fun sendConfiguredBrainMessageV9(','private suspend fun waitForMatchingBrainResponseV9('),
+            'open_app_exact':reg('private suspend fun openApp(platform: AndroidPlatform, name: String): ActionOutcome {','private suspend fun clickByText('),
+            'navigator_v43':sf('app/src/main/kotlin/ai/closepaw/app/DeterministicUiNavigatorV43.kt'),
+            'grammar_v43':sf('app/src/main/kotlin/ai/closepaw/app/PrimaryLocalGrammarV43.kt'),
+            'prereq_v45':sf('app/src/main/kotlin/ai/closepaw/app/GoalAppPrerequisiteV45.kt'),
+            'goal_v41':sf('app/src/main/kotlin/ai/closepaw/app/GoalPostconditionV41.kt'),
+            'protocol':sf('app/src/main/kotlin/ai/closepaw/app/HybridAgentProtocol.kt'),
+            'rc11':sf('app/src/main/kotlin/ai/closepaw/app/RC11CorrectnessPolicy.kt'),
+            'transport':sf('app/src/main/kotlin/ai/closepaw/app/PrimaryLocalHttpTransportV32.kt'),
+            'brain_target':sf('app/src/main/kotlin/ai/closepaw/app/ConfiguredBrainTargetResolverV40.kt'),
+            'accessibility_platform':sf('app/src/main/kotlin/ai/closepaw/platform/AccessibilityPlatform.kt'),
+            'bridge':sf('tools/termux-bridge/closepaw_bridge.py'),
+          }
+          if now!=frozen:
+            bad=[k for k in now if now[k]!=frozen.get(k)]
+            raise SystemExit('protected correctness changed: '+','.join(bad))
+          Path('046-postpatch-source-manifest.json').write_text(json.dumps(cur,indent=2,sort_keys=True)+'\n')
+          print('046 SOURCE ISOLATION + FROZEN CORRECTNESS: PASS')
+          PYISO
+
+      - name: 046 architecture and regression audit
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PYAUDIT'
+          from pathlib import Path
+          e=Path('app/src/main/kotlin/ai/closepaw/app/HybridAgentEngine.kt').read_text()
+          f=Path('app/src/main/kotlin/ai/closepaw/app/ForegroundPackageV46.kt').read_text()
+          c=Path('app/src/main/kotlin/ai/closepaw/app/CausalDestinationV46.kt').read_text()
+          b=Path('app/src/main/kotlin/ai/closepaw/app/BrainExcursionRecoveryV46.kt').read_text()
+          a=Path('app/src/main/kotlin/ai/closepaw/platform/AccessibilityPlatform.kt').read_text()
+          gradle=Path('app/build.gradle.kts').read_text(); strings=Path('app/src/main/res/values/strings.xml').read_text()
+
+          # Foreground authority: robust filtered application-window observation first; active root only fallback.
+          obs=e[e.find('private fun observedPackage'):e.find('private suspend fun awaitPackage')]
+          p_window=obs.find('platform.getCurrentPackageName()')
+          p_root=obs.find('service.rootInActiveWindow')
+          p_choose=obs.find('ForegroundPackageV46.choose(windowPackage, rootPackage)')
+          if not (0 <= p_window < p_root < p_choose): raise SystemExit('V46 foreground precedence/wiring invalid')
+          if a.count('AccessibilityWindowInfo.TYPE_ACCESSIBILITY_OVERLAY') < 2 or a.count('AccessibilityWindowInfo.TYPE_INPUT_METHOD') < 2:
+            raise SystemExit('AccessibilityPlatform overlay/IME filtering missing')
+
+          # Completion alias is causal and PAGE_REACHED-only; V41 itself is frozen above.
+          click_start=e.find('is DeterministicUiNavigatorV43.Decision.Click -> {')
+          click_end=e.find('else -> Unit', click_start)
+          click_block=e[click_start:click_end]
+          if click_start < 0 or 'if (receipt.accepted)' not in click_block or 'CausalDestinationV46.prove(' not in click_block:
+            raise SystemExit('causal alias is not receipt-accepted grounded-click scoped')
+          ev=e[e.find('private suspend fun evaluateGoalLocallyV11'):e.find('private fun riskForAction', e.find('private suspend fun evaluateGoalLocallyV11'))]
+          if 'spec.kind == GoalPostconditionV41.Kind.PAGE_REACHED' not in ev or 'CausalDestinationV46.provesStopTarget(' not in ev:
+            raise SystemExit('PAGE_REACHED causal fallback wiring missing')
+          for token in ['stripOneLeadingActionVerb','SAFE_LEADING_ACTION_VERBS','"choose", "select", "pick"']:
+            if token not in c: raise SystemExit('conservative causal alias missing '+token)
+          if 'visible row alone' in c.lower():
+            pass
+
+          # Brain durability: exact old maybe-sent request stays blocked for same task, but cannot brick future task IDs.
+          for token in ['BRAIN_AWAITING_RESPONSE", "RECOVERY_REQUIRED"','if (staleTask == currentTaskId) Decision.BLOCK_SAME_TASK','else Decision.CLEAR_AND_PROCEED','BRAIN_RETURNING']:
+            if token not in b: raise SystemExit('Brain recovery invariant missing '+token)
+          if 'reconcileStaleBrainExcursionV9(taskId)' not in e: raise SystemExit('task-aware Brain reconciliation not wired')
+          consult=e[e.find('private suspend fun consultBrain'):e.find('private suspend fun captureBrainExcursionFrame', e.find('private suspend fun consultBrain'))]
+          awaiting=consult.find('V9ExcursionState.BRAIN_AWAITING_RESPONSE')
+          send=consult.find('sendConfiguredBrainMessageV9(platform, request)')
+          if not (0 <= awaiting < send): raise SystemExit('Brain PRE-SEND durable AWAITING ordering changed')
+          if 'parsed.taskId != taskId || parsed.requestId != requestId' not in consult: raise SystemExit('exact Brain response ID validation missing')
+
+          if 'applicationIdSuffix = ".rc11c046"' not in gradle or 'versionNameSuffix = "-rc11-c046"' not in gradle: raise SystemExit('046 identity missing')
+          if 'ClosePaw RC11 046' not in strings: raise SystemExit('046 label missing')
+          if 'take(600)' in e: raise SystemExit('goal truncation reintroduced')
+          with Path('046-verification-report.txt').open('a') as out:
+            out.write('Filtered application-window foreground precedes OEM-fragile active root: PASS\n')
+            out.write('Causal post-click PAGE_REACHED alias; V41 visible-row semantics frozen: PASS\n')
+            out.write('Same-task maybe-sent Brain dispatch blocks; stale foreign task clears under exact IDs: PASS\n')
+            out.write('OpenApp exact resolver and core transaction/restore/model validation surfaces frozen: PASS\n')
+          print('046 ARCHITECTURE AUDIT: PASS')
+          PYAUDIT
+
+      - name: 046 clean Kotlin compile gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./gradlew clean :app:compileDebugKotlin --stacktrace --no-daemon --no-configuration-cache
+          echo '046 clean Kotlin compile: PASS' >> 046-verification-report.txt
+
+      - name: 046 targeted foreground completion Brain navigation safety tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./gradlew :app:testDebugUnitTest \
+            --tests ai.closepaw.app.ForegroundPackageV46Test \
+            --tests ai.closepaw.app.CausalDestinationV46Test \
+            --tests ai.closepaw.app.BrainExcursionRecoveryV46Test \
+            --tests ai.closepaw.app.GoalAppPrerequisiteV45Test \
+            --tests ai.closepaw.app.V45SequencingContractTest \
+            --tests ai.closepaw.app.DeterministicUiNavigatorV43Test \
+            --tests ai.closepaw.app.PrimaryLocalGrammarV43Test \
+            --tests ai.closepaw.app.GoalPostconditionV41Test \
+            --tests ai.closepaw.app.ConfiguredBrainTargetResolverV40Test \
+            --tests ai.closepaw.app.PrimaryLocalGrammarV37Test \
+            --tests ai.closepaw.app.PrimaryFormatComplianceV33Test \
+            --tests ai.closepaw.app.PrimaryLocalHttpTransportV32Test \
+            --tests ai.closepaw.app.RC11CorrectnessPolicyTest \
+            --tests ai.closepaw.termux.ClosePawBridgeResourceTest \
+            --stacktrace --no-daemon --no-configuration-cache
+          echo '046 targeted regression tests: PASS' >> 046-verification-report.txt
+
+      - name: 046 full unit tests and clean rebuild
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./gradlew :app:testDebugUnitTest :app:assembleDebug --stacktrace --no-daemon --no-configuration-cache
+          echo '046 full tests + assemble: PASS' >> 046-verification-report.txt
+
+      - name: 046 APK identity integrity native-runtime and signature gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          mapfile -t APKS < <(find app/build/outputs/apk/debug -maxdepth 1 -type f -name '*.apk' -print)
+          [ "${#APKS[@]}" -eq 1 ] || { echo 'expected one APK' >&2; exit 1; }
+          APK="${APKS[0]}"
+          unzip -tq "$APK" >/dev/null
+          SIZE="$(stat -c %s "$APK")"; [ "$SIZE" -gt 50000000 ] || { echo 'APK too small' >&2; exit 1; }
+          CONTENTS="$(zipinfo -1 "$APK")"
+          for E in AndroidManifest.xml classes.dex lib/arm64-v8a/libllama.so lib/arm64-v8a/libggml.so lib/arm64-v8a/libinference_engine.so lib/arm64-v8a/libinference_engine_jni.so lib/arm64-v8a/libinference_engine_llamacpp_backend.so; do grep -Fxq "$E" <<<"$CONTENTS" || { echo "missing $E" >&2; exit 1; }; done
+          AAPT="$(find "$ANDROID_HOME/build-tools" -type f -name aapt -print | sort -V | tail -n1)"
+          APKSIGNER="$(find "$ANDROID_HOME/build-tools" -type f -name apksigner -print | sort -V | tail -n1)"
+          BADGING="$($AAPT dump badging "$APK")"
+          grep -Fq "package: name='ai.closepaw.rc11c046'" <<<"$BADGING"
+          grep -Fq "application-label:'ClosePaw RC11 046'" <<<"$BADGING"
+          grep -Fq "sdkVersion:'31'" <<<"$BADGING"; grep -Fq "targetSdkVersion:'36'" <<<"$BADGING"
+          "$APKSIGNER" verify --verbose "$APK" > 046-apksigner-verification.txt
+          echo "046 APK gate PASS sha256=$(sha256sum "$APK" | awk '{print $1}') size=$SIZE" | tee -a 046-verification-report.txt
+
+      - name: Prepare 046 full verified source snapshot
+        if: success()
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf 046-full-source; mkdir -p 046-full-source
+          rsync -a --exclude='.git/' --exclude='.github/' --exclude='.gradle/' --exclude='app/build/' --exclude='046-full-source/' ./ 046-full-source/
+          test -f 046-full-source/app/src/main/kotlin/ai/closepaw/app/ForegroundPackageV46.kt
+          test -f 046-full-source/app/src/main/kotlin/ai/closepaw/app/CausalDestinationV46.kt
+          test -f 046-full-source/app/src/main/kotlin/ai/closepaw/app/BrainExcursionRecoveryV46.kt
+
+      - name: Upload 046 verification proof
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: 046-ClosePaw-RC11-verification-proof
+          if-no-files-found: warn
+          path: |
+            046-verification-report.txt
+            046-baseline-source-manifest.json
+            046-postpatch-source-manifest.json
+            046-baseline-critical-hashes.json
+            046-apksigner-verification.txt
+
+      - name: Upload 046 full verified source
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: 046-ClosePaw-RC11-verified-full-source
+          if-no-files-found: error
+          path: 046-full-source/
+
+      - name: Upload 046 APK
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: 046-ClosePaw-RC11-APK
+          if-no-files-found: error
+          path: app/build/outputs/apk/debug/app-debug.apk
+
+      - name: Upload 046 failure sources
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: 046-ClosePaw-RC11-failure-sources
+          if-no-files-found: warn
+          path: |
+            app/src/main/kotlin/ai/closepaw/app/HybridAgentEngine.kt
+            app/src/main/kotlin/ai/closepaw/app/ForegroundPackageV46.kt
+            app/src/main/kotlin/ai/closepaw/app/CausalDestinationV46.kt
+            app/src/main/kotlin/ai/closepaw/app/BrainExcursionRecoveryV46.kt
+            app/src/main/kotlin/ai/closepaw/app/GoalAppPrerequisiteV45.kt
+            app/src/main/kotlin/ai/closepaw/app/DeterministicUiNavigatorV43.kt
+            app/src/test/kotlin/ai/closepaw/app/ForegroundPackageV46Test.kt
+            app/src/test/kotlin/ai/closepaw/app/CausalDestinationV46Test.kt
+            app/src/test/kotlin/ai/closepaw/app/BrainExcursionRecoveryV46Test.kt
+            046-verification-report.txt
+
