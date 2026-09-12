@@ -1,0 +1,1456 @@
+name: 042 - ClosePaw RC11 Typed Goal Semantics + Authoritative Foreground + Ordered Progress
+
+'on':
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Setup Java 17
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Restore exact verified 040 full source
+        uses: actions/download-artifact@v5
+        with:
+          name: 040-ClosePaw-RC11-verified-full-source
+          path: /tmp/040-source
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: 34674423671
+
+      - name: Verify and activate exact 040 baseline
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f /tmp/040-source/app/src/main/kotlin/ai/closepaw/app/HybridAgentEngine.kt
+          test -f /tmp/040-source/app/src/main/kotlin/ai/closepaw/app/LocalGoalCompletionV40.kt
+          test -f /tmp/040-source/app/src/main/kotlin/ai/closepaw/app/ConfiguredBrainTargetResolverV40.kt
+          test -f /tmp/040-source/app/src/main/kotlin/ai/closepaw/app/PrimaryLocalGrammarV37.kt
+          test -f /tmp/040-source/app/src/main/kotlin/ai/closepaw/app/HybridTraceEventsV37.kt
+          test -f /tmp/040-source/app/src/main/kotlin/ai/closepaw/app/ChatBrainSettingsStore.kt
+          test -f /tmp/040-source/tools/termux-bridge/closepaw_bridge.py
+          find . -mindepth 1 -maxdepth 1 ! -name .git ! -name .github -exec rm -rf {} +
+          cp -a /tmp/040-source/. ./
+
+          python3 - <<'PYBASE042'
+          from pathlib import Path
+          import hashlib
+          expected = {
+              'app/src/main/kotlin/ai/closepaw/app/HybridAgentEngine.kt': '6bca28698a4b3a547fdd8b28fad4d1d9dba22bd4c2ca18419da1e2593d2a6887',
+              'app/src/main/kotlin/ai/closepaw/app/LocalGoalCompletionV40.kt': '600663ffe9b7b9aef1bf12996b6add19f526ed5e2101babde29ea92f49cc6214',
+              'app/src/main/kotlin/ai/closepaw/app/ConfiguredBrainTargetResolverV40.kt': '6404241048b37ccf0cdb835fc8be406401c568926f8751fbff3ccaef35bb15c9',
+              'app/src/main/kotlin/ai/closepaw/app/PrimaryLocalGrammarV37.kt': '50fec2dfd085e29fd56efc7d9317cc4e8f6b2ed8a242e4b1d9189090a0e97ab2',
+              'app/src/main/kotlin/ai/closepaw/app/HybridTraceEventsV37.kt': 'ecd85c4d77335f2fa289ebf8ae4e804b7dfebe5a24e918d2d6e8413be20e9a42',
+              'app/src/main/kotlin/ai/closepaw/app/ChatBrainSettingsStore.kt': '063f89a0d7b4dd08f16642ee7454a5a871e7d3b4d8318f1373808be307350f41',
+              'app/src/main/kotlin/ai/closepaw/app/HybridAgentProtocol.kt': '6c386d7e712c1f19f1d106f324d500b2fead4fc4b30a1b043cb368db16ebc03e',
+              'app/src/main/kotlin/ai/closepaw/app/RC11CorrectnessPolicy.kt': '6d2069354b970927dc4729a00355a74e8139f60efadb866e3f9e9b2c020e67b6',
+              'app/src/main/kotlin/ai/closepaw/app/PrimaryLocalHttpTransportV32.kt': '1e9e9dc2e4625277eb8eecd08792d4ed1e7c2952e374f20745808ba1bbfb7739',
+              'app/build.gradle.kts': '6334879dfbfe1a5d6210054f743b2f1ebad97dc610f5d98358161fd3632be3e2',
+              'app/src/main/res/values/strings.xml': '128a90fbe4b7c5614a229d144ee1e744cc233d3283de61168096299accdd1f19',
+              'tools/termux-bridge/closepaw_bridge.py': '707906f17acde07c0a86cb45c3c76b7a554f3ffcc39acc17f76f32e376749b2c',
+          }
+          for rel, wanted in expected.items():
+              p = Path(rel)
+              if not p.is_file(): raise SystemExit('042 baseline missing: ' + rel)
+              got = hashlib.sha256(p.read_bytes()).hexdigest()
+              if got != wanted: raise SystemExit(f'042 baseline hash mismatch {rel}: {got} != {wanted}')
+          Path('042-verification-report.txt').write_text(
+              'ClosePaw RC11 042 verification report\n'
+              '=====================================\n'
+              'Base: exact verified 040 full-source artifact from successful run 34674423671.\n'
+              'Runtime evidence addressed: stale foreground identity in model snapshots, false-positive page completion, and multi-step navigation ordering.\n'
+              'Frozen: RC8 restore, durable PREPARED->ATTEMPTED transaction, V33 validation, V32 transport, V37 regression grammar, configured Brain binding/locator/send/restore, trace, bridge.\n',
+              encoding='utf-8',
+          )
+          print('042 EXACT VERIFIED 040 BASELINE HASH GATE: PASS')
+          PYBASE042
+
+      - name: Baseline 040 clean compile before any 042 change
+        shell: bash
+        run: |
+          set -euo pipefail
+          chmod +x ./gradlew
+          ./gradlew clean :app:compileDebugKotlin --stacktrace --no-daemon --no-configuration-cache
+          echo 'Baseline 040 clean Kotlin compile BEFORE 042 patch: PASS' >> 042-verification-report.txt
+
+      - name: Freeze exact 040 source and correctness regions
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PYFREEZE042'
+          from pathlib import Path
+          import hashlib, json
+          def sha(data: bytes): return hashlib.sha256(data).hexdigest()
+          def sf(path): return sha(Path(path).read_bytes())
+          manifest = {}
+          for p in sorted(Path('app').rglob('*')):
+              if not p.is_file(): continue
+              rel = p.as_posix()
+              if rel.startswith('app/build/'): continue
+              manifest[rel] = sf(rel)
+          if len(manifest) < 700: raise SystemExit(f'042 baseline app manifest unexpectedly small: {len(manifest)}')
+          Path('042-baseline-source-manifest.json').write_text(json.dumps(manifest, indent=2, sort_keys=True) + '\n')
+
+          engine = Path('app/src/main/kotlin/ai/closepaw/app/HybridAgentEngine.kt').read_text(encoding='utf-8')
+          def region(a, b):
+              s = engine.find(a)
+              if s < 0: raise SystemExit('042 critical start missing: ' + a)
+              e = engine.find(b, s)
+              if e < 0: raise SystemExit('042 critical end missing: ' + b)
+              return engine[s:e].encode()
+          critical = {
+              'rc8_restore': sha(region('// RC8: only strong identity evidence may authorize a restore-side navigation.','private suspend fun restoreSidebarShapeIfNeeded(')),
+              'durable_transaction': sha(region('private suspend fun executeActionTransactionV9(','private fun receiptHistoryLineV9(')),
+              'v33_primary_plan_validation': sha(region('private suspend fun requestPrimaryPlanV9(','private fun buildBrainRequest(')),
+              'brain_request_builder': sha(region('private fun buildBrainRequest(','private fun buildRepairRequest(')),
+              'brain_excursion_capture': sha(region('private suspend fun captureBrainExcursionFrame(','private suspend fun restoreAfterBrainExcursion(')),
+              'brain_restore': sha(region('private suspend fun restoreAfterBrainExcursion(','private fun configuredBrainV9(): ChatBrainSettings')),
+              'configured_brain_route': sha(region('private fun configuredBrainV9(): ChatBrainSettings','private suspend fun sendConfiguredBrainMessageV9(')),
+              'brain_send': sha(region('private suspend fun sendConfiguredBrainMessageV9(','private suspend fun waitForMatchingBrainResponseV9(')),
+              'hybrid_protocol_file': sf('app/src/main/kotlin/ai/closepaw/app/HybridAgentProtocol.kt'),
+              'rc11_policy_file': sf('app/src/main/kotlin/ai/closepaw/app/RC11CorrectnessPolicy.kt'),
+              'http_transport_v32_file': sf('app/src/main/kotlin/ai/closepaw/app/PrimaryLocalHttpTransportV32.kt'),
+              'v37_grammar_file': sf('app/src/main/kotlin/ai/closepaw/app/PrimaryLocalGrammarV37.kt'),
+              'v37_trace_file': sf('app/src/main/kotlin/ai/closepaw/app/HybridTraceEventsV37.kt'),
+              'brain_settings_store_file': sf('app/src/main/kotlin/ai/closepaw/app/ChatBrainSettingsStore.kt'),
+              'brain_target_resolver_v40_file': sf('app/src/main/kotlin/ai/closepaw/app/ConfiguredBrainTargetResolverV40.kt'),
+              'bridge_source': sf('tools/termux-bridge/closepaw_bridge.py'),
+          }
+          Path('042-baseline-critical-hashes.json').write_text(json.dumps(critical, indent=2, sort_keys=True) + '\n')
+          print('042 BASELINE FREEZE: PASS')
+          PYFREEZE042
+
+      - name: Apply isolated 042 typed-goal foreground and progress patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > /tmp/042.patch <<'PATCH042'
+          diff --git a/app/build.gradle.kts b/app/build.gradle.kts
+          index cee9147..9bf6321 100644
+          --- a/app/build.gradle.kts
+          +++ b/app/build.gradle.kts
+          @@ -46,8 +46,8 @@ android {
+           
+               buildTypes {
+                   debug {
+          -    applicationIdSuffix = ".rc11c040"
+          -    versionNameSuffix = "-rc11-c040"
+          +    applicationIdSuffix = ".rc11c042"
+          +    versionNameSuffix = "-rc11-c042"
+           
+               val evalSsl = project.findProperty("insecureSslForEval")?.toString()?.toBoolean() ?: false
+               buildConfigField("boolean", "INSECURE_SSL_FOR_EVAL", evalSsl.toString())
+          diff --git a/app/src/main/kotlin/ai/closepaw/app/GoalPostconditionV41.kt b/app/src/main/kotlin/ai/closepaw/app/GoalPostconditionV41.kt
+          new file mode 100644
+          index 0000000..0b54000
+          --- /dev/null
+          +++ b/app/src/main/kotlin/ai/closepaw/app/GoalPostconditionV41.kt
+          @@ -0,0 +1,349 @@
+          +package ai.closepaw.app
+          +
+          +import java.text.Normalizer
+          +import java.util.Locale
+          +import kotlin.math.max
+          +
+          +/**
+          + * Typed deterministic postconditions for explicit user stop clauses.
+          + *
+          + * The evaluator deliberately separates "a row is visible" from "a destination page is reached".
+          + * It never treats model output as authority and it never consumes model tokens.
+          + */
+          +internal object GoalPostconditionV41 {
+          +    internal enum class Kind {
+          +        APP_FOREGROUND,
+          +        PAGE_REACHED,
+          +        ELEMENT_VISIBLE,
+          +        LIST_VISIBLE,
+          +        TEXT_ENTERED,
+          +    }
+          +
+          +    internal data class AppIdentity(val packageName: String, val label: String)
+          +
+          +    internal data class NodeEvidence(
+          +        val index: Int,
+          +        val text: String,
+          +        val description: String,
+          +        val hint: String,
+          +        val className: String,
+          +        val clickable: Boolean,
+          +        val editable: Boolean,
+          +        val enabled: Boolean,
+          +        val left: Int,
+          +        val top: Int,
+          +        val right: Int,
+          +        val bottom: Int,
+          +    ) {
+          +        val width: Int get() = (right - left).coerceAtLeast(0)
+          +        val height: Int get() = (bottom - top).coerceAtLeast(0)
+          +        val centerX: Int get() = (left + right) / 2
+          +        val centerY: Int get() = (top + bottom) / 2
+          +    }
+          +
+          +    internal data class Spec(
+          +        val kind: Kind,
+          +        val target: String,
+          +        val requiredPackage: String?,
+          +        val expectedValue: String? = null,
+          +        val anchor: String? = null,
+          +    )
+          +
+          +    fun parse(goal: String, installedApps: List<AppIdentity>): Spec? {
+          +        if (goal.isBlank()) return null
+          +        val requiredPackage = explicitOpenPackage(goal, installedApps)
+          +
+          +        val enteredSubject = enteredStopSubject(goal)
+          +        if (enteredSubject != null) {
+          +            val expected = expectedEnteredValue(goal)
+          +            return Spec(
+          +                kind = Kind.TEXT_ENTERED,
+          +                target = enteredSubject,
+          +                requiredPackage = requiredPackage,
+          +                expectedValue = expected,
+          +            )
+          +        }
+          +
+          +        val visibleTarget = visibleStopTarget(goal) ?: return null
+          +        val variants = targetVariants(visibleTarget)
+          +        val appMatches = installedApps.filter { normalize(it.label) in variants }.distinctBy { it.packageName }
+          +        if (appMatches.size == 1) {
+          +            return Spec(
+          +                kind = Kind.APP_FOREGROUND,
+          +                target = visibleTarget,
+          +                requiredPackage = appMatches.single().packageName,
+          +            )
+          +        }
+          +
+          +        val normalizedTarget = normalize(visibleTarget)
+          +        val navigationTargets = explicitNavigationTargets(goal)
+          +        val navigationMatch = navigationTargets.any { nav ->
+          +            val n = normalizeTargetPhrase(nav)
+          +            n in variants || variants.any { it == n || containsPhrase(it, n) || containsPhrase(n, it) }
+          +        }
+          +
+          +        if (looksLikeListTarget(normalizedTarget)) {
+          +            return Spec(
+          +                kind = Kind.LIST_VISIBLE,
+          +                target = visibleTarget,
+          +                requiredPackage = requiredPackage,
+          +                anchor = inferListAnchor(goal, navigationTargets),
+          +            )
+          +        }
+          +
+          +        if (navigationMatch || looksLikePageTarget(normalizedTarget)) {
+          +            return Spec(
+          +                kind = Kind.PAGE_REACHED,
+          +                target = visibleTarget,
+          +                requiredPackage = requiredPackage,
+          +            )
+          +        }
+          +
+          +        return Spec(
+          +            kind = Kind.ELEMENT_VISIBLE,
+          +            target = visibleTarget,
+          +            requiredPackage = requiredPackage,
+          +        )
+          +    }
+          +
+          +    fun evaluate(
+          +        spec: Spec,
+          +        currentPackage: String?,
+          +        nodes: List<NodeEvidence>,
+          +        installedApps: List<AppIdentity>,
+          +        goal: String,
+          +    ): Boolean {
+          +        if (spec.requiredPackage != null && currentPackage != spec.requiredPackage) return false
+          +        return when (spec.kind) {
+          +            Kind.APP_FOREGROUND -> {
+          +                currentPackage == spec.requiredPackage && exactVisible(spec.target, nodes)
+          +            }
+          +            Kind.PAGE_REACHED -> pageReached(spec.target, nodes)
+          +            Kind.ELEMENT_VISIBLE -> exactVisible(spec.target, nodes)
+          +            Kind.LIST_VISIBLE -> listVisible(spec, nodes, goal)
+          +            Kind.TEXT_ENTERED -> textEntered(spec.expectedValue, nodes)
+          +        }
+          +    }
+          +
+          +    fun visibleStopTarget(goal: String): String? {
+          +        val patterns = listOf(
+          +            Regex("(?im)^\\s*stop\\s+(?:here\\s+)?(?:when|once)\\s+(.+?)\\s+is\\s+visible\\s*[.!]?\\s*$"),
+          +            Regex("(?im)^\\s*stop\\s+(?:here\\s+)?(?:when|once)\\s+(.+?)\\s+is\\s+shown\\s*[.!]?\\s*$"),
+          +            Regex("(?im)^\\s*stop\\s+(?:here\\s+)?(?:when|once)\\s+(.+?)\\s+appears\\s*[.!]?\\s*$"),
+          +        )
+          +        return patterns.asSequence()
+          +            .mapNotNull { it.find(goal)?.groupValues?.getOrNull(1) }
+          +            .map(String::trim)
+          +            .firstOrNull { it.isNotBlank() }
+          +            ?.trim('"', '\'', '`')
+          +            ?.trim()
+          +            ?.takeIf { it.length in 1..180 }
+          +    }
+          +
+          +    private fun enteredStopSubject(goal: String): String? {
+          +        val patterns = listOf(
+          +            Regex("(?im)^\\s*stop\\s+(?:here\\s+)?(?:when|once)\\s+(.+?)\\s+has\\s+been\\s+entered\\s*[.!]?\\s*$"),
+          +            Regex("(?im)^\\s*stop\\s+(?:here\\s+)?(?:when|once)\\s+(.+?)\\s+is\\s+entered\\s*[.!]?\\s*$"),
+          +            Regex("(?im)^\\s*stop\\s+(?:here\\s+)?(?:when|once)\\s+(.+?)\\s+has\\s+been\\s+typed\\s*[.!]?\\s*$"),
+          +        )
+          +        return patterns.asSequence()
+          +            .mapNotNull { it.find(goal)?.groupValues?.getOrNull(1) }
+          +            .map(String::trim)
+          +            .firstOrNull { it.isNotBlank() }
+          +            ?.trim('"', '\'', '`')
+          +            ?.trim()
+          +            ?.takeIf { it.length in 1..180 }
+          +    }
+          +
+          +    private fun expectedEnteredValue(goal: String): String? {
+          +        val patterns = listOf(
+          +            Regex("(?im)^\\s*search\\s+for\\s*:\\s*(.+?)\\s*$"),
+          +            Regex("(?im)^\\s*(?:enter|type)\\s*:\\s*(.+?)\\s*$"),
+          +            Regex("(?im)^\\s*(?:enter|type)\\s+(.+?)\\s*$"),
+          +        )
+          +        return patterns.asSequence()
+          +            .mapNotNull { it.find(goal)?.groupValues?.getOrNull(1) }
+          +            .map(String::trim)
+          +            .firstOrNull { it.isNotBlank() }
+          +            ?.trim('"', '\'', '`')
+          +            ?.trim()
+          +            ?.takeIf { it.length in 1..240 }
+          +    }
+          +
+          +    private fun exactVisible(target: String, nodes: List<NodeEvidence>): Boolean {
+          +        val variants = targetVariants(target)
+          +        if (variants.isEmpty()) return false
+          +        return nodes.any { node ->
+          +            node.enabled && nodeValues(node).any { normalize(it) in variants }
+          +        }
+          +    }
+          +
+          +    private fun pageReached(target: String, nodes: List<NodeEvidence>): Boolean {
+          +        val variants = targetVariants(target)
+          +        if (variants.isEmpty()) return false
+          +        val screenBottom = nodes.maxOfOrNull { it.bottom }?.coerceAtLeast(1) ?: 1
+          +        val headerLimit = max(280, (screenBottom * 22) / 100)
+          +
+          +        return nodes.any { candidate ->
+          +            if (!candidate.enabled || candidate.editable || candidate.clickable) return@any false
+          +            if (candidate.top > headerLimit) return@any false
+          +            if (!nodeValues(candidate).any { normalize(it) in variants }) return@any false
+          +            !isInsideClickableContainer(candidate, nodes)
+          +        }
+          +    }
+          +
+          +    private fun isInsideClickableContainer(candidate: NodeEvidence, nodes: List<NodeEvidence>): Boolean {
+          +        return nodes.any { parent ->
+          +            if (!parent.enabled || !parent.clickable || parent.index == candidate.index) return@any false
+          +            if (parent.width <= 0 || parent.height <= 0) return@any false
+          +            val centerContained = candidate.centerX in parent.left..parent.right &&
+          +                candidate.centerY in parent.top..parent.bottom
+          +            val parentLarger = parent.width >= candidate.width && parent.height >= candidate.height
+          +            centerContained && parentLarger
+          +        }
+          +    }
+          +
+          +    private fun textEntered(expectedValue: String?, nodes: List<NodeEvidence>): Boolean {
+          +        val wanted = normalize(expectedValue.orEmpty())
+          +        if (wanted.isBlank()) return false
+          +        return nodes.any { node ->
+          +            node.enabled && node.editable && normalize(node.text) == wanted
+          +        }
+          +    }
+          +
+          +    private fun listVisible(spec: Spec, nodes: List<NodeEvidence>, goal: String): Boolean {
+          +        val screenBottom = nodes.maxOfOrNull { it.bottom }?.coerceAtLeast(1) ?: 1
+          +        val headerLimit = max(280, (screenBottom * 22) / 100)
+          +        val anchor = spec.anchor?.takeIf { it.isNotBlank() }
+          +        val anchorVisible = when {
+          +            anchor != null -> pageReached(anchor, nodes) || exactVisible(anchor, nodes)
+          +            normalize(goal).contains("install unknown apps") ->
+          +                pageReached("Install unknown apps", nodes) || exactVisible("Install unknown apps", nodes)
+          +            else -> exactVisible(spec.target, nodes)
+          +        }
+          +        if (!anchorVisible) return false
+          +
+          +        val generic = setOf(
+          +            "settings", "search", "back", "more options", "navigate up", "menu", "close",
+          +            "special access", "install unknown apps",
+          +        )
+          +        val rowValues = nodes.asSequence()
+          +            .filter { it.enabled && it.bottom > headerLimit }
+          +            .flatMap { nodeValues(it).asSequence() }
+          +            .map(::normalize)
+          +            .filter { it.length >= 2 && it !in generic }
+          +            .filterNot { it.contains("install unknown apps") }
+          +            .distinct()
+          +            .toList()
+          +        return rowValues.size >= 2
+          +    }
+          +
+          +    private fun inferListAnchor(goal: String, navigationTargets: List<String>): String? {
+          +        navigationTargets.lastOrNull()?.let { return it }
+          +        val n = normalize(goal)
+          +        if (n.contains("install unknown apps")) return "Install unknown apps"
+          +        return null
+          +    }
+          +
+          +    private fun explicitOpenPackage(goal: String, installedApps: List<AppIdentity>): String? {
+          +        val sentences = goal.split(Regex("[\\n.!?؟]+"))
+          +            .map(::normalize)
+          +            .filter { it.isNotBlank() }
+          +        val matches = installedApps.filter { app ->
+          +            val label = normalize(app.label)
+          +            val pkg = normalize(app.packageName)
+          +            sentences.any { sentence ->
+          +                val mentions = containsPhrase(sentence, label) || containsPhrase(sentence, pkg)
+          +                val affirmative = listOf("open", "launch", "start", "باز کن", "بازش کن")
+          +                    .map(::normalize)
+          +                    .any { containsPhrase(sentence, it) }
+          +                val negative = listOf(
+          +                    "do not open", "dont open", "don't open", "never open", "باز نکن", "بازش نکن",
+          +                ).map(::normalize).any { containsPhrase(sentence, it) }
+          +                mentions && affirmative && !negative
+          +            }
+          +        }.distinctBy { it.packageName }
+          +        return matches.singleOrNull()?.packageName
+          +    }
+          +
+          +    private fun explicitNavigationTargets(goal: String): List<String> {
+          +        val out = mutableListOf<String>()
+          +        val patterns = listOf(
+          +            Regex("(?i)\\bgo\\s+to\\s+(?:the\\s+)?([^\\n.!?؛;]+)"),
+          +            Regex("(?i)\\b(?:tap|click|select|choose)\\s+(?:on\\s+)?(?:the\\s+)?([^\\n.!?؛;]+)"),
+          +            Regex("برو\\s+به\\s+([^\\n.!?؟؛;]+)"),
+          +            Regex("روی\\s+([^\\n.!?؟؛;]+?)\\s+(?:بزن|کلیک کن)"),
+          +            Regex("([^\\n.!?؟؛;]+?)\\s+(?:را|رو)\\s+انتخاب\\s+کن"),
+          +        )
+          +        patterns.forEach { regex ->
+          +            regex.findAll(goal).forEach { match ->
+          +                match.groupValues.getOrNull(1)?.trim()?.takeIf { it.isNotBlank() }?.let(out::add)
+          +            }
+          +        }
+          +        return out.distinct()
+          +    }
+          +
+          +    private fun looksLikePageTarget(target: String): Boolean {
+          +        val pageWords = listOf(" page", " screen", " menu", " section", " settings", " setting")
+          +        return pageWords.any { target.endsWith(it) }
+          +    }
+          +
+          +    private fun looksLikeListTarget(target: String): Boolean =
+          +        containsPhrase(target, "list") || target.startsWith("list ") || target.contains(" list ")
+          +
+          +    private fun targetVariants(value: String): Set<String> {
+          +        var base = normalize(value)
+          +        if (base.isBlank()) return emptySet()
+          +        base = base.removePrefix("the ").trim()
+          +        val out = linkedSetOf(base)
+          +        val suffixes = listOf(
+          +            " settings page", " setting page", " settings screen", " setting screen",
+          +            " settings", " setting", " screen", " page", " menu", " section",
+          +        )
+          +        var changed = true
+          +        var current = base
+          +        while (changed) {
+          +            changed = false
+          +            for (suffix in suffixes) {
+          +                if (current.endsWith(suffix) && current.length > suffix.length + 1) {
+          +                    current = current.removeSuffix(suffix).trim()
+          +                    if (current.isNotBlank() && out.add(current)) changed = true
+          +                    break
+          +                }
+          +            }
+          +        }
+          +        return out
+          +    }
+          +
+          +    private fun normalizeTargetPhrase(raw: String): String {
+          +        var value = normalize(raw)
+          +        val suffixes = listOf(" settings", " setting", " screen", " page", " menu", " section")
+          +        for (suffix in suffixes) {
+          +            if (value.endsWith(suffix) && value.length > suffix.length + 1) {
+          +                value = value.removeSuffix(suffix).trim()
+          +            }
+          +        }
+          +        return value
+          +    }
+          +
+          +    private fun nodeValues(node: NodeEvidence): List<String> =
+          +        listOf(node.text, node.description, node.hint).filter { it.isNotBlank() }
+          +
+          +    private fun normalize(value: String): String {
+          +        val deaccented = Normalizer.normalize(value, Normalizer.Form.NFKD)
+          +            .replace(Regex("\\p{M}+"), "")
+          +            .lowercase(Locale.ROOT)
+          +            .replace('ي', 'ی')
+          +            .replace('ك', 'ک')
+          +        return deaccented
+          +            .replace(Regex("[^\\p{L}\\p{N}._-]+"), " ")
+          +            .replace(Regex("\\s+"), " ")
+          +            .trim()
+          +    }
+          +
+          +    private fun containsPhrase(haystack: String, needle: String): Boolean {
+          +        if (needle.isBlank()) return false
+          +        if (haystack == needle) return true
+          +        return (" $haystack ").contains(" $needle ")
+          +    }
+          +}
+          diff --git a/app/src/main/kotlin/ai/closepaw/app/HybridAgentEngine.kt b/app/src/main/kotlin/ai/closepaw/app/HybridAgentEngine.kt
+          index 7cd87b4..9deb7bf 100644
+          --- a/app/src/main/kotlin/ai/closepaw/app/HybridAgentEngine.kt
+          +++ b/app/src/main/kotlin/ai/closepaw/app/HybridAgentEngine.kt
+          @@ -581,12 +581,12 @@ internal class HybridAgentEngine(private val service: AgentService) {
+                           }
+           
+                           if (planQueue.isEmpty()) {
+          -                    // V40: prove explicit local stop conditions from a fresh observation BEFORE
+          +                    // V41: prove typed explicit stop conditions from a fresh observation BEFORE
+                               // spending another Primary/External model turn. This is local/deterministic.
+                               if (targetChat == null &&
+                                   evaluateGoalLocallyV11(platform, task.goal, null) == V11GoalVerdict.ACHIEVED
+                               ) {
+          -                        history += "LOCAL_GOAL_COMPLETE_V40|fresh_observation_before_model"
+          +                        history += "LOCAL_GOAL_COMPLETE_V41|typed_fresh_observation_before_model"
+                                   finishSuccess("Goal verified locally from fresh observation")
+                                   return
+                               }
+          @@ -773,7 +773,7 @@ internal class HybridAgentEngine(private val service: AgentService) {
+                               if (targetChat == null &&
+                                   evaluateGoalLocallyV11(platform, task.goal, null) == V11GoalVerdict.ACHIEVED
+                               ) {
+          -                        history += "MODEL_RETURN_LOCAL_COMPLETION_V40|$selectedPlanSource"
+          +                        history += "MODEL_RETURN_LOCAL_COMPLETION_V41|$selectedPlanSource"
+                                   finishSuccess("Goal verified locally after model return")
+                                   return
+                               }
+          @@ -2584,7 +2584,7 @@ internal class HybridAgentEngine(private val service: AgentService) {
+                       val installedApps = runCatching {
+                           ai.closepaw.platform.AppManager.getInstalledApps(service.packageManager)
+                       }.getOrDefault(emptyList())
+          -            PrimaryLocalGrammarV37.build(lease, request, installedApps)
+          +            PrimaryLocalGrammarV41.build(lease, request, installedApps)
+                   }
+                   val grammar = grammarSpec?.grammar
+                   if (grammar != null) payload.put("grammar", grammar)
+          @@ -4334,7 +4334,7 @@ internal class HybridAgentEngine(private val service: AgentService) {
+                       .distinctBy { it.index }
+                       .take(MAX_PRIMARY_UI_NODES)
+           
+          -        val currentPkg = platform.getCurrentPackageName().orEmpty()
+          +        val currentPkg = observedPackage(platform).orEmpty()
+                   val sb = StringBuilder()
+                   sb.appendLine("CURRENT_APP: $currentPkg")
+           
+          @@ -4384,7 +4384,7 @@ internal class HybridAgentEngine(private val service: AgentService) {
+                   }
+                   lastBrainSnapshot = descriptors
+           
+          -        val currentPkg = platform.getCurrentPackageName().orEmpty()
+          +        val currentPkg = observedPackage(platform).orEmpty()
+                   val sb = StringBuilder()
+                   sb.appendLine("CURRENT_APP: $currentPkg")
+                   for (d in descriptors) {
+          @@ -4634,31 +4634,38 @@ internal class HybridAgentEngine(private val service: AgentService) {
+                       return if (isExactChatActiveV7(platform, targetChat)) V11GoalVerdict.ACHIEVED else V11GoalVerdict.NOT_ACHIEVED
+                   }
+           
+          -        // V40: explicit "Stop when X is visible" is a local postcondition, not a model decision.
+          -        // Require an exact visible semantic label. If X is also an installed-app label, require
+          -        // the foreground package to be one of those exact app matches to avoid false positives.
+          -        val visibleStopTarget = LocalGoalCompletionV40.explicitVisibleStopTarget(goal)
+          -        if (!visibleStopTarget.isNullOrBlank()) {
+          -            val snapshot = platform.captureScreen()
+          -            val visibleValues = snapshot.elements.flatMap {
+          -                listOf(it.text, it.description, it.hintText)
+          +        // V41: explicit stop clauses are typed deterministic postconditions. A visible row is
+          +        // not equivalent to reaching that row's destination page; no model output is authority.
+          +        val snapshot = platform.captureScreen()
+          +        val apps = runCatching { platform.getInstalledApps() }
+          +            .getOrDefault(emptyList())
+          +            .map { GoalPostconditionV41.AppIdentity(it.packageName, it.label) }
+          +        val spec = GoalPostconditionV41.parse(goal, apps)
+          +        if (spec != null) {
+          +            val nodes = snapshot.elements.map { element ->
+          +                GoalPostconditionV41.NodeEvidence(
+          +                    index = element.index,
+          +                    text = safeNodeText(element),
+          +                    description = safeDescription(element),
+          +                    hint = if (isSensitiveElement(element)) "[REDACTED]" else cleanText(element.hintText),
+          +                    className = element.className,
+          +                    clickable = element.isClickable,
+          +                    editable = element.isEditable,
+          +                    enabled = element.isEnabled,
+          +                    left = element.bounds.left,
+          +                    top = element.bounds.top,
+          +                    right = element.bounds.right,
+          +                    bottom = element.bounds.bottom,
+          +                )
+                       }
+          -            val apps = runCatching { platform.getInstalledApps() }
+          -                .getOrDefault(emptyList())
+          -                .map { LocalGoalCompletionV40.AppIdentity(it.packageName, it.label) }
+          -            val currentPackage = observedPackage(platform)
+          -            val exactVisible = LocalGoalCompletionV40.exactTargetVisible(visibleStopTarget, visibleValues)
+          -            val packageCompatible = LocalGoalCompletionV40.packageCompatible(
+          -                visibleStopTarget,
+          -                currentPackage,
+          -                apps,
+          +            val achieved = GoalPostconditionV41.evaluate(
+          +                spec = spec,
+          +                currentPackage = observedPackage(platform),
+          +                nodes = nodes,
+          +                installedApps = apps,
+          +                goal = goal,
+                       )
+          -            val knownSemanticListVisible =
+          -                LocalGoalCompletionV40.isInstallUnknownAppsListCondition(goal, visibleStopTarget) &&
+          -                    LocalGoalCompletionV40.installUnknownAppsListVisible(currentPackage, visibleValues)
+          -            return if (((exactVisible && packageCompatible) || knownSemanticListVisible) &&
+          -                scopeVerifiedV9(goal, snapshot)
+          -            ) {
+          +            return if (achieved && scopeVerifiedV9(goal, snapshot)) {
+                           V11GoalVerdict.ACHIEVED
+                       } else {
+                           V11GoalVerdict.NOT_ACHIEVED
+          @@ -4667,7 +4674,6 @@ internal class HybridAgentEngine(private val service: AgentService) {
+           
+                   val terminal = inferTerminalNavigationLabelV8(goal).orEmpty()
+                   if (terminal.isBlank()) return V11GoalVerdict.UNKNOWN
+          -        val snapshot = platform.captureScreen()
+                   return if (screenContainsV9(snapshot, terminal) && scopeVerifiedV9(goal, snapshot)) {
+                       V11GoalVerdict.ACHIEVED
+                   } else {
+          diff --git a/app/src/main/kotlin/ai/closepaw/app/PrimaryLocalGrammarV41.kt b/app/src/main/kotlin/ai/closepaw/app/PrimaryLocalGrammarV41.kt
+          new file mode 100644
+          index 0000000..fbd84a9
+          --- /dev/null
+          +++ b/app/src/main/kotlin/ai/closepaw/app/PrimaryLocalGrammarV41.kt
+          @@ -0,0 +1,267 @@
+          +package ai.closepaw.app
+          +
+          +import ai.closepaw.platform.AppInfo
+          +import java.text.Normalizer
+          +import java.util.Locale
+          +
+          +/**
+          + * RC11 request-scoped semantic GBNF for the phone-local llama.cpp-compatible Primary.
+          + *
+          + * V36 constrained only syntax and still allowed arbitrary semantic arguments. V37 removes
+          + * arbitrary side-effect arguments entirely. The model can only emit actions whose targets
+          + * are grounded in the current request: an explicitly requested installed app, a node index
+          + * present in the current snapshot, a bounded scroll/wait/system action, or escalation.
+          + *
+          + * The existing V33 parser + RC11 runtime validation remain authoritative after generation.
+          + */
+          +internal object PrimaryLocalGrammarV41 {
+          +    internal data class Spec(
+          +        val grammar: String,
+          +        val forcedAction: String? = null,
+          +        val mode: String,
+          +    )
+          +
+          +    private data class NodeChoice(
+          +        val index: Int,
+          +        val text: String,
+          +        val description: String,
+          +        val clickable: Boolean,
+          +        val scrollable: Boolean,
+          +    )
+          +
+          +    fun build(
+          +        requestId: String,
+          +        request: String,
+          +        installedApps: List<AppInfo>,
+          +    ): Spec {
+          +        require(requestId.isNotBlank()) { "Primary grammar requires a request lease" }
+          +        val lease = "REQ|$requestId|"
+          +        val goal = block(request, "GOAL_BEGIN", "GOAL_END")
+          +        val currentPackage = request.lineSequence()
+          +            .firstOrNull { it.startsWith("CURRENT_APP:") }
+          +            ?.substringAfter("CURRENT_APP:")
+          +            ?.trim()
+          +            .orEmpty()
+          +        val nodes = parseNodes(request)
+          +
+          +        val explicitlyRequestedApp = explicitOpenTarget(goal, installedApps)
+          +        if (explicitlyRequestedApp != null && explicitlyRequestedApp.packageName != currentPackage) {
+          +            val action = "OPEN_APP|${protocolEscape(explicitlyRequestedApp.packageName)}"
+          +            return forced(lease, action, "forced_explicit_open_app")
+          +        }
+          +
+          +        val explicitVisibleNode = explicitVisibleTarget(goal, nodes)
+          +        if (explicitVisibleNode != null) {
+          +            val action = "CLICK_NODE|${explicitVisibleNode.index}"
+          +            return forced(lease, action, "forced_explicit_visible_target")
+          +        }
+          +
+          +        val rules = linkedMapOf<String, String>()
+          +
+          +        val clickableIndices = nodes.filter { it.clickable }.map { it.index }.distinct().sorted()
+          +        if (clickableIndices.isNotEmpty()) {
+          +            rules["click-node"] = "\"CLICK_NODE|\" (${alternatives(clickableIndices.map(Int::toString))})"
+          +        }
+          +
+          +        val scrollableIndices = nodes.filter { it.scrollable }.map { it.index }.distinct().sorted()
+          +        if (scrollableIndices.isNotEmpty()) {
+          +            rules["scroll-node"] = "\"SCROLL_NODE|\" (${alternatives(scrollableIndices.map(Int::toString))}) \"|\" direction"
+          +        }
+          +
+          +        // Generic scroll and short wait are reversible/observation-safe. Free-form text, app
+          +        // names, DONE, VERIFY_TEXT, and text entry are intentionally absent in fallback mode.
+          +        rules["scroll"] = "\"SCROLL|\" direction"
+          +        rules["wait"] = "\"WAIT|\" (\"250\" | \"500\" | \"1000\" | \"1500\" | \"2000\")"
+          +
+          +        if (explicitSystemAction(goal, "back", listOf("back", "go back", "برگرد", "عقب"))) {
+          +            rules["back"] = "\"BACK\""
+          +        }
+          +        if (explicitSystemAction(goal, "home", listOf("home", "go home", "هوم", "خانه"))) {
+          +            rules["home"] = "\"HOME\""
+          +        }
+          +        if (explicitSystemAction(goal, "recents", listOf("recents", "recent apps", "برنامه های اخیر", "برنامه‌های اخیر"))) {
+          +            rules["recents"] = "\"RECENTS\""
+          +        }
+          +
+          +        val actionNames = rules.keys.toList()
+          +        val actionAlternatives = actionNames.joinToString(" | ")
+          +        val grammar = buildString {
+          +            appendLine("root ::= ${gbnfLiteral(lease)} action | escalate")
+          +            appendLine("action ::= $actionAlternatives")
+          +            rules.forEach { (name, rhs) -> appendLine("$name ::= $rhs") }
+          +            appendLine("direction ::= \"UP\" | \"DOWN\"")
+          +            appendLine("escalate ::= \"PRIMARY_ESCALATE|\" escalation-reason")
+          +            appendLine("escalation-reason ::= \"insufficient_context\" | \"ambiguous_target\" | \"unsupported_action\"")
+          +        }.trimEnd()
+          +        return Spec(grammar = grammar, forcedAction = null, mode = "snapshot_bound_fallback")
+          +    }
+          +
+          +    private fun forced(lease: String, action: String, mode: String): Spec {
+          +        val grammar = "root ::= ${gbnfLiteral(lease + action)}"
+          +        return Spec(grammar = grammar, forcedAction = action, mode = mode)
+          +    }
+          +
+          +    private fun parseNodes(request: String): List<NodeChoice> {
+          +        val nodesBlock = block(request, "NODES_BEGIN", "NODES_END")
+          +        val nodePattern = Regex("""^\[(\d+)]\s+.*$""")
+          +        val textPattern = Regex("""\st=\"([^\"]*)\"""")
+          +        val descPattern = Regex("""\sd=\"([^\"]*)\"""")
+          +        return nodesBlock.lineSequence().mapNotNull { raw ->
+          +            val line = raw.trim()
+          +            val match = nodePattern.matchEntire(line) ?: return@mapNotNull null
+          +            val index = match.groupValues[1].toIntOrNull() ?: return@mapNotNull null
+          +            NodeChoice(
+          +                index = index,
+          +                text = textPattern.find(line)?.groupValues?.getOrNull(1).orEmpty(),
+          +                description = descPattern.find(line)?.groupValues?.getOrNull(1).orEmpty(),
+          +                clickable = Regex("(?:^|\\s)C(?:\\s|$)").containsMatchIn(line),
+          +                scrollable = Regex("(?:^|\\s)S(?:\\s|$)").containsMatchIn(line),
+          +            )
+          +        }.toList()
+          +    }
+          +
+          +    private fun explicitOpenTarget(goal: String, installedApps: List<AppInfo>): AppInfo? {
+          +        if (goal.isBlank()) return null
+          +        val sentences = goal.split(Regex("[\\n.!?؟]+"))
+          +            .map(::normalize)
+          +            .filter { it.isNotBlank() }
+          +
+          +        val matches = installedApps.filter { app ->
+          +            val label = normalize(app.label)
+          +            val pkg = normalize(app.packageName)
+          +            if (label.length < 2 && pkg.length < 2) return@filter false
+          +            sentences.any { sentence ->
+          +                val mentionsApp = containsPhrase(sentence, label) || containsPhrase(sentence, pkg)
+          +                val affirmativeOpen = listOf("open", "launch", "start", "باز کن", "بازش کن").any { containsPhrase(sentence, normalize(it)) }
+          +                val negativeOpen = listOf(
+          +                    "do not open", "dont open", "don't open", "never open",
+          +                    "باز نکن", "بازش نکن",
+          +                ).any { containsPhrase(sentence, normalize(it)) }
+          +                mentionsApp && affirmativeOpen && !negativeOpen
+          +            }
+          +        }.distinctBy { it.packageName }
+          +
+          +        return matches.singleOrNull()
+          +    }
+          +
+          +    private fun explicitVisibleTarget(goal: String, nodes: List<NodeChoice>): NodeChoice? {
+          +        val phrases = explicitNavigationPhrases(goal)
+          +        if (phrases.isEmpty()) return null
+          +
+          +        // V41 resolves navigation instructions in user order. A completed earlier step normally
+          +        // becomes a non-clickable page title, so the first still-clickable exact target is the
+          +        // current step. Ambiguity within one step remains fail-closed.
+          +        for (phrase in phrases) {
+          +            val candidates = nodes.filter { node ->
+          +                if (!node.clickable) return@filter false
+          +                val values = listOf(node.text, node.description)
+          +                    .map(::normalize)
+          +                    .filter { it.length >= 2 && it !in GENERIC_NODE_WORDS }
+          +                values.any { value -> phrase == value || containsPhrase(phrase, value) }
+          +            }.distinctBy { it.index }
+          +            if (candidates.size == 1) return candidates.single()
+          +            if (candidates.size > 1) return null
+          +        }
+          +        return null
+          +    }
+          +
+          +    private fun explicitNavigationPhrases(goal: String): List<String> {
+          +        val out = mutableListOf<String>()
+          +        val patterns = listOf(
+          +            Regex("(?i)\\bgo\\s+to\\s+(?:the\\s+)?([^\\n.!?؛;]+)"),
+          +            Regex("(?i)\\b(?:tap|click|select|choose)\\s+(?:on\\s+)?(?:the\\s+)?([^\\n.!?؛;]+)"),
+          +            Regex("برو\\s+به\\s+([^\\n.!?؟؛;]+)"),
+          +            Regex("روی\\s+([^\\n.!?؟؛;]+?)\\s+(?:بزن|کلیک کن)"),
+          +            Regex("([^\\n.!?؟؛;]+?)\\s+(?:را|رو)\\s+انتخاب\\s+کن"),
+          +        )
+          +        patterns.forEach { regex ->
+          +            regex.findAll(goal).forEach { match ->
+          +                val raw = match.groupValues.getOrNull(1).orEmpty()
+          +                normalizeTargetPhrase(raw).takeIf { it.isNotBlank() }?.let(out::add)
+          +            }
+          +        }
+          +        return out.distinct()
+          +    }
+          +
+          +    private fun normalizeTargetPhrase(raw: String): String {
+          +        var value = normalize(raw)
+          +        val removableSuffixes = listOf(
+          +            " screen", " settings", " setting", " menu", " option", " section", " page",
+          +            " صفحه", " تنظیمات", " منو", " گزینه", " بخش",
+          +        ).map(::normalize)
+          +        for (suffix in removableSuffixes) {
+          +            if (value.endsWith(suffix) && value.length > suffix.length + 1) {
+          +                value = value.removeSuffix(suffix).trim()
+          +            }
+          +        }
+          +        return value
+          +    }
+          +
+          +    private fun explicitSystemAction(goal: String, canonical: String, phrases: List<String>): Boolean {
+          +        val normalizedGoal = normalize(goal)
+          +        if (normalizedGoal.isBlank()) return false
+          +        return phrases.map(::normalize).any { phrase ->
+          +            containsPhrase(normalizedGoal, phrase) && !containsPhrase(normalizedGoal, "do not $canonical")
+          +        }
+          +    }
+          +
+          +    private fun block(value: String, begin: String, end: String): String {
+          +        val after = value.substringAfter("$begin\n", missingDelimiterValue = "")
+          +        if (after.isBlank()) return ""
+          +        return after.substringBefore("\n$end", missingDelimiterValue = after)
+          +    }
+          +
+          +    private fun normalize(value: String): String {
+          +        val deaccented = Normalizer.normalize(value, Normalizer.Form.NFKD)
+          +            .replace(Regex("\\p{M}+"), "")
+          +            .lowercase(Locale.ROOT)
+          +            .replace('ي', 'ی')
+          +            .replace('ك', 'ک')
+          +        return deaccented
+          +            .replace(Regex("[^\\p{L}\\p{N}._-]+"), " ")
+          +            .replace(Regex("\\s+"), " ")
+          +            .trim()
+          +    }
+          +
+          +    private fun containsPhrase(haystack: String, needle: String): Boolean {
+          +        if (needle.isBlank()) return false
+          +        if (haystack == needle) return true
+          +        return (" $haystack ").contains(" $needle ")
+          +    }
+          +
+          +    private fun alternatives(values: List<String>): String =
+          +        values.distinct().joinToString(" | ") { gbnfLiteral(it) }
+          +
+          +    private fun protocolEscape(value: String): String = buildString {
+          +        value.forEach { ch ->
+          +            when (ch) {
+          +                '\\' -> append("\\\\")
+          +                '|' -> append("\\|")
+          +                '\n' -> append("\\n")
+          +                '\r' -> append("\\r")
+          +                '\t' -> append("\\t")
+          +                else -> append(ch)
+          +            }
+          +        }
+          +    }
+          +
+          +    private fun gbnfLiteral(value: String): String = buildString {
+          +        append('"')
+          +        value.forEach { ch ->
+          +            when (ch) {
+          +                '\\' -> append("\\\\")
+          +                '"' -> append("\\\"")
+          +                '\n' -> append("\\n")
+          +                '\r' -> append("\\r")
+          +                '\t' -> append("\\t")
+          +                else -> append(ch)
+          +            }
+          +        }
+          +        append('"')
+          +    }
+          +
+          +    private val GENERIC_NODE_WORDS = setOf(
+          +        "settings", "setting", "menu", "button", "back", "home", "close", "open",
+          +        "تنظیمات", "منو", "دکمه", "بستن", "باز",
+          +    )
+          +}
+          diff --git a/app/src/main/res/values/strings.xml b/app/src/main/res/values/strings.xml
+          index c4f1f76..db84f1c 100644
+          --- a/app/src/main/res/values/strings.xml
+          +++ b/app/src/main/res/values/strings.xml
+          @@ -1,5 +1,5 @@
+           <?xml version="1.0" encoding="utf-8"?>
+           <resources>
+          -    <string name="app_name">ClosePaw RC11 040</string>
+          +    <string name="app_name">ClosePaw RC11 042</string>
+               <string name="accessibility_service_description">ClosePaw acts as an on-device automation agent. With your permission, it reads on-screen elements and performs taps, swipes, and text input only when you start a task. It does not run in the background or monitor other apps.</string>
+           </resources>
+          diff --git a/app/src/test/kotlin/ai/closepaw/app/GoalPostconditionV41Test.kt b/app/src/test/kotlin/ai/closepaw/app/GoalPostconditionV41Test.kt
+          new file mode 100644
+          index 0000000..cb23d75
+          --- /dev/null
+          +++ b/app/src/test/kotlin/ai/closepaw/app/GoalPostconditionV41Test.kt
+          @@ -0,0 +1,116 @@
+          +package ai.closepaw.app
+          +
+          +import org.junit.Assert.assertEquals
+          +import org.junit.Assert.assertFalse
+          +import org.junit.Assert.assertNotNull
+          +import org.junit.Assert.assertTrue
+          +import org.junit.Test
+          +
+          +class GoalPostconditionV41Test {
+          +    private val apps = listOf(
+          +        GoalPostconditionV41.AppIdentity("com.android.settings", "Settings"),
+          +        GoalPostconditionV41.AppIdentity("com.openai.chatgpt", "ChatGPT"),
+          +    )
+          +
+          +    private fun n(
+          +        index: Int,
+          +        text: String,
+          +        top: Int,
+          +        bottom: Int,
+          +        clickable: Boolean = false,
+          +        editable: Boolean = false,
+          +        left: Int = 0,
+          +        right: Int = 700,
+          +    ) = GoalPostconditionV41.NodeEvidence(
+          +        index = index,
+          +        text = text,
+          +        description = "",
+          +        hint = "",
+          +        className = "TextView",
+          +        clickable = clickable,
+          +        editable = editable,
+          +        enabled = true,
+          +        left = left,
+          +        top = top,
+          +        right = right,
+          +        bottom = bottom,
+          +    )
+          +
+          +    @Test fun openSettingsStopConditionRequiresSettingsForeground() {
+          +        val goal = "Open Settings.\nStop when Settings is visible."
+          +        val spec = GoalPostconditionV41.parse(goal, apps)!!
+          +        assertEquals(GoalPostconditionV41.Kind.APP_FOREGROUND, spec.kind)
+          +        val nodes = listOf(n(1, "Settings", 80, 160))
+          +        assertFalse(GoalPostconditionV41.evaluate(spec, "ai.closepaw.rc11c042", nodes, apps, goal))
+          +        assertTrue(GoalPostconditionV41.evaluate(spec, "com.android.settings", nodes, apps, goal))
+          +    }
+          +
+          +    @Test fun clickableDisplayRowDoesNotProveDisplayPage() {
+          +        val goal = "Open Settings.\nGo to Display.\nStop when Display settings is visible."
+          +        val spec = GoalPostconditionV41.parse(goal, apps)!!
+          +        assertEquals(GoalPostconditionV41.Kind.PAGE_REACHED, spec.kind)
+          +        val mainSettings = listOf(
+          +            n(1, "Settings", 70, 150),
+          +            n(10, "Display", 1200, 1320, clickable = true),
+          +        )
+          +        assertFalse(GoalPostconditionV41.evaluate(spec, "com.android.settings", mainSettings, apps, goal))
+          +
+          +        val displayPage = listOf(
+          +            n(1, "Display", 70, 150),
+          +            n(2, "Brightness", 420, 500, clickable = true),
+          +            n(3, "Dark mode", 540, 620, clickable = true),
+          +        )
+          +        assertTrue(GoalPostconditionV41.evaluate(spec, "com.android.settings", displayPage, apps, goal))
+          +    }
+          +
+          +    @Test fun childTextInsideClickableRowStillDoesNotProvePage() {
+          +        val goal = "Open Settings.\nGo to Apps.\nStop when Apps settings page is visible."
+          +        val spec = GoalPostconditionV41.parse(goal, apps)!!
+          +        val mainSettings = listOf(
+          +            n(5, "Apps", 500, 620, clickable = true, left = 20, right = 700),
+          +            n(6, "Apps", 520, 580, clickable = false, left = 120, right = 300),
+          +            n(7, "Other", 1400, 1500),
+          +        )
+          +        assertFalse(GoalPostconditionV41.evaluate(spec, "com.android.settings", mainSettings, apps, goal))
+          +    }
+          +
+          +    @Test fun aboutPhoneVisibleIsElementConditionNotPageCondition() {
+          +        val goal = "Open Settings.\nScroll until About phone is visible.\nDo not open About phone.\nStop when About phone is visible."
+          +        val spec = GoalPostconditionV41.parse(goal, apps)!!
+          +        assertEquals(GoalPostconditionV41.Kind.ELEMENT_VISIBLE, spec.kind)
+          +        val nodes = listOf(n(20, "About phone", 1500, 1620, clickable = true))
+          +        assertTrue(GoalPostconditionV41.evaluate(spec, "com.android.settings", nodes, apps, goal))
+          +    }
+          +
+          +    @Test fun textEnteredRequiresExactEditableValue() {
+          +        val goal = "Open Settings.\nUse Settings search.\nSearch for: closepaw-test\nStop when the search text has been entered."
+          +        val spec = GoalPostconditionV41.parse(goal, apps)!!
+          +        assertEquals(GoalPostconditionV41.Kind.TEXT_ENTERED, spec.kind)
+          +        assertEquals("closepaw-test", spec.expectedValue)
+          +        assertFalse(GoalPostconditionV41.evaluate(spec, "com.android.settings", listOf(n(1, "closepaw-test", 100, 180)), apps, goal))
+          +        assertTrue(GoalPostconditionV41.evaluate(spec, "com.android.settings", listOf(n(1, "closepaw-test", 100, 180, editable = true)), apps, goal))
+          +    }
+          +
+          +    @Test fun unknownAppsListUsesTypedListProof() {
+          +        val goal = """I need to find which apps are allowed to install unknown apps.
+          +Open the correct Android Settings screen.
+          +Do not use Settings search.
+          +Do not change any setting.
+          +Stop when the list of apps with this permission is visible."""
+          +        val spec = GoalPostconditionV41.parse(goal, apps)!!
+          +        assertEquals(GoalPostconditionV41.Kind.LIST_VISIBLE, spec.kind)
+          +        val nodes = listOf(
+          +            n(1, "Install unknown apps", 70, 150),
+          +            n(2, "Chrome", 420, 500, clickable = true),
+          +            n(3, "My Files", 540, 620, clickable = true),
+          +        )
+          +        assertTrue(GoalPostconditionV41.evaluate(spec, "com.android.settings", nodes, apps, goal))
+          +    }
+          +
+          +    @Test fun chooseDefaultAppsIsParsedAsPageReached() {
+          +        val goal = "Open Settings.\nGo to Apps.\nGo to Choose default apps.\nStop when Choose default apps page is visible."
+          +        val spec = GoalPostconditionV41.parse(goal, apps)
+          +        assertNotNull(spec)
+          +        assertEquals(GoalPostconditionV41.Kind.PAGE_REACHED, spec!!.kind)
+          +    }
+          +}
+          diff --git a/app/src/test/kotlin/ai/closepaw/app/PrimaryLocalGrammarV41Test.kt b/app/src/test/kotlin/ai/closepaw/app/PrimaryLocalGrammarV41Test.kt
+          new file mode 100644
+          index 0000000..e15ea4f
+          --- /dev/null
+          +++ b/app/src/test/kotlin/ai/closepaw/app/PrimaryLocalGrammarV41Test.kt
+          @@ -0,0 +1,110 @@
+          +package ai.closepaw.app
+          +
+          +import ai.closepaw.platform.AppInfo
+          +import org.junit.Assert.assertEquals
+          +import org.junit.Assert.assertFalse
+          +import org.junit.Assert.assertNull
+          +import org.junit.Assert.assertTrue
+          +import org.junit.Test
+          +
+          +class PrimaryLocalGrammarV41Test {
+          +    private val apps = listOf(
+          +        AppInfo(packageName = "com.android.settings", label = "Settings", isSystemApp = true),
+          +        AppInfo(packageName = "com.google.android.gm", label = "Gmail", isSystemApp = false),
+          +    )
+          +
+          +    @Test fun outsideSettingsForcesExactSettingsPackage() {
+          +        val spec = PrimaryLocalGrammarV41.build(
+          +            "R1",
+          +            request("Open Settings.\nStop when Settings is visible.", "ai.closepaw.rc11c042", "[1] TextView t=\"ClosePaw\""),
+          +            apps,
+          +        )
+          +        assertEquals("OPEN_APP|com.android.settings", spec.forcedAction)
+          +    }
+          +
+          +    @Test fun alreadyInSettingsDoesNotReopenAndSelectsDisplay() {
+          +        val spec = PrimaryLocalGrammarV41.build(
+          +            "R2",
+          +            request(
+          +                "Open Settings.\nGo to Display.\nStop when Display settings is visible.",
+          +                "com.android.settings",
+          +                """[1] TextView t="Settings"
+          +[10] TextView t="Display" C
+          +[11] TextView t="Connections" C""",
+          +            ),
+          +            apps,
+          +        )
+          +        assertEquals("CLICK_NODE|10", spec.forcedAction)
+          +        assertEquals("forced_explicit_visible_target", spec.mode)
+          +    }
+          +
+          +    @Test fun multiStepGoalUsesFirstStillClickableInstruction() {
+          +        val spec = PrimaryLocalGrammarV41.build(
+          +            "R3",
+          +            request(
+          +                "Open Settings.\nGo to Apps.\nGo to Choose default apps.\nStop when Choose default apps page is visible.",
+          +                "com.android.settings",
+          +                """[5] TextView t="Apps" C
+          +[9] TextView t="Accessibility" C""",
+          +            ),
+          +            apps,
+          +        )
+          +        assertEquals("CLICK_NODE|5", spec.forcedAction)
+          +    }
+          +
+          +    @Test fun completedAppsStepAdvancesToChooseDefaultApps() {
+          +        val spec = PrimaryLocalGrammarV41.build(
+          +            "R4",
+          +            request(
+          +                "Open Settings.\nGo to Apps.\nGo to Choose default apps.\nStop when Choose default apps page is visible.",
+          +                "com.android.settings",
+          +                """[1] TextView t="Apps"
+          +[12] TextView t="Choose default apps" C
+          +[13] TextView t="Samsung app settings" C""",
+          +            ),
+          +            apps,
+          +        )
+          +        assertEquals("CLICK_NODE|12", spec.forcedAction)
+          +    }
+          +
+          +    @Test fun ambiguousSameStepStillFailsClosed() {
+          +        val spec = PrimaryLocalGrammarV41.build(
+          +            "R5",
+          +            request(
+          +                "Open Settings.\nGo to Apps.",
+          +                "com.android.settings",
+          +                """[5] TextView t="Apps" C
+          +[6] Button d="Apps" C""",
+          +            ),
+          +            apps,
+          +        )
+          +        assertNull(spec.forcedAction)
+          +        assertTrue(spec.grammar.contains("PRIMARY_ESCALATE|"))
+          +    }
+          +
+          +    @Test fun fallbackStillHasNoFreeSemanticArguments() {
+          +        val spec = PrimaryLocalGrammarV41.build(
+          +            "R6",
+          +            request("Continue safely.", "com.android.settings", "[4] Button t=\"Continue\" C\n[9] RecyclerView S"),
+          +            apps,
+          +        )
+          +        assertNull(spec.forcedAction)
+          +        assertFalse(spec.grammar.contains("SET_TEXT_NODE"))
+          +        assertFalse(spec.grammar.contains("CLICK_TEXT"))
+          +        assertFalse(spec.grammar.contains("CLICK_DESC"))
+          +        assertFalse(spec.grammar.contains("DONE"))
+          +        assertFalse(spec.grammar.contains("VERIFY_TEXT"))
+          +        assertFalse(spec.grammar.contains("arg ::="))
+          +    }
+          +
+          +    private fun request(goal: String, currentApp: String, nodes: String): String =
+          +        listOf(
+          +            "CP_PRIMARY_V29",
+          +            "TASK=T",
+          +            "REQ=unused",
+          +            "TURN=1",
+          +            "GOAL_BEGIN", goal, "GOAL_END",
+          +            "CURRENT_APP: $currentApp",
+          +            "NODES_BEGIN", nodes, "NODES_END",
+          +        ).joinToString("\n")
+          +}
+          PATCH042
+          git apply --check /tmp/042.patch
+          git apply /tmp/042.patch
+          echo '042 patch applied cleanly to exact 040 baseline: PASS' >> 042-verification-report.txt
+
+      - name: 042 source isolation and frozen correctness gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PYISO042'
+          from pathlib import Path
+          import hashlib, json
+          def sha(data: bytes): return hashlib.sha256(data).hexdigest()
+          def sf(path): return sha(Path(path).read_bytes())
+          baseline = json.loads(Path('042-baseline-source-manifest.json').read_text())
+          current = {}
+          for p in sorted(Path('app').rglob('*')):
+              if not p.is_file(): continue
+              rel = p.as_posix()
+              if rel.startswith('app/build/'): continue
+              current[rel] = sf(rel)
+          changed = {p for p in baseline.keys() & current.keys() if baseline[p] != current[p]}
+          added = set(current) - set(baseline)
+          removed = set(baseline) - set(current)
+          allowed_changed = {
+              'app/build.gradle.kts',
+              'app/src/main/res/values/strings.xml',
+              'app/src/main/kotlin/ai/closepaw/app/HybridAgentEngine.kt',
+          }
+          allowed_added = {
+              'app/src/main/kotlin/ai/closepaw/app/GoalPostconditionV41.kt',
+              'app/src/main/kotlin/ai/closepaw/app/PrimaryLocalGrammarV41.kt',
+              'app/src/test/kotlin/ai/closepaw/app/GoalPostconditionV41Test.kt',
+              'app/src/test/kotlin/ai/closepaw/app/PrimaryLocalGrammarV41Test.kt',
+          }
+          if changed != allowed_changed:
+              raise SystemExit(f'042 unexpected changed files: {sorted(changed)} expected {sorted(allowed_changed)}')
+          if added != allowed_added:
+              raise SystemExit(f'042 unexpected added files: {sorted(added)} expected {sorted(allowed_added)}')
+          if removed:
+              raise SystemExit(f'042 unexpectedly removed files: {sorted(removed)}')
+
+          frozen = json.loads(Path('042-baseline-critical-hashes.json').read_text())
+          engine = Path('app/src/main/kotlin/ai/closepaw/app/HybridAgentEngine.kt').read_text(encoding='utf-8')
+          def region(a, b):
+              s = engine.find(a)
+              if s < 0: raise SystemExit('042 critical start missing after patch: ' + a)
+              e = engine.find(b, s)
+              if e < 0: raise SystemExit('042 critical end missing after patch: ' + b)
+              return engine[s:e].encode()
+          now = {
+              'rc8_restore': sha(region('// RC8: only strong identity evidence may authorize a restore-side navigation.','private suspend fun restoreSidebarShapeIfNeeded(')),
+              'durable_transaction': sha(region('private suspend fun executeActionTransactionV9(','private fun receiptHistoryLineV9(')),
+              'v33_primary_plan_validation': sha(region('private suspend fun requestPrimaryPlanV9(','private fun buildBrainRequest(')),
+              'brain_request_builder': sha(region('private fun buildBrainRequest(','private fun buildRepairRequest(')),
+              'brain_excursion_capture': sha(region('private suspend fun captureBrainExcursionFrame(','private suspend fun restoreAfterBrainExcursion(')),
+              'brain_restore': sha(region('private suspend fun restoreAfterBrainExcursion(','private fun configuredBrainV9(): ChatBrainSettings')),
+              'configured_brain_route': sha(region('private fun configuredBrainV9(): ChatBrainSettings','private suspend fun sendConfiguredBrainMessageV9(')),
+              'brain_send': sha(region('private suspend fun sendConfiguredBrainMessageV9(','private suspend fun waitForMatchingBrainResponseV9(')),
+              'hybrid_protocol_file': sf('app/src/main/kotlin/ai/closepaw/app/HybridAgentProtocol.kt'),
+              'rc11_policy_file': sf('app/src/main/kotlin/ai/closepaw/app/RC11CorrectnessPolicy.kt'),
+              'http_transport_v32_file': sf('app/src/main/kotlin/ai/closepaw/app/PrimaryLocalHttpTransportV32.kt'),
+              'v37_grammar_file': sf('app/src/main/kotlin/ai/closepaw/app/PrimaryLocalGrammarV37.kt'),
+              'v37_trace_file': sf('app/src/main/kotlin/ai/closepaw/app/HybridTraceEventsV37.kt'),
+              'brain_settings_store_file': sf('app/src/main/kotlin/ai/closepaw/app/ChatBrainSettingsStore.kt'),
+              'brain_target_resolver_v40_file': sf('app/src/main/kotlin/ai/closepaw/app/ConfiguredBrainTargetResolverV40.kt'),
+              'bridge_source': sf('tools/termux-bridge/closepaw_bridge.py'),
+          }
+          if now != frozen:
+              bad = [k for k in frozen if now.get(k) != frozen[k]]
+              raise SystemExit('042 modified frozen correctness regions/files: ' + ', '.join(bad))
+          Path('042-postpatch-source-manifest.json').write_text(json.dumps(current, indent=2, sort_keys=True) + '\n')
+          with Path('042-verification-report.txt').open('a') as f:
+              f.write('Source isolation exact allowlist: PASS\n')
+              f.write('RC8/durable/V33/V32/V37-regression/Brain binding+locator+send+restore/trace/bridge frozen: PASS\n')
+          print('042 SOURCE ISOLATION + FROZEN CORRECTNESS: PASS')
+          PYISO042
+
+      - name: 042 behavioral architecture audit
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PYAUDIT042'
+          from pathlib import Path
+          engine = Path('app/src/main/kotlin/ai/closepaw/app/HybridAgentEngine.kt').read_text(encoding='utf-8')
+          goal = Path('app/src/main/kotlin/ai/closepaw/app/GoalPostconditionV41.kt').read_text(encoding='utf-8')
+          grammar = Path('app/src/main/kotlin/ai/closepaw/app/PrimaryLocalGrammarV41.kt').read_text(encoding='utf-8')
+          store = Path('app/src/main/kotlin/ai/closepaw/app/ChatBrainSettingsStore.kt').read_text(encoding='utf-8')
+          gradle = Path('app/build.gradle.kts').read_text(encoding='utf-8')
+          strings = Path('app/src/main/res/values/strings.xml').read_text(encoding='utf-8')
+
+          for token in [
+              'GoalPostconditionV41.parse(goal, apps)',
+              'GoalPostconditionV41.evaluate(',
+              'PrimaryLocalGrammarV41.build(lease, request, installedApps)',
+              'LOCAL_GOAL_COMPLETE_V41|typed_fresh_observation_before_model',
+              'MODEL_RETURN_LOCAL_COMPLETION_V41|$selectedPlanSource',
+              'PRIMARY_CUSTOM_HTTP_TIMEOUT_MS = 180_000L',
+              'PRIMARY_CUSTOM_MAX_OUTPUT_TOKENS = 64L',
+              'appendLine(task.goal)',
+          ]:
+              if token not in engine: raise SystemExit('042 missing engine contract: ' + token)
+
+          # Regression gate for 041 compile failure: evaluateGoalLocallyV11 must capture one fresh
+          # snapshot and reuse it for typed and legacy fallback checks; duplicate local declarations fail.
+          s_eval = engine.find('private suspend fun evaluateGoalLocallyV11(')
+          e_eval = engine.find('private fun riskForAction(', s_eval)
+          if s_eval < 0 or e_eval < 0: raise SystemExit('042 local evaluator region missing')
+          evaluator = engine[s_eval:e_eval]
+          if evaluator.count('val snapshot = platform.captureScreen()') != 1:
+              raise SystemExit('042 local evaluator must contain exactly one fresh snapshot declaration')
+
+          # Both model snapshots must use the authoritative Samsung-safe foreground observation.
+          for start, end in [
+              ('private fun buildPrimaryUiSnapshotV9(', 'private fun buildUiSnapshot('),
+              ('private fun buildUiSnapshot(', 'private fun safeNodeText('),
+          ]:
+              s = engine.find(start); e = engine.find(end, s)
+              if s < 0 or e < 0: raise SystemExit('042 snapshot builder region missing: ' + start)
+              block = engine[s:e]
+              if 'observedPackage(platform).orEmpty()' not in block:
+                  raise SystemExit('042 snapshot builder does not use authoritative observedPackage: ' + start)
+              if 'platform.getCurrentPackageName().orEmpty()' in block:
+                  raise SystemExit('042 stale foreground source remains in snapshot builder: ' + start)
+
+          for token in [
+              'APP_FOREGROUND', 'PAGE_REACHED', 'ELEMENT_VISIBLE', 'LIST_VISIBLE', 'TEXT_ENTERED',
+              'isInsideClickableContainer', 'requiredPackage', 'textEntered', 'listVisible',
+          ]:
+              if token not in goal: raise SystemExit('042 typed postcondition contract missing: ' + token)
+          if 'candidate.clickable' not in goal:
+              raise SystemExit('042 page-reached proof does not reject clickable row targets')
+
+          for token in [
+              'for (phrase in phrases)',
+              'if (candidates.size == 1) return candidates.single()',
+              'if (candidates.size > 1) return null',
+              'snapshot_bound_fallback',
+          ]:
+              if token not in grammar: raise SystemExit('042 ordered progress grammar contract missing: ' + token)
+          for forbidden in ['arg ::=', 'SET_TEXT_NODE|" arg', 'CLICK_TEXT|" arg', 'DONE|']:
+              if forbidden in grammar: raise SystemExit('042 free-form executable semantic argument reintroduced: ' + forbidden)
+
+          # One-time external Brain binding/locator remains deterministic and consumes zero model calls.
+          for token in ['KEY_APP_PACKAGE', 'KEY_CHAT_TITLE', 'getSharedPreferences', 'saveAppPackage', 'saveChatTitle']:
+              if token not in store: raise SystemExit('042 persistent Brain binding contract missing: ' + token)
+          s = engine.find('private suspend fun ensureConfiguredBrainConversationV9(')
+          e = engine.find('private suspend fun sendConfiguredBrainMessageV9(', s)
+          if s < 0 or e < 0: raise SystemExit('042 configured Brain conversation region missing')
+          locator = engine[s:e]
+          for token in ['requestPrimaryPlanV9(', 'ChatCompletionClient', 'LLMClient', 'buildPrimaryModelRequest(']:
+              if token in locator: raise SystemExit('042 Brain locator unexpectedly consumes model path: ' + token)
+
+          if 'take(600)' in engine: raise SystemExit('042 reintroduced user-goal tail truncation')
+          if 'applicationIdSuffix = ".rc11c042"' not in gradle: raise SystemExit('042 application id missing')
+          if 'versionNameSuffix = "-rc11-c042"' not in gradle: raise SystemExit('042 version suffix missing')
+          if '<string name="app_name">ClosePaw RC11 042</string>' not in strings: raise SystemExit('042 label missing')
+
+          with Path('042-verification-report.txt').open('a') as f:
+              f.write('Authoritative observedPackage wired into Primary and External Brain snapshots: PASS\n')
+              f.write('Typed postconditions distinguish app/page/element/list/text-entry completion: PASS\n')
+              f.write('PAGE_REACHED rejects visible clickable rows and requires header-like destination evidence: PASS\n')
+              f.write('Ordered multi-step navigation targets first still-clickable user instruction; same-step ambiguity fail-closed: PASS\n')
+              f.write('Configured External Brain persistent binding and zero-token locator preserved: PASS\n')
+          print('042 BEHAVIORAL ARCHITECTURE AUDIT: PASS')
+          PYAUDIT042
+
+      - name: 042 clean Kotlin compile gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./gradlew clean :app:compileDebugKotlin --stacktrace --no-daemon --no-configuration-cache
+          echo '042 clean Kotlin compile: PASS' >> 042-verification-report.txt
+
+      - name: 042 targeted typed-goal progress Brain V37 V33 RC11 and bridge tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./gradlew :app:testDebugUnitTest \
+            --tests ai.closepaw.app.GoalPostconditionV41Test \
+            --tests ai.closepaw.app.PrimaryLocalGrammarV41Test \
+            --tests ai.closepaw.app.ConfiguredBrainTargetResolverV40Test \
+            --tests ai.closepaw.app.LocalGoalCompletionV40Test \
+            --tests ai.closepaw.app.PrimaryLocalGrammarV37Test \
+            --tests ai.closepaw.app.HybridTraceEventsV37Test \
+            --tests ai.closepaw.app.PrimaryLocalGrammarV36Test \
+            --tests ai.closepaw.app.PrimaryFormatComplianceV33Test \
+            --tests ai.closepaw.app.PrimaryLocalHttpTransportV32Test \
+            --tests ai.closepaw.app.RC11CorrectnessPolicyTest \
+            --tests ai.closepaw.termux.ClosePawBridgeResourceTest \
+            --stacktrace --no-daemon --no-configuration-cache
+          echo '042 targeted typed-goal/progress/Brain/V37/V33/RC11/bridge tests: PASS' >> 042-verification-report.txt
+
+      - name: 042 full unit tests and clean rebuild
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./gradlew :app:testDebugUnitTest :app:assembleDebug --stacktrace --no-daemon --no-configuration-cache
+          echo '042 full unit tests: PASS' >> 042-verification-report.txt
+          echo '042 debug APK rebuild: PASS' >> 042-verification-report.txt
+
+      - name: 042 APK identity integrity native-runtime and signature gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          mapfile -t APKS < <(find app/build/outputs/apk/debug -maxdepth 1 -type f -name '*.apk' -print)
+          if [ "${#APKS[@]}" -ne 1 ]; then echo "Expected exactly one debug APK, found ${#APKS[@]}" >&2; exit 1; fi
+          APK="${APKS[0]}"
+          unzip -tq "$APK" >/dev/null
+          SIZE="$(stat -c %s "$APK")"
+          if [ "$SIZE" -lt 50000000 ]; then echo "APK unexpectedly small: $SIZE bytes" >&2; exit 1; fi
+          CONTENTS="$(zipinfo -1 "$APK")"
+          for ENTRY in AndroidManifest.xml classes.dex lib/arm64-v8a/libllama.so lib/arm64-v8a/libggml.so lib/arm64-v8a/libinference_engine.so lib/arm64-v8a/libinference_engine_jni.so lib/arm64-v8a/libinference_engine_llamacpp_backend.so; do
+            if ! grep -Fxq "$ENTRY" <<<"$CONTENTS"; then echo "Required APK entry missing: $ENTRY" >&2; exit 1; fi
+          done
+          AAPT="$(find "$ANDROID_HOME/build-tools" -type f -name aapt -print | sort -V | tail -n 1)"
+          APKSIGNER="$(find "$ANDROID_HOME/build-tools" -type f -name apksigner -print | sort -V | tail -n 1)"
+          test -x "$AAPT"; test -x "$APKSIGNER"
+          BADGING="$($AAPT dump badging "$APK")"
+          grep -Fq "package: name='ai.closepaw.rc11c042'" <<<"$BADGING" || { echo '042 APK package identity mismatch' >&2; exit 1; }
+          grep -Fq "application-label:'ClosePaw RC11 042'" <<<"$BADGING" || { echo '042 APK label mismatch' >&2; exit 1; }
+          grep -Fq "sdkVersion:'31'" <<<"$BADGING" || { echo '042 APK minSdk mismatch' >&2; exit 1; }
+          grep -Fq "targetSdkVersion:'36'" <<<"$BADGING" || { echo '042 APK targetSdk mismatch' >&2; exit 1; }
+          "$APKSIGNER" verify --verbose "$APK" > 042-apksigner-verification.txt
+          APK_SHA="$(sha256sum "$APK" | awk '{print $1}')"
+          {
+            echo "APK path: $APK"
+            echo "APK size bytes: $SIZE"
+            echo "APK SHA256: $APK_SHA"
+            echo 'APK ZIP integrity: PASS'
+            echo 'APK package identity ai.closepaw.rc11c042: PASS'
+            echo 'APK app label ClosePaw RC11 042: PASS'
+            echo 'minSdk 31 / targetSdk 36: PASS'
+            echo 'arm64 local-inference runtime libraries: PASS'
+            echo 'APK signature verification: PASS'
+          } >> 042-verification-report.txt
+          echo "042 APK FULL INTEGRITY GATE: PASS | size=$SIZE | sha256=$APK_SHA"
+
+      - name: Prepare 042 full verified source snapshot
+        if: success()
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf 042-full-source
+          mkdir -p 042-full-source
+          rsync -a --exclude='.git/' --exclude='.github/' --exclude='.gradle/' --exclude='app/build/' --exclude='042-full-source/' ./ 042-full-source/
+          test -f 042-full-source/app/src/main/kotlin/ai/closepaw/app/HybridAgentEngine.kt
+          test -f 042-full-source/app/src/main/kotlin/ai/closepaw/app/GoalPostconditionV41.kt
+          test -f 042-full-source/app/src/main/kotlin/ai/closepaw/app/PrimaryLocalGrammarV41.kt
+          test -f 042-full-source/app/src/main/kotlin/ai/closepaw/app/ConfiguredBrainTargetResolverV40.kt
+          test -f 042-full-source/app/src/main/kotlin/ai/closepaw/app/PrimaryLocalGrammarV37.kt
+          test -f 042-full-source/app/src/main/kotlin/ai/closepaw/app/HybridTraceEventsV37.kt
+          test -f 042-full-source/tools/termux-bridge/closepaw_bridge.py
+          test "$(sha256sum 042-full-source/tools/termux-bridge/closepaw_bridge.py | awk '{print $1}')" = "707906f17acde07c0a86cb45c3c76b7a554f3ffcc39acc17f76f32e376749b2c"
+
+      - name: Upload 042 verification proof
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: 042-ClosePaw-RC11-verification-proof
+          if-no-files-found: warn
+          path: |
+            042-verification-report.txt
+            042-baseline-source-manifest.json
+            042-postpatch-source-manifest.json
+            042-baseline-critical-hashes.json
+            042-apksigner-verification.txt
+
+      - name: Upload 042 full verified source
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: 042-ClosePaw-RC11-verified-full-source
+          if-no-files-found: error
+          path: 042-full-source/
+
+      - name: Upload 042 APK
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: 042-ClosePaw-RC11-APK
+          if-no-files-found: error
+          path: app/build/outputs/apk/debug/app-debug.apk
+
+      - name: Upload 042 failure sources
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: 042-ClosePaw-RC11-failure-sources
+          if-no-files-found: warn
+          path: |
+            app/src/main/kotlin/ai/closepaw/app/HybridAgentEngine.kt
+            app/src/main/kotlin/ai/closepaw/app/GoalPostconditionV41.kt
+            app/src/main/kotlin/ai/closepaw/app/PrimaryLocalGrammarV41.kt
+            app/src/main/kotlin/ai/closepaw/app/ConfiguredBrainTargetResolverV40.kt
+            app/src/main/kotlin/ai/closepaw/app/PrimaryLocalGrammarV37.kt
+            app/src/main/kotlin/ai/closepaw/app/HybridTraceEventsV37.kt
+            app/src/test/kotlin/ai/closepaw/app/GoalPostconditionV41Test.kt
+            app/src/test/kotlin/ai/closepaw/app/PrimaryLocalGrammarV41Test.kt
+            042-verification-report.txt
