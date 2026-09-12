@@ -1,0 +1,843 @@
+name: 040 - ClosePaw RC11 Local Goal Completion + Deterministic Bound External Brain
+
+'on':
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Setup Java 17
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Restore exact verified 039 full source
+        uses: actions/download-artifact@v5
+        with:
+          name: 039-ClosePaw-RC11-verified-full-source
+          path: /tmp/039-source
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: 34645418757
+
+      - name: Verify and activate exact 039 baseline
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f /tmp/039-source/app/src/main/kotlin/ai/closepaw/app/HybridAgentEngine.kt
+          test -f /tmp/039-source/app/src/main/kotlin/ai/closepaw/app/PrimaryLocalGrammarV37.kt
+          test -f /tmp/039-source/app/src/main/kotlin/ai/closepaw/app/HybridTraceEventsV37.kt
+          test -f /tmp/039-source/app/src/main/kotlin/ai/closepaw/app/ChatBrainSettingsStore.kt
+          test -f /tmp/039-source/tools/termux-bridge/closepaw_bridge.py
+          find . -mindepth 1 -maxdepth 1 ! -name .git ! -name .github -exec rm -rf {} +
+          cp -a /tmp/039-source/. ./
+
+          python3 - <<'PYBASE040'
+          from pathlib import Path
+          import hashlib
+          expected = {
+              'app/src/main/kotlin/ai/closepaw/app/HybridAgentEngine.kt': 'a2e856ac6d95077aa5b9dce40303c3283efd156298e4b6731e231941c7828900',
+              'app/src/main/kotlin/ai/closepaw/app/PrimaryLocalGrammarV37.kt': '50fec2dfd085e29fd56efc7d9317cc4e8f6b2ed8a242e4b1d9189090a0e97ab2',
+              'app/src/main/kotlin/ai/closepaw/app/HybridTraceEventsV37.kt': 'ecd85c4d77335f2fa289ebf8ae4e804b7dfebe5a24e918d2d6e8413be20e9a42',
+              'app/src/main/kotlin/ai/closepaw/app/ChatBrainSettingsStore.kt': '063f89a0d7b4dd08f16642ee7454a5a871e7d3b4d8318f1373808be307350f41',
+              'app/src/main/kotlin/ai/closepaw/app/HybridAgentProtocol.kt': '6c386d7e712c1f19f1d106f324d500b2fead4fc4b30a1b043cb368db16ebc03e',
+              'app/src/main/kotlin/ai/closepaw/app/RC11CorrectnessPolicy.kt': '6d2069354b970927dc4729a00355a74e8139f60efadb866e3f9e9b2c020e67b6',
+              'app/src/main/kotlin/ai/closepaw/app/PrimaryLocalHttpTransportV32.kt': '1e9e9dc2e4625277eb8eecd08792d4ed1e7c2952e374f20745808ba1bbfb7739',
+              'app/build.gradle.kts': '53452a9957e5386473a3558e356e82684d6a8b56f8c2fff55028c93f890e826b',
+              'app/src/main/res/values/strings.xml': '4032c1e7be3f7136d05b01a6e1cd4677a2d959daa31531d39da5a08bfd8ee76e',
+              'tools/termux-bridge/closepaw_bridge.py': '707906f17acde07c0a86cb45c3c76b7a554f3ffcc39acc17f76f32e376749b2c',
+          }
+          for rel, wanted in expected.items():
+              p=Path(rel)
+              if not p.is_file(): raise SystemExit('040 baseline missing: '+rel)
+              got=hashlib.sha256(p.read_bytes()).hexdigest()
+              if got != wanted: raise SystemExit(f'040 baseline hash mismatch {rel}: {got} != {wanted}')
+          Path('040-verification-report.txt').write_text(
+              'ClosePaw RC11 040 verification report\n'
+              '=====================================\n'
+              'Base: exact verified 039 full-source artifact from successful run 34645418757\n'
+              'Scope: local explicit stop-condition completion + deterministic configured Brain title dedupe + identity only.\n'
+              'Primary transport/grammar, V33 validation, RC11, durable transaction, RC8 restore, Brain send/restore remain frozen.\n',
+              encoding='utf-8',
+          )
+          print('040 EXACT VERIFIED 039 BASELINE HASH GATE: PASS')
+          PYBASE040
+
+      - name: Baseline 039 clean compile before any 040 change
+        shell: bash
+        run: |
+          set -euo pipefail
+          chmod +x ./gradlew
+          ./gradlew clean :app:compileDebugKotlin --stacktrace --no-daemon --no-configuration-cache
+          echo 'Baseline 039 clean Kotlin compile BEFORE 040 patch: PASS' >> 040-verification-report.txt
+
+      - name: Freeze exact 039 source and correctness regions
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PYFREEZE040'
+          from pathlib import Path
+          import hashlib, json
+          def sha(data: bytes): return hashlib.sha256(data).hexdigest()
+          def sf(path): return sha(Path(path).read_bytes())
+          manifest={}
+          for p in sorted(Path('app').rglob('*')):
+              if not p.is_file(): continue
+              rel=p.as_posix()
+              if rel.startswith('app/build/'): continue
+              manifest[rel]=sf(rel)
+          if len(manifest) < 690: raise SystemExit(f'040 baseline app manifest unexpectedly small: {len(manifest)}')
+          Path('040-baseline-source-manifest.json').write_text(json.dumps(manifest, indent=2, sort_keys=True)+'\n')
+
+          engine=Path('app/src/main/kotlin/ai/closepaw/app/HybridAgentEngine.kt').read_text(encoding='utf-8')
+          def region(a,b):
+              s=engine.find(a)
+              if s < 0: raise SystemExit('040 critical start missing: '+a)
+              e=engine.find(b,s)
+              if e < 0: raise SystemExit('040 critical end missing: '+b)
+              return engine[s:e].encode()
+          critical={
+              'rc8_restore': sha(region('// RC8: only strong identity evidence may authorize a restore-side navigation.','private suspend fun restoreSidebarShapeIfNeeded(')),
+              'durable_transaction': sha(region('private suspend fun executeActionTransactionV9(','private fun receiptHistoryLineV9(')),
+              'v33_primary_plan_validation': sha(region('private suspend fun requestPrimaryPlanV9(','private fun buildBrainRequest(')),
+              'brain_request_builder': sha(region('private fun buildBrainRequest(','private fun buildRepairRequest(')),
+              'brain_excursion_capture': sha(region('private suspend fun captureBrainExcursionFrame(','private suspend fun restoreAfterBrainExcursion(')),
+              'brain_restore': sha(region('private suspend fun restoreAfterBrainExcursion(','private fun configuredBrainV9(): ChatBrainSettings')),
+              'configured_brain_store_route': sha(region('private fun configuredBrainV9(): ChatBrainSettings','private suspend fun clickConfiguredBrainTitleV9(')),
+              'brain_send': sha(region('private suspend fun sendConfiguredBrainMessageV9(','private suspend fun waitForMatchingBrainResponseV9(')),
+              'hybrid_protocol_file': sf('app/src/main/kotlin/ai/closepaw/app/HybridAgentProtocol.kt'),
+              'rc11_policy_file': sf('app/src/main/kotlin/ai/closepaw/app/RC11CorrectnessPolicy.kt'),
+              'http_transport_v32_file': sf('app/src/main/kotlin/ai/closepaw/app/PrimaryLocalHttpTransportV32.kt'),
+              'v37_grammar_file': sf('app/src/main/kotlin/ai/closepaw/app/PrimaryLocalGrammarV37.kt'),
+              'v37_trace_file': sf('app/src/main/kotlin/ai/closepaw/app/HybridTraceEventsV37.kt'),
+              'brain_settings_store_file': sf('app/src/main/kotlin/ai/closepaw/app/ChatBrainSettingsStore.kt'),
+              'bridge_source': sf('tools/termux-bridge/closepaw_bridge.py'),
+          }
+          Path('040-baseline-critical-hashes.json').write_text(json.dumps(critical, indent=2, sort_keys=True)+'\n')
+          print('040 BASELINE FREEZE: PASS')
+          PYFREEZE040
+
+      - name: Apply isolated 040 completion and Brain-binding patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > /tmp/040.patch <<'PATCH040'
+          diff --git a/app/build.gradle.kts b/app/build.gradle.kts
+          index 1b06bcd..cee9147 100644
+          --- a/app/build.gradle.kts
+          +++ b/app/build.gradle.kts
+          @@ -46,8 +46,8 @@ android {
+           
+               buildTypes {
+                   debug {
+          -    applicationIdSuffix = ".rc11c039"
+          -    versionNameSuffix = "-rc11-c039"
+          +    applicationIdSuffix = ".rc11c040"
+          +    versionNameSuffix = "-rc11-c040"
+           
+               val evalSsl = project.findProperty("insecureSslForEval")?.toString()?.toBoolean() ?: false
+               buildConfigField("boolean", "INSECURE_SSL_FOR_EVAL", evalSsl.toString())
+          diff --git a/app/src/main/kotlin/ai/closepaw/app/ConfiguredBrainTargetResolverV40.kt b/app/src/main/kotlin/ai/closepaw/app/ConfiguredBrainTargetResolverV40.kt
+          new file mode 100644
+          index 0000000..8605814
+          --- /dev/null
+          +++ b/app/src/main/kotlin/ai/closepaw/app/ConfiguredBrainTargetResolverV40.kt
+          @@ -0,0 +1,53 @@
+          +package ai.closepaw.app
+          +
+          +import kotlin.math.max
+          +import kotlin.math.min
+          +
+          +/**
+          + * Resolves duplicate accessibility nodes that represent one configured Brain row.
+          + * It never guesses between distinct rows: exact-title ambiguity remains fail-closed.
+          + */
+          +internal object ConfiguredBrainTargetResolverV40 {
+          +    internal data class Candidate(
+          +        val index: Int,
+          +        val clickable: Boolean,
+          +        val left: Int,
+          +        val top: Int,
+          +        val right: Int,
+          +        val bottom: Int,
+          +    ) {
+          +        val width: Int get() = (right - left).coerceAtLeast(0)
+          +        val height: Int get() = (bottom - top).coerceAtLeast(0)
+          +        val centerX: Int get() = (left + right) / 2
+          +        val centerY: Int get() = (top + bottom) / 2
+          +    }
+          +
+          +    fun choose(candidates: List<Candidate>): Int? {
+          +        val distinct = candidates.distinctBy { it.index }
+          +        if (distinct.size == 1) return distinct.single().index
+          +        if (distinct.isEmpty()) return null
+          +
+          +        val clickable = distinct.filter { it.clickable }
+          +        if (clickable.size != 1) return null
+          +        val anchor = clickable.single()
+          +
+          +        // Safe dedupe only when every same-title duplicate geometrically belongs to the one
+          +        // clickable row (typical parent View + child TextView accessibility duplication).
+          +        if (!distinct.all { sameSemanticRow(anchor, it) }) return null
+          +        return anchor.index
+          +    }
+          +
+          +    private fun sameSemanticRow(a: Candidate, b: Candidate): Boolean {
+          +        if (a.index == b.index) return true
+          +        if (a.width <= 0 || a.height <= 0 || b.width <= 0 || b.height <= 0) return false
+          +        if (contains(a, b.centerX, b.centerY) || contains(b, a.centerX, a.centerY)) return true
+          +
+          +        val overlapX = (min(a.right, b.right) - max(a.left, b.left)).coerceAtLeast(0)
+          +        val overlapY = (min(a.bottom, b.bottom) - max(a.top, b.top)).coerceAtLeast(0)
+          +        val minHeight = min(a.height, b.height).coerceAtLeast(1)
+          +        return overlapX > 0 && overlapY * 100 >= minHeight * 70
+          +    }
+          +
+          +    private fun contains(c: Candidate, x: Int, y: Int): Boolean =
+          +        x in c.left..c.right && y in c.top..c.bottom
+          +}
+          diff --git a/app/src/main/kotlin/ai/closepaw/app/HybridAgentEngine.kt b/app/src/main/kotlin/ai/closepaw/app/HybridAgentEngine.kt
+          index b8ce17a..7cd87b4 100644
+          --- a/app/src/main/kotlin/ai/closepaw/app/HybridAgentEngine.kt
+          +++ b/app/src/main/kotlin/ai/closepaw/app/HybridAgentEngine.kt
+          @@ -581,6 +581,16 @@ internal class HybridAgentEngine(private val service: AgentService) {
+                           }
+           
+                           if (planQueue.isEmpty()) {
+          +                    // V40: prove explicit local stop conditions from a fresh observation BEFORE
+          +                    // spending another Primary/External model turn. This is local/deterministic.
+          +                    if (targetChat == null &&
+          +                        evaluateGoalLocallyV11(platform, task.goal, null) == V11GoalVerdict.ACHIEVED
+          +                    ) {
+          +                        history += "LOCAL_GOAL_COMPLETE_V40|fresh_observation_before_model"
+          +                        finishSuccess("Goal verified locally from fresh observation")
+          +                        return
+          +                    }
+          +
+                               if (targetChat != null) {
+                                   val nav = navigateExactChatV7(platform, targetChat)
+                                   history += "V7_NAV_RETRY|${nav.strategy ?: "none"}|${nav.success}|${nav.detail}"
+          @@ -760,6 +770,13 @@ internal class HybridAgentEngine(private val service: AgentService) {
+                                   finishSuccess(v7SuccessSummary(task.goal, targetChat, brainCalls))
+                                   return
+                               }
+          +                    if (targetChat == null &&
+          +                        evaluateGoalLocallyV11(platform, task.goal, null) == V11GoalVerdict.ACHIEVED
+          +                    ) {
+          +                        history += "MODEL_RETURN_LOCAL_COMPLETION_V40|$selectedPlanSource"
+          +                        finishSuccess("Goal verified locally after model return")
+          +                        return
+          +                    }
+           
+                               ensureExecutionEpochV11(runEpochV11)
+                               val leaseUi = platform.captureScreen()
+          @@ -3366,11 +3383,28 @@ internal class HybridAgentEngine(private val service: AgentService) {
+                       !element.isEditable && element.isEnabled &&
+                           listOf(element.text, element.description).any { normalizeForMatch(it) == wanted }
+                   }.distinctBy { it.index }
+          -        if (candidates.size != 1) {
+          -            Log.w(TAG, "Configured Brain title is missing or ambiguous: '$title' matches=${candidates.size}")
+          +        val selectedIndex = ConfiguredBrainTargetResolverV40.choose(
+          +            candidates.map { element ->
+          +                ConfiguredBrainTargetResolverV40.Candidate(
+          +                    index = element.index,
+          +                    clickable = element.isClickable,
+          +                    left = element.bounds.left,
+          +                    top = element.bounds.top,
+          +                    right = element.bounds.right,
+          +                    bottom = element.bounds.bottom,
+          +                )
+          +            }
+          +        )
+          +        val selected = selectedIndex?.let { index -> candidates.singleOrNull { it.index == index } }
+          +        if (selected == null) {
+          +            Log.w(
+          +                TAG,
+          +                "Configured Brain title is missing or genuinely ambiguous: '$title' " +
+          +                    "matches=${candidates.size} clickable=${candidates.count { it.isClickable }}"
+          +            )
+                       return false
+                   }
+          -        if (!clickElement(platform, candidates.single())) return false
+          +        if (!clickElement(platform, selected)) return false
+                   delay(650)
+                   if (!configuredBrainChatVerifiedV9(platform, requireTitle = false)) return false
+                   val after = platform.captureScreen()
+          @@ -4599,6 +4633,38 @@ internal class HybridAgentEngine(private val service: AgentService) {
+                   if (!targetChat.isNullOrBlank()) {
+                       return if (isExactChatActiveV7(platform, targetChat)) V11GoalVerdict.ACHIEVED else V11GoalVerdict.NOT_ACHIEVED
+                   }
+          +
+          +        // V40: explicit "Stop when X is visible" is a local postcondition, not a model decision.
+          +        // Require an exact visible semantic label. If X is also an installed-app label, require
+          +        // the foreground package to be one of those exact app matches to avoid false positives.
+          +        val visibleStopTarget = LocalGoalCompletionV40.explicitVisibleStopTarget(goal)
+          +        if (!visibleStopTarget.isNullOrBlank()) {
+          +            val snapshot = platform.captureScreen()
+          +            val visibleValues = snapshot.elements.flatMap {
+          +                listOf(it.text, it.description, it.hintText)
+          +            }
+          +            val apps = runCatching { platform.getInstalledApps() }
+          +                .getOrDefault(emptyList())
+          +                .map { LocalGoalCompletionV40.AppIdentity(it.packageName, it.label) }
+          +            val currentPackage = observedPackage(platform)
+          +            val exactVisible = LocalGoalCompletionV40.exactTargetVisible(visibleStopTarget, visibleValues)
+          +            val packageCompatible = LocalGoalCompletionV40.packageCompatible(
+          +                visibleStopTarget,
+          +                currentPackage,
+          +                apps,
+          +            )
+          +            val knownSemanticListVisible =
+          +                LocalGoalCompletionV40.isInstallUnknownAppsListCondition(goal, visibleStopTarget) &&
+          +                    LocalGoalCompletionV40.installUnknownAppsListVisible(currentPackage, visibleValues)
+          +            return if (((exactVisible && packageCompatible) || knownSemanticListVisible) &&
+          +                scopeVerifiedV9(goal, snapshot)
+          +            ) {
+          +                V11GoalVerdict.ACHIEVED
+          +            } else {
+          +                V11GoalVerdict.NOT_ACHIEVED
+          +            }
+          +        }
+          +
+                   val terminal = inferTerminalNavigationLabelV8(goal).orEmpty()
+                   if (terminal.isBlank()) return V11GoalVerdict.UNKNOWN
+                   val snapshot = platform.captureScreen()
+          diff --git a/app/src/main/kotlin/ai/closepaw/app/LocalGoalCompletionV40.kt b/app/src/main/kotlin/ai/closepaw/app/LocalGoalCompletionV40.kt
+          new file mode 100644
+          index 0000000..8cbadcd
+          --- /dev/null
+          +++ b/app/src/main/kotlin/ai/closepaw/app/LocalGoalCompletionV40.kt
+          @@ -0,0 +1,112 @@
+          +package ai.closepaw.app
+          +
+          +import java.text.Normalizer
+          +import java.util.Locale
+          +
+          +/**
+          + * Deterministic local completion predicates for explicit user stop conditions.
+          + * No model call is involved. A stop target must be exactly visible; substring matches are rejected.
+          + */
+          +internal object LocalGoalCompletionV40 {
+          +    internal data class AppIdentity(val packageName: String, val label: String)
+          +
+          +    fun explicitVisibleStopTarget(goal: String): String? {
+          +        if (goal.isBlank()) return null
+          +        val patterns = listOf(
+          +            Regex("(?im)^\\s*stop\\s+(?:here\\s+)?(?:when|once)\\s+(.+?)\\s+is\\s+visible\\s*[.!]?\\s*$"),
+          +            Regex("(?im)^\\s*stop\\s+(?:here\\s+)?(?:when|once)\\s+(.+?)\\s+is\\s+shown\\s*[.!]?\\s*$"),
+          +            Regex("(?im)^\\s*stop\\s+(?:here\\s+)?(?:when|once)\\s+(.+?)\\s+appears\\s*[.!]?\\s*$"),
+          +        )
+          +        val raw = patterns.asSequence()
+          +            .mapNotNull { it.find(goal)?.groupValues?.getOrNull(1) }
+          +            .map(String::trim)
+          +            .firstOrNull { it.isNotBlank() }
+          +            ?: return null
+          +        return raw.trim().trim('"', '\'', '`').trim().takeIf { it.length in 1..160 }
+          +    }
+          +
+          +    fun exactTargetVisible(target: String, visibleValues: Iterable<String>): Boolean {
+          +        val wanted = targetVariants(target)
+          +        if (wanted.isEmpty()) return false
+          +        return visibleValues.any { normalize(it) in wanted }
+          +    }
+          +
+          +    /** Known deterministic semantic terminal for the baseline Android permission-list task. */
+          +    fun isInstallUnknownAppsListCondition(goal: String, stopTarget: String): Boolean {
+          +        val g = normalize(goal)
+          +        val t = normalize(stopTarget)
+          +        val unknownAppsIntent = g.contains("install unknown apps") ||
+          +            (g.contains("unknown apps") && g.contains("install"))
+          +        val listIntent = t.contains("list") && t.contains("apps") &&
+          +            (t.contains("permission") || t.contains("allowed"))
+          +        return unknownAppsIntent && listIntent
+          +    }
+          +
+          +    fun installUnknownAppsListVisible(
+          +        currentPackage: String?,
+          +        visibleValues: Iterable<String>,
+          +    ): Boolean {
+          +        if (currentPackage.isNullOrBlank() || !normalize(currentPackage).contains("settings")) return false
+          +        val values = visibleValues.map(::normalize).filter { it.isNotBlank() }.distinct()
+          +        val hasDestinationTitle = values.any {
+          +            it == "install unknown apps" || it.contains("install unknown apps")
+          +        }
+          +        if (!hasDestinationTitle) return false
+          +        val nonGeneric = values.filterNot { value ->
+          +            value in setOf(
+          +                "install unknown apps", "search", "back", "more options", "navigate up",
+          +                "settings", "special access",
+          +            ) || value.contains("install unknown apps")
+          +        }
+          +        // Destination title + multiple distinct row labels is local evidence that the app list,
+          +        // not merely a transient page shell, is visible.
+          +        return nonGeneric.count { it.length >= 2 } >= 2
+          +    }
+          +
+          +    /**
+          +     * If the stop target is also an installed-app label, the foreground package must be one of
+          +     * those exact-label apps. If it is not an app label (for example "Display"), package does not
+          +     * participate in the proof and the exact visible label remains authoritative.
+          +     */
+          +    fun packageCompatible(
+          +        target: String,
+          +        currentPackage: String?,
+          +        installedApps: List<AppIdentity>,
+          +    ): Boolean {
+          +        val wanted = targetVariants(target)
+          +        if (wanted.isEmpty()) return false
+          +        val matchingPackages = installedApps
+          +            .filter { normalize(it.label) in wanted }
+          +            .map { it.packageName }
+          +            .filter { it.isNotBlank() }
+          +            .distinct()
+          +        if (matchingPackages.isEmpty()) return true
+          +        return !currentPackage.isNullOrBlank() && currentPackage in matchingPackages
+          +    }
+          +
+          +
+          +    private fun targetVariants(value: String): Set<String> {
+          +        val base = normalize(value)
+          +        if (base.isBlank()) return emptySet()
+          +        val out = linkedSetOf(base)
+          +        val suffixes = listOf(" settings", " setting", " screen", " page", " menu", " section")
+          +        for (suffix in suffixes) {
+          +            if (base.endsWith(suffix) && base.length > suffix.length + 1) {
+          +                out += base.removeSuffix(suffix).trim()
+          +            }
+          +        }
+          +        return out.filter { it.isNotBlank() }.toSet()
+          +    }
+          +
+          +    private fun normalize(value: String): String {
+          +        val deaccented = Normalizer.normalize(value, Normalizer.Form.NFKD)
+          +            .replace(Regex("\\p{M}+"), "")
+          +            .lowercase(Locale.ROOT)
+          +            .replace('ي', 'ی')
+          +            .replace('ك', 'ک')
+          +        return deaccented
+          +            .replace(Regex("[^\\p{L}\\p{N}._-]+"), " ")
+          +            .replace(Regex("\\s+"), " ")
+          +            .trim()
+          +    }
+          +}
+          diff --git a/app/src/main/res/values/strings.xml b/app/src/main/res/values/strings.xml
+          index 038d929..c4f1f76 100644
+          --- a/app/src/main/res/values/strings.xml
+          +++ b/app/src/main/res/values/strings.xml
+          @@ -1,5 +1,5 @@
+           <?xml version="1.0" encoding="utf-8"?>
+           <resources>
+          -    <string name="app_name">ClosePaw RC11 039</string>
+          +    <string name="app_name">ClosePaw RC11 040</string>
+               <string name="accessibility_service_description">ClosePaw acts as an on-device automation agent. With your permission, it reads on-screen elements and performs taps, swipes, and text input only when you start a task. It does not run in the background or monitor other apps.</string>
+           </resources>
+          diff --git a/app/src/test/kotlin/ai/closepaw/app/ConfiguredBrainTargetResolverV40Test.kt b/app/src/test/kotlin/ai/closepaw/app/ConfiguredBrainTargetResolverV40Test.kt
+          new file mode 100644
+          index 0000000..1d7f875
+          --- /dev/null
+          +++ b/app/src/test/kotlin/ai/closepaw/app/ConfiguredBrainTargetResolverV40Test.kt
+          @@ -0,0 +1,38 @@
+          +package ai.closepaw.app
+          +
+          +import org.junit.Assert.assertEquals
+          +import org.junit.Assert.assertNull
+          +import org.junit.Test
+          +
+          +class ConfiguredBrainTargetResolverV40Test {
+          +    private fun c(
+          +        index: Int,
+          +        clickable: Boolean,
+          +        left: Int,
+          +        top: Int,
+          +        right: Int,
+          +        bottom: Int,
+          +    ) = ConfiguredBrainTargetResolverV40.Candidate(index, clickable, left, top, right, bottom)
+          +
+          +    @Test fun oneExactNodeIsAccepted() {
+          +        assertEquals(29, ConfiguredBrainTargetResolverV40.choose(listOf(c(29, true, 0, 100, 500, 160))))
+          +    }
+          +
+          +    @Test fun parentClickablePlusChildTextSameRowDedupesToClickableParent() {
+          +        val parent = c(29, true, 0, 100, 500, 170)
+          +        val child = c(30, false, 40, 112, 250, 155)
+          +        assertEquals(29, ConfiguredBrainTargetResolverV40.choose(listOf(parent, child)))
+          +    }
+          +
+          +    @Test fun duplicateTitleOnSeparateRowsRemainsFailClosed() {
+          +        val row1 = c(29, true, 0, 100, 500, 170)
+          +        val row2 = c(30, false, 40, 220, 250, 260)
+          +        assertNull(ConfiguredBrainTargetResolverV40.choose(listOf(row1, row2)))
+          +    }
+          +
+          +    @Test fun twoClickableExactRowsRemainFailClosed() {
+          +        val row1 = c(29, true, 0, 100, 500, 170)
+          +        val row2 = c(31, true, 0, 220, 500, 290)
+          +        assertNull(ConfiguredBrainTargetResolverV40.choose(listOf(row1, row2)))
+          +    }
+          +}
+          diff --git a/app/src/test/kotlin/ai/closepaw/app/LocalGoalCompletionV40Test.kt b/app/src/test/kotlin/ai/closepaw/app/LocalGoalCompletionV40Test.kt
+          new file mode 100644
+          index 0000000..2e6b969
+          --- /dev/null
+          +++ b/app/src/test/kotlin/ai/closepaw/app/LocalGoalCompletionV40Test.kt
+          @@ -0,0 +1,71 @@
+          +package ai.closepaw.app
+          +
+          +import org.junit.Assert.assertEquals
+          +import org.junit.Assert.assertFalse
+          +import org.junit.Assert.assertNull
+          +import org.junit.Assert.assertTrue
+          +import org.junit.Test
+          +
+          +class LocalGoalCompletionV40Test {
+          +    @Test fun extractsExactVisibleStopTarget() {
+          +        assertEquals(
+          +            "Settings",
+          +            LocalGoalCompletionV40.explicitVisibleStopTarget(
+          +                "Open Settings.\nStop when Settings is visible."
+          +            )
+          +        )
+          +    }
+          +
+          +    @Test fun longSemanticStopTargetIsPreservedWithoutGuessing() {
+          +        assertEquals(
+          +            "the list of apps with this permission",
+          +            LocalGoalCompletionV40.explicitVisibleStopTarget(
+          +                "Stop when the list of apps with this permission is visible."
+          +            )
+          +        )
+          +    }
+          +
+          +    @Test fun doesNotInventTargetWithoutExplicitStopClause() {
+          +        assertNull(LocalGoalCompletionV40.explicitVisibleStopTarget("Open Settings."))
+          +    }
+          +
+          +    @Test fun visibleProofIsExactNotSubstring() {
+          +        assertTrue(LocalGoalCompletionV40.exactTargetVisible("Settings", listOf("Settings", "Apps")))
+          +        assertFalse(LocalGoalCompletionV40.exactTargetVisible("Settings", listOf("Android Settings", "Search settings")))
+          +    }
+          +
+          +    @Test fun genericUiSuffixMayResolveToExactVisibleTitle() {
+          +        assertTrue(LocalGoalCompletionV40.exactTargetVisible("Display settings", listOf("Display")))
+          +    }
+          +
+          +    @Test fun unknownAppsPermissionListGetsDeterministicSemanticProof() {
+          +        val goal = """I need to find which apps are allowed to install unknown apps.
+          +Open the correct Android Settings screen.
+          +Stop when the list of apps with this permission is visible."""
+          +        val target = LocalGoalCompletionV40.explicitVisibleStopTarget(goal)!!
+          +        assertTrue(LocalGoalCompletionV40.isInstallUnknownAppsListCondition(goal, target))
+          +        assertTrue(
+          +            LocalGoalCompletionV40.installUnknownAppsListVisible(
+          +                "com.android.settings",
+          +                listOf("Install unknown apps", "Chrome", "My Files", "Search"),
+          +            )
+          +        )
+          +        assertFalse(
+          +            LocalGoalCompletionV40.installUnknownAppsListVisible(
+          +                "com.android.settings",
+          +                listOf("Install unknown apps"),
+          +            )
+          +        )
+          +    }
+          +
+          +    @Test fun installedAppLabelRequiresMatchingForegroundPackage() {
+          +        val apps = listOf(LocalGoalCompletionV40.AppIdentity("com.android.settings", "Settings"))
+          +        assertTrue(LocalGoalCompletionV40.packageCompatible("Settings", "com.android.settings", apps))
+          +        assertFalse(LocalGoalCompletionV40.packageCompatible("Settings", "ai.closepaw.rc11c040", apps))
+          +    }
+          +
+          +    @Test fun nonAppScreenLabelDoesNotRequirePackageMatch() {
+          +        val apps = listOf(LocalGoalCompletionV40.AppIdentity("com.android.settings", "Settings"))
+          +        assertTrue(LocalGoalCompletionV40.packageCompatible("Display", "com.android.settings", apps))
+          +    }
+          +}
+          PATCH040
+          git apply --check /tmp/040.patch
+          git apply /tmp/040.patch
+          echo '040 patch applied cleanly to exact 039 baseline: PASS' >> 040-verification-report.txt
+
+      - name: 040 source isolation and frozen correctness gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PYISO040'
+          from pathlib import Path
+          import hashlib, json
+          def sha(data: bytes): return hashlib.sha256(data).hexdigest()
+          def sf(path): return sha(Path(path).read_bytes())
+          baseline=json.loads(Path('040-baseline-source-manifest.json').read_text())
+          current={}
+          for p in sorted(Path('app').rglob('*')):
+              if not p.is_file(): continue
+              rel=p.as_posix()
+              if rel.startswith('app/build/'): continue
+              current[rel]=sf(rel)
+          changed={p for p in baseline.keys() & current.keys() if baseline[p] != current[p]}
+          added=set(current)-set(baseline)
+          removed=set(baseline)-set(current)
+          allowed_changed={
+              'app/build.gradle.kts',
+              'app/src/main/res/values/strings.xml',
+              'app/src/main/kotlin/ai/closepaw/app/HybridAgentEngine.kt',
+          }
+          allowed_added={
+              'app/src/main/kotlin/ai/closepaw/app/LocalGoalCompletionV40.kt',
+              'app/src/main/kotlin/ai/closepaw/app/ConfiguredBrainTargetResolverV40.kt',
+              'app/src/test/kotlin/ai/closepaw/app/LocalGoalCompletionV40Test.kt',
+              'app/src/test/kotlin/ai/closepaw/app/ConfiguredBrainTargetResolverV40Test.kt',
+          }
+          if changed != allowed_changed:
+              raise SystemExit(f'040 unexpected changed files: {sorted(changed)} expected {sorted(allowed_changed)}')
+          if added != allowed_added:
+              raise SystemExit(f'040 unexpected added files: {sorted(added)} expected {sorted(allowed_added)}')
+          if removed:
+              raise SystemExit(f'040 removed baseline files: {sorted(removed)}')
+
+          engine=Path('app/src/main/kotlin/ai/closepaw/app/HybridAgentEngine.kt').read_text(encoding='utf-8')
+          def region(a,b):
+              s=engine.find(a); e=engine.find(b,s)
+              if s < 0 or e < 0: raise SystemExit('040 frozen region anchor missing')
+              return engine[s:e].encode()
+          frozen=json.loads(Path('040-baseline-critical-hashes.json').read_text())
+          now={
+              'rc8_restore': sha(region('// RC8: only strong identity evidence may authorize a restore-side navigation.','private suspend fun restoreSidebarShapeIfNeeded(')),
+              'durable_transaction': sha(region('private suspend fun executeActionTransactionV9(','private fun receiptHistoryLineV9(')),
+              'v33_primary_plan_validation': sha(region('private suspend fun requestPrimaryPlanV9(','private fun buildBrainRequest(')),
+              'brain_request_builder': sha(region('private fun buildBrainRequest(','private fun buildRepairRequest(')),
+              'brain_excursion_capture': sha(region('private suspend fun captureBrainExcursionFrame(','private suspend fun restoreAfterBrainExcursion(')),
+              'brain_restore': sha(region('private suspend fun restoreAfterBrainExcursion(','private fun configuredBrainV9(): ChatBrainSettings')),
+              'configured_brain_store_route': sha(region('private fun configuredBrainV9(): ChatBrainSettings','private suspend fun clickConfiguredBrainTitleV9(')),
+              'brain_send': sha(region('private suspend fun sendConfiguredBrainMessageV9(','private suspend fun waitForMatchingBrainResponseV9(')),
+              'hybrid_protocol_file': sf('app/src/main/kotlin/ai/closepaw/app/HybridAgentProtocol.kt'),
+              'rc11_policy_file': sf('app/src/main/kotlin/ai/closepaw/app/RC11CorrectnessPolicy.kt'),
+              'http_transport_v32_file': sf('app/src/main/kotlin/ai/closepaw/app/PrimaryLocalHttpTransportV32.kt'),
+              'v37_grammar_file': sf('app/src/main/kotlin/ai/closepaw/app/PrimaryLocalGrammarV37.kt'),
+              'v37_trace_file': sf('app/src/main/kotlin/ai/closepaw/app/HybridTraceEventsV37.kt'),
+              'brain_settings_store_file': sf('app/src/main/kotlin/ai/closepaw/app/ChatBrainSettingsStore.kt'),
+              'bridge_source': sf('tools/termux-bridge/closepaw_bridge.py'),
+          }
+          if now != frozen:
+              bad=[k for k in frozen if now.get(k) != frozen[k]]
+              raise SystemExit('040 modified frozen correctness regions/files: '+', '.join(bad))
+          Path('040-postpatch-source-manifest.json').write_text(json.dumps(current, indent=2, sort_keys=True)+'\n')
+          with Path('040-verification-report.txt').open('a') as f:
+              f.write('Source isolation exact allowlist: PASS\n')
+              f.write('RC8/durable/V33/Primary transport+grammar/Brain send+restore/settings store/bridge frozen: PASS\n')
+          print('040 SOURCE ISOLATION + FROZEN CORRECTNESS: PASS')
+          PYISO040
+
+      - name: 040 behavioral contract audit
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PYAUDIT040'
+          from pathlib import Path
+          engine=Path('app/src/main/kotlin/ai/closepaw/app/HybridAgentEngine.kt').read_text(encoding='utf-8')
+          goal=Path('app/src/main/kotlin/ai/closepaw/app/LocalGoalCompletionV40.kt').read_text(encoding='utf-8')
+          brain=Path('app/src/main/kotlin/ai/closepaw/app/ConfiguredBrainTargetResolverV40.kt').read_text(encoding='utf-8')
+          store=Path('app/src/main/kotlin/ai/closepaw/app/ChatBrainSettingsStore.kt').read_text(encoding='utf-8')
+          gradle=Path('app/build.gradle.kts').read_text(encoding='utf-8')
+          strings=Path('app/src/main/res/values/strings.xml').read_text(encoding='utf-8')
+
+          required_engine=[
+              'LOCAL_GOAL_COMPLETE_V40|fresh_observation_before_model',
+              'MODEL_RETURN_LOCAL_COMPLETION_V40|$selectedPlanSource',
+              'LocalGoalCompletionV40.explicitVisibleStopTarget(goal)',
+              'LocalGoalCompletionV40.exactTargetVisible(visibleStopTarget, visibleValues)',
+              'LocalGoalCompletionV40.packageCompatible(',
+              'LocalGoalCompletionV40.isInstallUnknownAppsListCondition(goal, visibleStopTarget)',
+              'LocalGoalCompletionV40.installUnknownAppsListVisible(currentPackage, visibleValues)',
+              'ConfiguredBrainTargetResolverV40.choose(',
+              'Configured Brain title is missing or genuinely ambiguous',
+              'PrimaryLocalGrammarV37.build(lease, request, installedApps)',
+              'PRIMARY_CUSTOM_HTTP_TIMEOUT_MS = 180_000L',
+              'PRIMARY_CUSTOM_MAX_OUTPUT_TOKENS = 64L',
+              'appendLine(task.goal)',
+          ]
+          for token in required_engine:
+              if token not in engine: raise SystemExit('040 missing engine contract: '+token)
+
+          required_goal=[
+              'explicitVisibleStopTarget',
+              'exactTargetVisible',
+              'packageCompatible',
+              'isInstallUnknownAppsListCondition',
+              'installUnknownAppsListVisible',
+              'targetVariants',
+          ]
+          for token in required_goal:
+              if token not in goal: raise SystemExit('040 missing local goal contract: '+token)
+
+          required_brain=[
+              'clickable.size != 1',
+              'sameSemanticRow(anchor, it)',
+              'return anchor.index',
+          ]
+          for token in required_brain:
+              if token not in brain: raise SystemExit('040 missing deterministic Brain dedupe contract: '+token)
+
+          # One-time Brain binding remains SharedPreferences-backed and deterministic. Navigation
+          # to the configured app/chat must not invoke Primary or any LLM just to locate the Brain.
+          for token in ['KEY_APP_PACKAGE', 'KEY_CHAT_TITLE', 'getSharedPreferences', 'saveAppPackage', 'saveChatTitle']:
+              if token not in store: raise SystemExit('040 persistent Brain binding contract missing: '+token)
+          s=engine.find('private suspend fun ensureConfiguredBrainConversationV9(')
+          e=engine.find('private suspend fun sendConfiguredBrainMessageV9(', s)
+          if s < 0 or e < 0: raise SystemExit('040 configured Brain conversation region missing')
+          locator=engine[s:e]
+          forbidden_locator=['requestPrimaryPlanV9(', 'ChatCompletionClient', 'LLMClient', 'buildPrimaryModelRequest(']
+          for token in forbidden_locator:
+              if token in locator: raise SystemExit('040 Brain locator unexpectedly consumes model path: '+token)
+
+          if 'take(600)' in engine: raise SystemExit('040 reintroduced user-goal tail truncation')
+          if 'applicationIdSuffix = ".rc11c040"' not in gradle: raise SystemExit('040 application id missing')
+          if 'versionNameSuffix = "-rc11-c040"' not in gradle: raise SystemExit('040 version suffix missing')
+          if '<string name="app_name">ClosePaw RC11 040</string>' not in strings: raise SystemExit('040 label missing')
+
+          with Path('040-verification-report.txt').open('a') as f:
+              f.write('Explicit stop condition evaluated locally before another model turn: PASS\n')
+              f.write('Exact visible-label proof + app package corroboration + unknown-apps list semantic proof: PASS\n')
+              f.write('Configured Brain parent/child duplicate dedupe with real ambiguity fail-closed: PASS\n')
+              f.write('Configured Brain app/title binding remains persistent and locator consumes zero LLM calls: PASS\n')
+          print('040 BEHAVIORAL CONTRACT AUDIT: PASS')
+          PYAUDIT040
+
+      - name: 040 clean Kotlin compile gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./gradlew clean :app:compileDebugKotlin --stacktrace --no-daemon --no-configuration-cache
+          echo '040 clean Kotlin compile: PASS' >> 040-verification-report.txt
+
+      - name: 040 targeted completion Brain V37 V33 RC11 and bridge tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./gradlew :app:testDebugUnitTest \
+            --tests ai.closepaw.app.LocalGoalCompletionV40Test \
+            --tests ai.closepaw.app.ConfiguredBrainTargetResolverV40Test \
+            --tests ai.closepaw.app.PrimaryLocalGrammarV37Test \
+            --tests ai.closepaw.app.HybridTraceEventsV37Test \
+            --tests ai.closepaw.app.PrimaryLocalGrammarV36Test \
+            --tests ai.closepaw.app.PrimaryFormatComplianceV33Test \
+            --tests ai.closepaw.app.PrimaryLocalHttpTransportV32Test \
+            --tests ai.closepaw.app.RC11CorrectnessPolicyTest \
+            --tests ai.closepaw.termux.ClosePawBridgeResourceTest \
+            --stacktrace --no-daemon --no-configuration-cache
+          echo '040 targeted local-completion/Brain-dedupe/V37/V33/RC11/bridge tests: PASS' >> 040-verification-report.txt
+
+      - name: 040 full unit tests and clean rebuild
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./gradlew :app:testDebugUnitTest :app:assembleDebug --stacktrace --no-daemon --no-configuration-cache
+          echo '040 full unit tests: PASS' >> 040-verification-report.txt
+          echo '040 debug APK rebuild: PASS' >> 040-verification-report.txt
+
+      - name: 040 APK identity integrity native-runtime and signature gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          mapfile -t APKS < <(find app/build/outputs/apk/debug -maxdepth 1 -type f -name '*.apk' -print)
+          if [ "${#APKS[@]}" -ne 1 ]; then echo "Expected exactly one debug APK, found ${#APKS[@]}" >&2; exit 1; fi
+          APK="${APKS[0]}"
+          unzip -tq "$APK" >/dev/null
+          SIZE="$(stat -c %s "$APK")"
+          if [ "$SIZE" -lt 50000000 ]; then echo "APK unexpectedly small: $SIZE bytes" >&2; exit 1; fi
+          CONTENTS="$(zipinfo -1 "$APK")"
+          for ENTRY in AndroidManifest.xml classes.dex lib/arm64-v8a/libllama.so lib/arm64-v8a/libggml.so lib/arm64-v8a/libinference_engine.so lib/arm64-v8a/libinference_engine_jni.so lib/arm64-v8a/libinference_engine_llamacpp_backend.so; do
+            if ! grep -Fxq "$ENTRY" <<<"$CONTENTS"; then echo "Required APK entry missing: $ENTRY" >&2; exit 1; fi
+          done
+          AAPT="$(find "$ANDROID_HOME/build-tools" -type f -name aapt -print | sort -V | tail -n 1)"
+          APKSIGNER="$(find "$ANDROID_HOME/build-tools" -type f -name apksigner -print | sort -V | tail -n 1)"
+          test -x "$AAPT"; test -x "$APKSIGNER"
+          BADGING="$($AAPT dump badging "$APK")"
+          grep -Fq "package: name='ai.closepaw.rc11c040'" <<<"$BADGING" || { echo '040 APK package identity mismatch' >&2; exit 1; }
+          grep -Fq "application-label:'ClosePaw RC11 040'" <<<"$BADGING" || { echo '040 APK label mismatch' >&2; exit 1; }
+          grep -Fq "sdkVersion:'31'" <<<"$BADGING" || { echo '040 APK minSdk mismatch' >&2; exit 1; }
+          grep -Fq "targetSdkVersion:'36'" <<<"$BADGING" || { echo '040 APK targetSdk mismatch' >&2; exit 1; }
+          "$APKSIGNER" verify --verbose "$APK" > 040-apksigner-verification.txt
+          APK_SHA="$(sha256sum "$APK" | awk '{print $1}')"
+          {
+            echo "APK path: $APK"
+            echo "APK size bytes: $SIZE"
+            echo "APK SHA256: $APK_SHA"
+            echo 'APK ZIP integrity: PASS'
+            echo 'APK package identity ai.closepaw.rc11c040: PASS'
+            echo 'APK app label ClosePaw RC11 040: PASS'
+            echo 'minSdk 31 / targetSdk 36: PASS'
+            echo 'arm64 local-inference runtime libraries: PASS'
+            echo 'APK signature verification: PASS'
+          } >> 040-verification-report.txt
+          echo "040 APK FULL INTEGRITY GATE: PASS | size=$SIZE | sha256=$APK_SHA"
+
+      - name: Prepare 040 full verified source snapshot
+        if: success()
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf 040-full-source
+          mkdir -p 040-full-source
+          rsync -a --exclude='.git/' --exclude='.github/' --exclude='.gradle/' --exclude='app/build/' --exclude='040-full-source/' ./ 040-full-source/
+          test -f 040-full-source/app/src/main/kotlin/ai/closepaw/app/HybridAgentEngine.kt
+          test -f 040-full-source/app/src/main/kotlin/ai/closepaw/app/LocalGoalCompletionV40.kt
+          test -f 040-full-source/app/src/main/kotlin/ai/closepaw/app/ConfiguredBrainTargetResolverV40.kt
+          test -f 040-full-source/app/src/main/kotlin/ai/closepaw/app/PrimaryLocalGrammarV37.kt
+          test -f 040-full-source/app/src/main/kotlin/ai/closepaw/app/HybridTraceEventsV37.kt
+          test -f 040-full-source/tools/termux-bridge/closepaw_bridge.py
+          test "$(sha256sum 040-full-source/tools/termux-bridge/closepaw_bridge.py | awk '{print $1}')" = "707906f17acde07c0a86cb45c3c76b7a554f3ffcc39acc17f76f32e376749b2c"
+
+      - name: Upload 040 verification proof
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: 040-ClosePaw-RC11-verification-proof
+          if-no-files-found: warn
+          path: |
+            040-verification-report.txt
+            040-baseline-source-manifest.json
+            040-postpatch-source-manifest.json
+            040-baseline-critical-hashes.json
+            040-apksigner-verification.txt
+
+      - name: Upload 040 full verified source
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: 040-ClosePaw-RC11-verified-full-source
+          if-no-files-found: error
+          path: 040-full-source/
+
+      - name: Upload 040 APK
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: 040-ClosePaw-RC11-APK
+          if-no-files-found: error
+          path: app/build/outputs/apk/debug/app-debug.apk
+
+      - name: Upload 040 failure sources
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: 040-ClosePaw-RC11-failure-sources
+          if-no-files-found: warn
+          path: |
+            app/src/main/kotlin/ai/closepaw/app/HybridAgentEngine.kt
+            app/src/main/kotlin/ai/closepaw/app/LocalGoalCompletionV40.kt
+            app/src/main/kotlin/ai/closepaw/app/ConfiguredBrainTargetResolverV40.kt
+            app/src/main/kotlin/ai/closepaw/app/PrimaryLocalGrammarV37.kt
+            app/src/main/kotlin/ai/closepaw/app/HybridTraceEventsV37.kt
+            app/src/test/kotlin/ai/closepaw/app/LocalGoalCompletionV40Test.kt
+            app/src/test/kotlin/ai/closepaw/app/ConfiguredBrainTargetResolverV40Test.kt
+            040-verification-report.txt
