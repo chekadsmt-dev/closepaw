@@ -1,0 +1,1821 @@
+name: 043 - ClosePaw RC11 Grounding-First Deterministic Search + Verified Navigation
+
+'on':
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Setup Java 17
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Restore exact verified 042 full source
+        uses: actions/download-artifact@v5
+        with:
+          name: 042-ClosePaw-RC11-verified-full-source
+          path: /tmp/042-source
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: 34689937717
+
+      - name: Verify and activate exact 042 baseline
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f /tmp/042-source/app/src/main/kotlin/ai/closepaw/app/HybridAgentEngine.kt
+          test -f /tmp/042-source/app/src/main/kotlin/ai/closepaw/app/GoalPostconditionV41.kt
+          test -f /tmp/042-source/app/src/main/kotlin/ai/closepaw/app/PrimaryLocalGrammarV41.kt
+          test -f /tmp/042-source/app/src/main/kotlin/ai/closepaw/app/ConfiguredBrainTargetResolverV40.kt
+          test -f /tmp/042-source/app/src/main/kotlin/ai/closepaw/app/PrimaryLocalGrammarV37.kt
+          test -f /tmp/042-source/app/src/main/kotlin/ai/closepaw/app/HybridTraceEventsV37.kt
+          test -f /tmp/042-source/app/src/main/kotlin/ai/closepaw/app/ChatBrainSettingsStore.kt
+          test -f /tmp/042-source/tools/termux-bridge/closepaw_bridge.py
+          find . -mindepth 1 -maxdepth 1 ! -name .git ! -name .github -exec rm -rf {} +
+          cp -a /tmp/042-source/. ./
+
+          python3 - <<'PYBASE043'
+          from pathlib import Path
+          import hashlib
+          expected = {
+              'app/src/main/kotlin/ai/closepaw/app/HybridAgentEngine.kt': '26466286eb83ccd2bf17d8a3831e7abcc284bee585e3e8c495f960cf68d56dc3',
+              'app/src/main/kotlin/ai/closepaw/app/GoalPostconditionV41.kt': '42378756c3b51de1acadc0c00e4102541108436bb196c5991e111b3c1375dc53',
+              'app/src/main/kotlin/ai/closepaw/app/PrimaryLocalGrammarV41.kt': 'ec2dcebae54b663bee3ba3e0f5d2cc50c58b6531076cc085c471d8c612a18e43',
+              'app/src/main/kotlin/ai/closepaw/app/HybridAgentProtocol.kt': '6c386d7e712c1f19f1d106f324d500b2fead4fc4b30a1b043cb368db16ebc03e',
+              'app/src/main/kotlin/ai/closepaw/app/RC11CorrectnessPolicy.kt': '6d2069354b970927dc4729a00355a74e8139f60efadb866e3f9e9b2c020e67b6',
+              'app/src/main/kotlin/ai/closepaw/app/PrimaryLocalHttpTransportV32.kt': '1e9e9dc2e4625277eb8eecd08792d4ed1e7c2952e374f20745808ba1bbfb7739',
+              'app/src/main/kotlin/ai/closepaw/app/PrimaryLocalGrammarV37.kt': '50fec2dfd085e29fd56efc7d9317cc4e8f6b2ed8a242e4b1d9189090a0e97ab2',
+              'app/src/main/kotlin/ai/closepaw/app/HybridTraceEventsV37.kt': 'ecd85c4d77335f2fa289ebf8ae4e804b7dfebe5a24e918d2d6e8413be20e9a42',
+              'app/src/main/kotlin/ai/closepaw/app/ChatBrainSettingsStore.kt': '063f89a0d7b4dd08f16642ee7454a5a871e7d3b4d8318f1373808be307350f41',
+              'app/src/main/kotlin/ai/closepaw/app/ConfiguredBrainTargetResolverV40.kt': '6404241048b37ccf0cdb835fc8be406401c568926f8751fbff3ccaef35bb15c9',
+              'app/build.gradle.kts': '4408bbaf9895c9407965286b8c6e81958dcfe5dc3e11bbc5b2aa42f4c2d5eb44',
+              'app/src/main/res/values/strings.xml': '54ea33ee1cba71c67951ee5c11251cfbe86f121516ee5b9fa0326eef42d1f680',
+              'tools/termux-bridge/closepaw_bridge.py': '707906f17acde07c0a86cb45c3c76b7a554f3ffcc39acc17f76f32e376749b2c',
+          }
+          for rel, wanted in expected.items():
+              p = Path(rel)
+              if not p.is_file(): raise SystemExit('043 baseline missing: ' + rel)
+              got = hashlib.sha256(p.read_bytes()).hexdigest()
+              if got != wanted: raise SystemExit(f'043 baseline hash mismatch {rel}: {got} != {wanted}')
+          Path('043-verification-report.txt').write_text(
+              'ClosePaw RC11 043 verification report\n'
+              '=====================================\n'
+              'Base: exact verified 042 full-source artifact from successful run 34689937717.\n'
+              'Design review: grounding-first exact target resolution, bounded scroll-until-visible, no-progress boundary detection, and verify-after-act.\n'
+              'Frozen: RC8 restore, durable PREPARED->ATTEMPTED transaction, V33 validation, V32 transport, V37 regression grammar, typed V41 goal completion, configured Brain binding/locator/send/restore, trace, bridge.\n',
+              encoding='utf-8',
+          )
+          print('043 EXACT VERIFIED 042 BASELINE HASH GATE: PASS')
+          PYBASE043
+
+      - name: Baseline 042 clean compile before any 043 change
+        shell: bash
+        run: |
+          set -euo pipefail
+          chmod +x ./gradlew
+          ./gradlew clean :app:compileDebugKotlin --stacktrace --no-daemon --no-configuration-cache
+          echo 'Baseline 042 clean Kotlin compile BEFORE 043 patch: PASS' >> 043-verification-report.txt
+
+      - name: Freeze exact 042 source and correctness regions
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PYFREEZE043'
+          from pathlib import Path
+          import hashlib, json
+          def sha(data: bytes): return hashlib.sha256(data).hexdigest()
+          def sf(path): return sha(Path(path).read_bytes())
+          manifest = {}
+          for p in sorted(Path('app').rglob('*')):
+              if not p.is_file(): continue
+              rel = p.as_posix()
+              if rel.startswith('app/build/'): continue
+              manifest[rel] = sf(rel)
+          if len(manifest) < 700: raise SystemExit(f'043 baseline app manifest unexpectedly small: {len(manifest)}')
+          Path('043-baseline-source-manifest.json').write_text(json.dumps(manifest, indent=2, sort_keys=True) + '\n')
+
+          engine = Path('app/src/main/kotlin/ai/closepaw/app/HybridAgentEngine.kt').read_text(encoding='utf-8')
+          def region(a, b):
+              s = engine.find(a)
+              if s < 0: raise SystemExit('043 critical start missing: ' + a)
+              e = engine.find(b, s)
+              if e < 0: raise SystemExit('043 critical end missing: ' + b)
+              return engine[s:e].encode()
+          critical = {
+              'rc8_restore': sha(region('// RC8: only strong identity evidence may authorize a restore-side navigation.','private suspend fun restoreSidebarShapeIfNeeded(')),
+              'durable_transaction': sha(region('private suspend fun executeActionTransactionV9(','private fun receiptHistoryLineV9(')),
+              'v33_primary_plan_validation': sha(region('private suspend fun requestPrimaryPlanV9(','private fun buildBrainRequest(')),
+              'brain_request_builder': sha(region('private fun buildBrainRequest(','private fun buildRepairRequest(')),
+              'brain_excursion_capture': sha(region('private suspend fun captureBrainExcursionFrame(','private suspend fun restoreAfterBrainExcursion(')),
+              'brain_restore': sha(region('private suspend fun restoreAfterBrainExcursion(','private fun configuredBrainV9(): ChatBrainSettings')),
+              'configured_brain_route': sha(region('private fun configuredBrainV9(): ChatBrainSettings','private suspend fun sendConfiguredBrainMessageV9(')),
+              'brain_send': sha(region('private suspend fun sendConfiguredBrainMessageV9(','private suspend fun waitForMatchingBrainResponseV9(')),
+              'goal_postcondition_v41_file': sf('app/src/main/kotlin/ai/closepaw/app/GoalPostconditionV41.kt'),
+              'primary_grammar_v41_file': sf('app/src/main/kotlin/ai/closepaw/app/PrimaryLocalGrammarV41.kt'),
+              'hybrid_protocol_file': sf('app/src/main/kotlin/ai/closepaw/app/HybridAgentProtocol.kt'),
+              'rc11_policy_file': sf('app/src/main/kotlin/ai/closepaw/app/RC11CorrectnessPolicy.kt'),
+              'http_transport_v32_file': sf('app/src/main/kotlin/ai/closepaw/app/PrimaryLocalHttpTransportV32.kt'),
+              'v37_grammar_file': sf('app/src/main/kotlin/ai/closepaw/app/PrimaryLocalGrammarV37.kt'),
+              'v37_trace_file': sf('app/src/main/kotlin/ai/closepaw/app/HybridTraceEventsV37.kt'),
+              'brain_settings_store_file': sf('app/src/main/kotlin/ai/closepaw/app/ChatBrainSettingsStore.kt'),
+              'brain_target_resolver_v40_file': sf('app/src/main/kotlin/ai/closepaw/app/ConfiguredBrainTargetResolverV40.kt'),
+              'bridge_source': sf('tools/termux-bridge/closepaw_bridge.py'),
+          }
+          Path('043-baseline-critical-hashes.json').write_text(json.dumps(critical, indent=2, sort_keys=True) + '\n')
+          print('043 BASELINE FREEZE: PASS')
+          PYFREEZE043
+
+      - name: Apply isolated 043 grounding-first deterministic navigation patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > /tmp/043.patch <<'PATCH043'
+          diff --git a/app/build.gradle.kts b/app/build.gradle.kts
+          index 9bf6321..d6fa6ef 100644
+          --- a/app/build.gradle.kts
+          +++ b/app/build.gradle.kts
+          @@ -46,8 +46,8 @@ android {
+           
+               buildTypes {
+                   debug {
+          -    applicationIdSuffix = ".rc11c042"
+          -    versionNameSuffix = "-rc11-c042"
+          +    applicationIdSuffix = ".rc11c043"
+          +    versionNameSuffix = "-rc11-c043"
+           
+               val evalSsl = project.findProperty("insecureSslForEval")?.toString()?.toBoolean() ?: false
+               buildConfigField("boolean", "INSECURE_SSL_FOR_EVAL", evalSsl.toString())
+          diff --git a/app/src/main/kotlin/ai/closepaw/app/DeterministicUiNavigatorV43.kt b/app/src/main/kotlin/ai/closepaw/app/DeterministicUiNavigatorV43.kt
+          new file mode 100644
+          index 0000000..dbcf9ec
+          --- /dev/null
+          +++ b/app/src/main/kotlin/ai/closepaw/app/DeterministicUiNavigatorV43.kt
+          @@ -0,0 +1,403 @@
+          +package ai.closepaw.app
+          +
+          +import java.text.Normalizer
+          +import java.util.Locale
+          +import kotlin.math.abs
+          +import kotlin.math.max
+          +import kotlin.math.min
+          +
+          +/**
+          + * Grounding-first deterministic navigation for explicit user-directed UI targets.
+          + *
+          + * V43 intentionally does not try to "understand the whole app". It handles the part that
+          + * should not require a model at all:
+          + *   1) exact explicit target already visible -> ground to one real actionable row and click it;
+          + *   2) explicit target not visible -> bounded scroll/search, re-observe, repeat;
+          + *   3) visible-only target -> search but never click;
+          + *   4) genuine ambiguity -> fail closed and let the normal Primary/External route decide.
+          + *
+          + * This mirrors the reliable automation pattern used by mature mobile harnesses: find -> act on
+          + * the grounded element -> re-observe, with a bounded scroll-until-visible loop and viewport
+          + * no-progress detection owned by the controller rather than by the language model.
+          + */
+          +internal object DeterministicUiNavigatorV43 {
+          +    enum class Direction { UP, DOWN }
+          +    enum class SemanticChannel { TEXT, DESCRIPTION }
+          +
+          +    internal data class NodeEvidence(
+          +        val index: Int,
+          +        val text: String,
+          +        val description: String,
+          +        val hint: String,
+          +        val resourceId: String,
+          +        val className: String,
+          +        val clickable: Boolean,
+          +        val scrollable: Boolean,
+          +        val enabled: Boolean,
+          +        val left: Int,
+          +        val top: Int,
+          +        val right: Int,
+          +        val bottom: Int,
+          +    ) {
+          +        val width: Int get() = (right - left).coerceAtLeast(0)
+          +        val height: Int get() = (bottom - top).coerceAtLeast(0)
+          +        val centerX: Int get() = (left + right) / 2
+          +        val centerY: Int get() = (top + bottom) / 2
+          +        val area: Long get() = width.toLong() * height.toLong()
+          +    }
+          +
+          +    internal sealed interface Decision {
+          +        data object None : Decision
+          +        data class Click(
+          +            val index: Int,
+          +            val target: String,
+          +            val channel: SemanticChannel,
+          +        ) : Decision
+          +        data class Scan(
+          +            val target: String,
+          +            val key: String,
+          +            val preferredDirection: Direction,
+          +        ) : Decision
+          +        data class Ambiguous(val target: String, val matches: Int) : Decision
+          +    }
+          +
+          +    internal data class ScanProgress(
+          +        var downMoves: Int = 0,
+          +        var upMoves: Int = 0,
+          +        var downBoundary: Boolean = false,
+          +        var upBoundary: Boolean = false,
+          +    )
+          +
+          +    private sealed interface TargetResolution {
+          +        data class Unique(
+          +            val node: NodeEvidence,
+          +            val semanticTarget: String,
+          +            val channel: SemanticChannel,
+          +        ) : TargetResolution
+          +        data class Ambiguous(val count: Int) : TargetResolution
+          +        data object Missing : TargetResolution
+          +    }
+          +
+          +    private const val MAX_SWIPES_PER_DIRECTION = 8
+          +
+          +    fun decide(goal: String, nodes: List<NodeEvidence>): Decision {
+          +        if (goal.isBlank() || nodes.isEmpty()) return Decision.None
+          +
+          +        val navigationTargets = explicitNavigationTargets(goal)
+          +        if (navigationTargets.isNotEmpty()) {
+          +            for (target in navigationTargets) {
+          +                // Ordered progress is inferred from the fresh UI, not from a model claim. If the
+          +                // earlier target is the current non-clickable page header, that step is complete.
+          +                if (pageReached(target, nodes)) continue
+          +
+          +                when (val resolved = resolveActionableTarget(target, nodes)) {
+          +                    is TargetResolution.Unique -> return Decision.Click(
+          +                        index = resolved.node.index,
+          +                        target = resolved.semanticTarget,
+          +                        channel = resolved.channel,
+          +                    )
+          +                    is TargetResolution.Ambiguous -> return Decision.Ambiguous(target, resolved.count)
+          +                    TargetResolution.Missing -> return Decision.Scan(
+          +                        target = target,
+          +                        key = "nav:${normalizeTargetPhrase(target)}",
+          +                        preferredDirection = preferredDirectionFor(goal, target),
+          +                    )
+          +                }
+          +            }
+          +            return Decision.None
+          +        }
+          +
+          +        val visibleOnlyTarget = explicitScrollUntilTarget(goal)
+          +        if (!visibleOnlyTarget.isNullOrBlank()) {
+          +            // For "scroll until X is visible / do not open X", visibility itself is the goal.
+          +            if (exactVisible(visibleOnlyTarget, nodes)) return Decision.None
+          +            return Decision.Scan(
+          +                target = visibleOnlyTarget,
+          +                key = "visible:${normalizeTargetPhrase(visibleOnlyTarget)}",
+          +                preferredDirection = preferredDirectionFor(goal, visibleOnlyTarget),
+          +            )
+          +        }
+          +
+          +        return Decision.None
+          +    }
+          +
+          +    fun nextDirection(progress: ScanProgress, preferred: Direction): Direction? {
+          +        val first = preferred
+          +        val second = if (preferred == Direction.DOWN) Direction.UP else Direction.DOWN
+          +        return when {
+          +            canMove(progress, first) -> first
+          +            canMove(progress, second) -> second
+          +            else -> null
+          +        }
+          +    }
+          +
+          +    fun recordScroll(progress: ScanProgress, direction: Direction, viewportMoved: Boolean) {
+          +        when (direction) {
+          +            Direction.DOWN -> {
+          +                if (viewportMoved) progress.downMoves++ else progress.downBoundary = true
+          +                if (progress.downMoves >= MAX_SWIPES_PER_DIRECTION) progress.downBoundary = true
+          +            }
+          +            Direction.UP -> {
+          +                if (viewportMoved) progress.upMoves++ else progress.upBoundary = true
+          +                if (progress.upMoves >= MAX_SWIPES_PER_DIRECTION) progress.upBoundary = true
+          +            }
+          +        }
+          +    }
+          +
+          +    fun exhausted(progress: ScanProgress): Boolean =
+          +        !canMove(progress, Direction.DOWN) && !canMove(progress, Direction.UP)
+          +
+          +    private fun canMove(progress: ScanProgress, direction: Direction): Boolean = when (direction) {
+          +        Direction.DOWN -> !progress.downBoundary && progress.downMoves < MAX_SWIPES_PER_DIRECTION
+          +        Direction.UP -> !progress.upBoundary && progress.upMoves < MAX_SWIPES_PER_DIRECTION
+          +    }
+          +
+          +    private fun resolveActionableTarget(
+          +        target: String,
+          +        nodes: List<NodeEvidence>,
+          +        requiredChannel: SemanticChannel? = null,
+          +    ): TargetResolution {
+          +        val variants = targetVariants(target)
+          +        if (variants.isEmpty()) return TargetResolution.Missing
+          +
+          +        fun channelMatch(node: NodeEvidence): Boolean = when (requiredChannel) {
+          +            SemanticChannel.TEXT -> normalize(node.text) in variants
+          +            SemanticChannel.DESCRIPTION -> normalize(node.description) in variants
+          +            null -> normalize(node.text) in variants || normalize(node.description) in variants
+          +        }
+          +
+          +        val semanticMatches = nodes.filter { node ->
+          +            node.enabled && node.width > 0 && node.height > 0 && channelMatch(node)
+          +        }
+          +        if (semanticMatches.isEmpty()) return TargetResolution.Missing
+          +
+          +        val actionable = mutableListOf<NodeEvidence>()
+          +        for (match in semanticMatches) {
+          +            if (match.clickable) actionable += match
+          +
+          +            // Samsung/Android Settings often exposes the visible label as a non-clickable child
+          +            // and the whole row as its clickable parent. We do not need parent ids: the smallest
+          +            // clickable container that geometrically contains the exact semantic child is enough.
+          +            nodes.asSequence()
+          +                .filter { parent ->
+          +                    parent.enabled && parent.clickable && parent.width > 0 && parent.height > 0 &&
+          +                        parent.index != match.index && containsCenter(parent, match) &&
+          +                        parent.width >= match.width && parent.height >= match.height &&
+          +                        parent.height <= max(320, match.height * 5)
+          +                }
+          +                .minByOrNull { it.area }
+          +                ?.let(actionable::add)
+          +        }
+          +
+          +        if (actionable.isEmpty()) return TargetResolution.Missing
+          +        val clusters = clusterSameVisualRows(actionable.distinctBy { it.index })
+          +        if (clusters.size != 1) return TargetResolution.Ambiguous(clusters.size)
+          +
+          +        // Within one visual row prefer the smallest precise clickable target. The executor still
+          +        // performs fresh semantic re-resolution before the side effect.
+          +        val winner = clusters.single().minWithOrNull(
+          +            compareBy<NodeEvidence> { it.area }.thenBy { it.index }
+          +        ) ?: return TargetResolution.Missing
+          +
+          +        // Keep the explicit semantic identity that grounded this clickable container. The runtime
+          +        // executes by that text/description on a fresh tree, rather than trusting a blank parent
+          +        // container's bounds as the primary identity.
+          +        val associated = semanticMatches.filter { match ->
+          +            match.index == winner.index || containsCenter(winner, match)
+          +        }
+          +        val textEvidence = associated.firstOrNull { normalize(it.text) in variants && it.text.isNotBlank() }
+          +        val descEvidence = associated.firstOrNull { normalize(it.description) in variants && it.description.isNotBlank() }
+          +        val semanticTarget: String
+          +        val channel: SemanticChannel
+          +        when {
+          +            requiredChannel == SemanticChannel.TEXT && textEvidence != null -> {
+          +                semanticTarget = textEvidence.text
+          +                channel = SemanticChannel.TEXT
+          +            }
+          +            requiredChannel == SemanticChannel.DESCRIPTION && descEvidence != null -> {
+          +                semanticTarget = descEvidence.description
+          +                channel = SemanticChannel.DESCRIPTION
+          +            }
+          +            textEvidence != null -> {
+          +                semanticTarget = textEvidence.text
+          +                channel = SemanticChannel.TEXT
+          +            }
+          +            descEvidence != null -> {
+          +                semanticTarget = descEvidence.description
+          +                channel = SemanticChannel.DESCRIPTION
+          +            }
+          +            else -> return TargetResolution.Missing
+          +        }
+          +        return TargetResolution.Unique(winner, semanticTarget, channel)
+          +    }
+          +
+          +    /**
+          +     * Fresh-dispatch grounding for semantic click actions. This is also used by the executor so
+          +     * a non-clickable label child can safely resolve to its unique clickable row parent.
+          +     */
+          +    fun resolveDispatchTarget(
+          +        target: String,
+          +        channel: SemanticChannel,
+          +        nodes: List<NodeEvidence>,
+          +    ): Decision = when (val resolved = resolveActionableTarget(target, nodes, channel)) {
+          +        is TargetResolution.Unique -> Decision.Click(
+          +            index = resolved.node.index,
+          +            target = resolved.semanticTarget,
+          +            channel = resolved.channel,
+          +        )
+          +        is TargetResolution.Ambiguous -> Decision.Ambiguous(target, resolved.count)
+          +        TargetResolution.Missing -> Decision.None
+          +    }
+          +
+          +    private fun clusterSameVisualRows(nodes: List<NodeEvidence>): List<List<NodeEvidence>> {
+          +        val clusters = mutableListOf<MutableList<NodeEvidence>>()
+          +        for (node in nodes.sortedBy { it.top }) {
+          +            val cluster = clusters.firstOrNull { existing -> existing.any { sameVisualRow(it, node) } }
+          +            if (cluster != null) cluster += node else clusters += mutableListOf(node)
+          +        }
+          +        return clusters
+          +    }
+          +
+          +    private fun sameVisualRow(a: NodeEvidence, b: NodeEvidence): Boolean {
+          +        if (containsCenter(a, b) || containsCenter(b, a)) {
+          +            val verticalDistance = abs(a.centerY - b.centerY)
+          +            if (verticalDistance <= max(36, min(a.height, b.height))) return true
+          +        }
+          +        val overlapTop = max(a.top, b.top)
+          +        val overlapBottom = min(a.bottom, b.bottom)
+          +        val overlap = (overlapBottom - overlapTop).coerceAtLeast(0)
+          +        val minHeight = min(a.height, b.height).coerceAtLeast(1)
+          +        val verticalRatio = overlap.toDouble() / minHeight.toDouble()
+          +        val horizontalOverlap = min(a.right, b.right) - max(a.left, b.left)
+          +        return verticalRatio >= 0.55 && horizontalOverlap > 0
+          +    }
+          +
+          +    private fun pageReached(target: String, nodes: List<NodeEvidence>): Boolean {
+          +        val variants = targetVariants(target)
+          +        if (variants.isEmpty()) return false
+          +        val screenBottom = nodes.maxOfOrNull { it.bottom }?.coerceAtLeast(1) ?: 1
+          +        val headerLimit = max(280, (screenBottom * 22) / 100)
+          +        return nodes.any { candidate ->
+          +            candidate.enabled && !candidate.clickable && candidate.top <= headerLimit &&
+          +                candidate.width > 0 && candidate.height > 0 &&
+          +                nodeValues(candidate).any { normalize(it) in variants } &&
+          +                !insideClickableContainer(candidate, nodes)
+          +        }
+          +    }
+          +
+          +    private fun insideClickableContainer(candidate: NodeEvidence, nodes: List<NodeEvidence>): Boolean =
+          +        nodes.any { parent ->
+          +            parent.enabled && parent.clickable && parent.index != candidate.index &&
+          +                parent.width > 0 && parent.height > 0 && containsCenter(parent, candidate) &&
+          +                parent.width >= candidate.width && parent.height >= candidate.height
+          +        }
+          +
+          +    fun isDestinationHeader(target: String, nodes: List<NodeEvidence>): Boolean =
+          +        pageReached(target, nodes)
+          +
+          +    private fun exactVisible(target: String, nodes: List<NodeEvidence>): Boolean {
+          +        val variants = targetVariants(target)
+          +        if (variants.isEmpty()) return false
+          +        return nodes.any { node ->
+          +            node.enabled && node.width > 0 && node.height > 0 &&
+          +                nodeValues(node).any { normalize(it) in variants }
+          +        }
+          +    }
+          +
+          +    private fun explicitNavigationTargets(goal: String): List<String> {
+          +        val hits = mutableListOf<Pair<Int, String>>()
+          +        val patterns = listOf(
+          +            Regex("(?i)\\bgo\\s+to\\s+(?:the\\s+)?([^\\n.!?؛;]+)"),
+          +            Regex("(?i)\\b(?:tap|click|select|choose)\\s+(?:on\\s+)?(?:the\\s+)?([^\\n.!?؛;]+)"),
+          +            Regex("برو\\s+به\\s+([^\\n.!?؟؛;]+)"),
+          +            Regex("روی\\s+([^\\n.!?؟؛;]+?)\\s+(?:بزن|کلیک کن)"),
+          +            Regex("([^\\n.!?؟؛;]+?)\\s+(?:را|رو)\\s+انتخاب\\s+کن"),
+          +        )
+          +        patterns.forEach { regex ->
+          +            regex.findAll(goal).forEach { match ->
+          +                val raw = match.groupValues.getOrNull(1).orEmpty().trim()
+          +                val normalized = normalizeTargetPhrase(raw)
+          +                if (normalized.isNotBlank()) hits += match.range.first to raw
+          +            }
+          +        }
+          +        return hits.sortedBy { it.first }
+          +            .map { it.second.trim() }
+          +            .filter { it.isNotBlank() }
+          +            .distinctBy(::normalizeTargetPhrase)
+          +    }
+          +
+          +    private fun explicitScrollUntilTarget(goal: String): String? {
+          +        val patterns = listOf(
+          +            Regex("(?im)^\\s*scroll\\s+(?:down\\s+|up\\s+)?until\\s+(.+?)\\s+is\\s+visible\\s*[.!]?\\s*$"),
+          +            Regex("(?im)^\\s*scroll\\s+(?:down\\s+|up\\s+)?until\\s+(.+?)\\s+appears\\s*[.!]?\\s*$"),
+          +            Regex("(?im)^\\s*scroll\\s+(?:down\\s+|up\\s+)?to\\s+(.+?)\\s*[.!]?\\s*$"),
+          +            Regex("(?im)^\\s*اسکرول\\s+کن\\s+تا\\s+(.+?)\\s+(?:دیده|نمایان)\\s+(?:شود|بشود)\\s*[.!؟]?\\s*$"),
+          +        )
+          +        return patterns.asSequence()
+          +            .mapNotNull { it.find(goal)?.groupValues?.getOrNull(1) }
+          +            .map(String::trim)
+          +            .firstOrNull { it.isNotBlank() }
+          +            ?.trim('"', '\'', '`')
+          +            ?.trim()
+          +            ?.takeIf { it.length in 1..180 }
+          +    }
+          +
+          +    private fun preferredDirectionFor(goal: String, target: String): Direction {
+          +        val n = normalize(goal)
+          +        val t = normalize(target)
+          +        val targetPos = if (t.isBlank()) -1 else n.indexOf(t)
+          +        val prefix = if (targetPos > 0) n.substring(max(0, targetPos - 80), targetPos) else n
+          +        return if (containsPhrase(prefix, "scroll up") || prefix.contains("بالا")) Direction.UP else Direction.DOWN
+          +    }
+          +
+          +    private fun targetVariants(target: String): Set<String> {
+          +        val base = normalize(target)
+          +        if (base.isBlank()) return emptySet()
+          +        val out = linkedSetOf(base)
+          +        val suffixes = listOf(
+          +            " settings page", " setting page", " settings screen", " setting screen",
+          +            " settings", " setting", " screen", " page", " menu", " option", " section",
+          +            " صفحه", " تنظیمات", " منو", " گزینه", " بخش",
+          +        ).map(::normalize)
+          +        var current = base
+          +        var changed = true
+          +        while (changed) {
+          +            changed = false
+          +            for (suffix in suffixes) {
+          +                if (current.endsWith(suffix) && current.length > suffix.length + 1) {
+          +                    current = current.removeSuffix(suffix).trim()
+          +                    if (current.isNotBlank() && out.add(current)) changed = true
+          +                    break
+          +                }
+          +            }
+          +        }
+          +        return out
+          +    }
+          +
+          +    private fun normalizeTargetPhrase(raw: String): String =
+          +        targetVariants(raw).lastOrNull().orEmpty()
+          +
+          +    private fun nodeValues(node: NodeEvidence): List<String> =
+          +        listOf(node.text, node.description, node.hint).filter { it.isNotBlank() }
+          +
+          +    private fun containsCenter(container: NodeEvidence, child: NodeEvidence): Boolean =
+          +        child.centerX in container.left..container.right && child.centerY in container.top..container.bottom
+          +
+          +    private fun normalize(value: String): String {
+          +        val deaccented = Normalizer.normalize(value, Normalizer.Form.NFKD)
+          +            .replace(Regex("\\p{M}+"), "")
+          +            .lowercase(Locale.ROOT)
+          +            .replace('ي', 'ی')
+          +            .replace('ك', 'ک')
+          +        return deaccented
+          +            .replace(Regex("[^\\p{L}\\p{N}._-]+"), " ")
+          +            .replace(Regex("\\s+"), " ")
+          +            .trim()
+          +    }
+          +
+          +    private fun containsPhrase(haystack: String, needle: String): Boolean {
+          +        if (needle.isBlank()) return false
+          +        if (haystack == needle) return true
+          +        return (" $haystack ").contains(" $needle ")
+          +    }
+          +}
+          diff --git a/app/src/main/kotlin/ai/closepaw/app/HybridAgentEngine.kt b/app/src/main/kotlin/ai/closepaw/app/HybridAgentEngine.kt
+          index 9deb7bf..961da73 100644
+          --- a/app/src/main/kotlin/ai/closepaw/app/HybridAgentEngine.kt
+          +++ b/app/src/main/kotlin/ai/closepaw/app/HybridAgentEngine.kt
+          @@ -87,6 +87,7 @@ internal class HybridAgentEngine(private val service: AgentService) {
+                   private const val MAX_UI_CHARS = 48_000
+                   private const val MAX_PRIMARY_UI_NODES = 16
+                   private const val MAX_PRIMARY_UI_CHARS = 2_000
+          +        private const val MAX_DETERMINISTIC_NAV_ACTIONS_V43 = 24
+                   private const val MAX_PRIMARY_HISTORY = 2
+                   private const val PRIMARY_CUSTOM_HTTP_TIMEOUT_MS = 180_000L
+                   private const val PRIMARY_MAX_OUTPUT_TOKENS = 96L
+          @@ -436,6 +437,10 @@ internal class HybridAgentEngine(private val service: AgentService) {
+                       val noChangeCounts = mutableMapOf<String, Int>()
+                       val brainStateConsults = mutableMapOf<String, Int>()
+                       val primaryStateConsults = mutableMapOf<String, Int>()
+          +            val deterministicScansV43 = mutableMapOf<String, DeterministicUiNavigatorV43.ScanProgress>()
+          +            var deterministicActionCountV43 = 0
+          +            var pendingDeterministicDecisionV43: DeterministicUiNavigatorV43.Decision? = null
+          +            var pendingDeterministicDirectionV43: DeterministicUiNavigatorV43.Direction? = null
+                       var lastError = ""
+                       var primaryCalls = 0
+                       var brainCalls = 0
+          @@ -646,46 +651,125 @@ internal class HybridAgentEngine(private val service: AgentService) {
+                                   selectedPlanSource = "CHAT_BRAIN_RESUME"
+                                   history += "MODEL_ROUTE|CHAT_BRAIN_RESUME|$workStateKey"
+                               } else {
+          -                        // PRIMARY MODEL FIRST. This uses the user's existing ClosePaw model/provider
+          -                        // settings (Local LFM, OpenAI sign-in/API, OpenRouter, or Other compatible).
+          -                        // Primary is planner-only: zero tools are exposed and it cannot execute UI.
+          -                        val primarySeen = primaryStateConsults[workStateKey] ?: 0
+          -                        if (primarySeen < MAX_PRIMARY_PER_WORK_STATE) {
+          -                            primaryStateConsults[workStateKey] = primarySeen + 1
+          -                            primaryCalls++
+          -                            totalModelTurns++
+          -                            val primaryRequestId = newPrimaryRequestIdV9(task.id, primaryCalls)
+          -                            val primaryRequest = buildPrimaryModelRequest(
+          -                                task = task,
+          -                                requestId = primaryRequestId,
+          -                                turn = primaryCalls,
+          -                                snapshot = buildPrimaryUiSnapshotV9(platform, ui),
+          -                                history = history.takeLast(MAX_HISTORY),
+          -                                lastError = lastError,
+          +                        // V43 grounding-first controller. Explicit navigation/search instructions do
+          +                        // not need a model to choose arbitrary rows. Resolve against the FULL fresh
+          +                        // accessibility snapshot (the same first 160 nodes are also leased into
+          +                        // lastBrainSnapshot), then execute exactly one grounded click or one bounded
+          +                        // scroll through the existing RC11 transaction path.
+          +                        var deterministicEscalationV43: String? = null
+          +                        pendingDeterministicDecisionV43 = null
+          +                        pendingDeterministicDirectionV43 = null
+          +                        if (targetChat == null && deterministicActionCountV43 < MAX_DETERMINISTIC_NAV_ACTIONS_V43) {
+          +                            val deterministicDecision = DeterministicUiNavigatorV43.decide(
+          +                                goal = task.goal,
+          +                                nodes = deterministicNavigatorNodesV43(ui),
+                                       )
+          -
+          -                            service.notifyHybridPlanning("Primary Model turn $primaryCalls")
+          -                            val primaryDecision = runCatching {
+          -                                requestPrimaryPlanV9(task.id, primaryRequestId, primaryRequest)
+          -                            }.getOrElse { error ->
+          -                                Log.w(TAG, "Primary Model unavailable; escalating", error)
+          -                                PrimaryPlanDecision(null, "unavailable: ${error.message ?: error.javaClass.simpleName}")
+          +                            when (deterministicDecision) {
+          +                                is DeterministicUiNavigatorV43.Decision.Click -> {
+          +                                    deterministicActionCountV43++
+          +                                    pendingDeterministicDecisionV43 = deterministicDecision
+          +                                    val groundedAction = when (deterministicDecision.channel) {
+          +                                        DeterministicUiNavigatorV43.SemanticChannel.TEXT ->
+          +                                            HybridAction.ClickText(deterministicDecision.target)
+          +                                        DeterministicUiNavigatorV43.SemanticChannel.DESCRIPTION ->
+          +                                            HybridAction.ClickDesc(deterministicDecision.target)
+          +                                    }
+          +                                    selectedPlan = HybridPlan(
+          +                                        taskId = task.id,
+          +                                        requestId = "${task.id}-D43-$deterministicActionCountV43-${UUID.randomUUID().toString().take(6)}",
+          +                                        actions = listOf(groundedAction),
+          +                                    )
+          +                                    selectedPlanSource = "DETERMINISTIC_V43"
+          +                                    history += "DETERMINISTIC_V43|CLICK|${deterministicDecision.target}|node=${deterministicDecision.index}"
+          +                                }
+          +                                is DeterministicUiNavigatorV43.Decision.Scan -> {
+          +                                    val progress = deterministicScansV43.getOrPut(deterministicDecision.key) {
+          +                                        DeterministicUiNavigatorV43.ScanProgress()
+          +                                    }
+          +                                    val direction = DeterministicUiNavigatorV43.nextDirection(
+          +                                        progress,
+          +                                        deterministicDecision.preferredDirection,
+          +                                    )
+          +                                    if (direction == null || DeterministicUiNavigatorV43.exhausted(progress)) {
+          +                                        deterministicEscalationV43 =
+          +                                            "deterministic search exhausted for exact target '${deterministicDecision.target}'"
+          +                                        history += "DETERMINISTIC_V43|EXHAUSTED|${deterministicDecision.target}"
+          +                                    } else {
+          +                                        deterministicActionCountV43++
+          +                                        pendingDeterministicDecisionV43 = deterministicDecision
+          +                                        pendingDeterministicDirectionV43 = direction
+          +                                        val actionDirection = if (direction == DeterministicUiNavigatorV43.Direction.DOWN) {
+          +                                            HybridAction.Direction.DOWN
+          +                                        } else {
+          +                                            HybridAction.Direction.UP
+          +                                        }
+          +                                        selectedPlan = HybridPlan(
+          +                                            taskId = task.id,
+          +                                            requestId = "${task.id}-D43-$deterministicActionCountV43-${UUID.randomUUID().toString().take(6)}",
+          +                                            actions = listOf(HybridAction.Scroll(actionDirection)),
+          +                                        )
+          +                                        selectedPlanSource = "DETERMINISTIC_V43"
+          +                                        history += "DETERMINISTIC_V43|SCAN|${deterministicDecision.target}|$direction"
+          +                                    }
+          +                                }
+          +                                is DeterministicUiNavigatorV43.Decision.Ambiguous -> {
+          +                                    deterministicEscalationV43 =
+          +                                        "deterministic exact target '${deterministicDecision.target}' is ambiguous (${deterministicDecision.matches} visual rows)"
+          +                                    history += "DETERMINISTIC_V43|AMBIGUOUS|${deterministicDecision.target}|${deterministicDecision.matches}"
+          +                                }
+          +                                DeterministicUiNavigatorV43.Decision.None -> Unit
+                                       }
+          +                        } else if (targetChat == null && deterministicActionCountV43 >= MAX_DETERMINISTIC_NAV_ACTIONS_V43) {
+          +                            deterministicEscalationV43 = "deterministic navigation action budget exhausted"
+          +                            history += "DETERMINISTIC_V43|ACTION_BUDGET_EXHAUSTED"
+          +                        }
+          +
+          +                        // PRIMARY MODEL remains the first reasoning model. When the deterministic
+          +                        // controller has proved an exact-target ambiguity/boundary, there is no safe
+          +                        // grounded local action for Primary to choose, so skip the token/model call
+          +                        // and treat that as a genuine Primary inability before External Brain.
+          +                        if (selectedPlan == null && deterministicEscalationV43 == null) {
+          +                            val primarySeen = primaryStateConsults[workStateKey] ?: 0
+          +                            if (primarySeen < MAX_PRIMARY_PER_WORK_STATE) {
+          +                                primaryStateConsults[workStateKey] = primarySeen + 1
+          +                                primaryCalls++
+          +                                totalModelTurns++
+          +                                val primaryRequestId = newPrimaryRequestIdV9(task.id, primaryCalls)
+          +                                val primaryRequest = buildPrimaryModelRequest(
+          +                                    task = task,
+          +                                    requestId = primaryRequestId,
+          +                                    turn = primaryCalls,
+          +                                    snapshot = buildPrimaryUiSnapshotV9(platform, ui),
+          +                                    history = history.takeLast(MAX_HISTORY),
+          +                                    lastError = lastError,
+          +                                )
+           
+          -                            if (primaryDecision.plan != null) {
+          -                                selectedPlan = primaryDecision.plan
+          -                                selectedPlanSource = "PRIMARY"
+          -                                history += "MODEL_ROUTE|PRIMARY|turn=$primaryCalls|$workStateKey"
+          +                                service.notifyHybridPlanning("Primary Model turn $primaryCalls")
+          +                                val primaryDecision = runCatching {
+          +                                    requestPrimaryPlanV9(task.id, primaryRequestId, primaryRequest)
+          +                                }.getOrElse { error ->
+          +                                    Log.w(TAG, "Primary Model unavailable; escalating", error)
+          +                                    PrimaryPlanDecision(null, "unavailable: ${error.message ?: error.javaClass.simpleName}")
+          +                                }
+          +
+          +                                if (primaryDecision.plan != null) {
+          +                                    selectedPlan = primaryDecision.plan
+          +                                    selectedPlanSource = "PRIMARY"
+          +                                    history += "MODEL_ROUTE|PRIMARY|turn=$primaryCalls|$workStateKey"
+          +                                } else {
+          +                                    history += "PRIMARY_ESCALATE|${primaryDecision.reason.take(500)}|$workStateKey"
+          +                                    lastError = primaryDecision.reason.ifBlank { "Primary Model requested escalation" }
+          +                                }
+                                       } else {
+          -                                history += "PRIMARY_ESCALATE|${primaryDecision.reason.take(500)}|$workStateKey"
+          -                                lastError = primaryDecision.reason.ifBlank { "Primary Model requested escalation" }
+          +                                history += "PRIMARY_SKIP|unchanged WorkStateKey/evidenceRevision|$workStateKey"
+                                       }
+          -                        } else {
+          -                            history += "PRIMARY_SKIP|unchanged WorkStateKey/evidenceRevision|$workStateKey"
+          +                        } else if (deterministicEscalationV43 != null) {
+          +                            lastError = deterministicEscalationV43
+          +                            history += "PRIMARY_GROUNDED_UNAVAILABLE_V43|${deterministicEscalationV43.take(300)}|$workStateKey"
+                                   }
+           
+          -                        // Only if Primary did not provide a valid plan do we visit the separately
+          -                        // configured external AI chat. No prompt wording can bypass this ordering.
+          +                        // Only if deterministic/Primary did not provide a valid plan do we visit the
+          +                        // separately configured external AI chat. Brain lookup remains deterministic.
+                                   if (selectedPlan == null) {
+                                       val externalCfg = configuredBrainV9()
+                                       if (!externalCfg.enabled) {
+          @@ -912,6 +996,32 @@ internal class HybridAgentEngine(private val service: AgentService) {
+                                       history += "${action.javaClass.simpleName}|${outcome.success}|${outcome.detail}"
+                                       history += receiptHistoryLineV9(receipt)
+           
+          +                            if (selectedPlanSource == "DETERMINISTIC_V43") {
+          +                                when (val deterministic = pendingDeterministicDecisionV43) {
+          +                                    is DeterministicUiNavigatorV43.Decision.Scan -> {
+          +                                        val direction = pendingDeterministicDirectionV43
+          +                                        if (direction != null) {
+          +                                            val progress = deterministicScansV43.getOrPut(deterministic.key) {
+          +                                                DeterministicUiNavigatorV43.ScanProgress()
+          +                                            }
+          +                                            // RC11 receipt acceptance is our viewport-moved proof;
+          +                                            // executor success alone is intentionally insufficient.
+          +                                            DeterministicUiNavigatorV43.recordScroll(
+          +                                                progress = progress,
+          +                                                direction = direction,
+          +                                                viewportMoved = receipt.accepted,
+          +                                            )
+          +                                        }
+          +                                    }
+          +                                    is DeterministicUiNavigatorV43.Decision.Click -> {
+          +                                        if (receipt.accepted) deterministicScansV43.clear()
+          +                                    }
+          +                                    else -> Unit
+          +                                }
+          +                                pendingDeterministicDecisionV43 = null
+          +                                pendingDeterministicDirectionV43 = null
+          +                            }
+          +
+                                       if (!receipt.accepted) {
+                                           lastError = outcome.detail
+                                           lastFailedPlanSignature = actionDescription
+          @@ -1283,9 +1393,32 @@ internal class HybridAgentEngine(private val service: AgentService) {
+                       else -> V9TransitionClass.NO_MEANINGFUL_CHANGE
+                   }
+           
+          +        val clickTargetWasGroundedBeforeV43 = when (action) {
+          +            is HybridAction.ClickText -> DeterministicUiNavigatorV43.resolveDispatchTarget(
+          +                action.text,
+          +                DeterministicUiNavigatorV43.SemanticChannel.TEXT,
+          +                deterministicNavigatorNodesV43(before),
+          +            ) is DeterministicUiNavigatorV43.Decision.Click
+          +            is HybridAction.ClickDesc -> DeterministicUiNavigatorV43.resolveDispatchTarget(
+          +                action.description,
+          +                DeterministicUiNavigatorV43.SemanticChannel.DESCRIPTION,
+          +                deterministicNavigatorNodesV43(before),
+          +            ) is DeterministicUiNavigatorV43.Decision.Click
+          +            is HybridAction.ClickNode -> before.elements.singleOrNull { it.index == action.index }?.isClickable == true
+          +            else -> false
+          +        }
+          +        val clickedTargetBecameHeaderV43 =
+          +            clickTargetWasGroundedBeforeV43 && executorSuccess && !interrupted && changed &&
+          +                beforePackage == afterObs.packageName && targetLabelValue.isNotBlank() &&
+          +                DeterministicUiNavigatorV43.isDestinationHeader(
+          +                    targetLabelValue,
+          +                    deterministicNavigatorNodesV43(after),
+          +                )
+          +
+                   val clickPostcondition =
+                       executorSuccess && !interrupted && changed &&
+          -                (beforePackage != afterObs.packageName || destinationVerified || !semanticTargetPresentV11(target, after))
+          +                (beforePackage != afterObs.packageName || destinationVerified ||
+          +                    clickedTargetBecameHeaderV43 || !semanticTargetPresentV11(target, after))
+           
+                   val accepted = when (action) {
+                       is HybridAction.VerifyText -> verifyPassed
+          @@ -2584,7 +2717,7 @@ internal class HybridAgentEngine(private val service: AgentService) {
+                       val installedApps = runCatching {
+                           ai.closepaw.platform.AppManager.getInstalledApps(service.packageManager)
+                       }.getOrDefault(emptyList())
+          -            PrimaryLocalGrammarV41.build(lease, request, installedApps)
+          +            PrimaryLocalGrammarV43.build(lease, request, installedApps)
+                   }
+                   val grammar = grammarSpec?.grammar
+                   if (grammar != null) payload.put("grammar", grammar)
+          @@ -4102,20 +4235,52 @@ internal class HybridAgentEngine(private val service: AgentService) {
+           
+               private suspend fun clickByText(platform: AndroidPlatform, target: String): ActionOutcome {
+                   val snapshot = platform.captureScreen()
+          -        val candidates = exactNodeMatchesV11(snapshot, target) { it.text }
+          -        if (candidates.isEmpty()) return ActionOutcome(false, "exact click text not found: $target")
+          -        if (candidates.size != 1) return ActionOutcome(false, "ambiguous exact click text: $target (${candidates.size} matches)")
+          -        val ok = clickElement(platform, candidates.single())
+          -        return ActionOutcome(ok, if (ok) "clicked exact text '$target'" else "exact text '$target' was not semantically clickable")
+          +        return clickGroundedSemanticTargetV43(
+          +            platform = platform,
+          +            snapshot = snapshot,
+          +            target = target,
+          +            channel = DeterministicUiNavigatorV43.SemanticChannel.TEXT,
+          +            label = "text",
+          +        )
+               }
+           
+               private suspend fun clickByDescription(platform: AndroidPlatform, target: String): ActionOutcome {
+                   val snapshot = platform.captureScreen()
+          -        val candidates = exactNodeMatchesV11(snapshot, target) { it.description }
+          -        if (candidates.isEmpty()) return ActionOutcome(false, "exact click description not found: $target")
+          -        if (candidates.size != 1) return ActionOutcome(false, "ambiguous exact click description: $target (${candidates.size} matches)")
+          -        val ok = clickElement(platform, candidates.single())
+          -        return ActionOutcome(ok, if (ok) "clicked exact description '$target'" else "exact description '$target' was not semantically clickable")
+          +        return clickGroundedSemanticTargetV43(
+          +            platform = platform,
+          +            snapshot = snapshot,
+          +            target = target,
+          +            channel = DeterministicUiNavigatorV43.SemanticChannel.DESCRIPTION,
+          +            label = "description",
+          +        )
+          +    }
+          +
+          +    private suspend fun clickGroundedSemanticTargetV43(
+          +        platform: AndroidPlatform,
+          +        snapshot: ScreenSnapshot,
+          +        target: String,
+          +        channel: DeterministicUiNavigatorV43.SemanticChannel,
+          +        label: String,
+          +    ): ActionOutcome {
+          +        return when (val resolved = DeterministicUiNavigatorV43.resolveDispatchTarget(
+          +            target = target,
+          +            channel = channel,
+          +            nodes = deterministicNavigatorNodesV43(snapshot),
+          +        )) {
+          +            is DeterministicUiNavigatorV43.Decision.Click -> {
+          +                val element = snapshot.elements.singleOrNull { it.index == resolved.index }
+          +                    ?: return ActionOutcome(false, "grounded exact $label target disappeared: $target")
+          +                val ok = clickElement(platform, element)
+          +                ActionOutcome(
+          +                    ok,
+          +                    if (ok) "clicked grounded exact $label '$target'"
+          +                    else "grounded exact $label '$target' was not clickable",
+          +                )
+          +            }
+          +            is DeterministicUiNavigatorV43.Decision.Ambiguous ->
+          +                ActionOutcome(false, "ambiguous exact click $label: $target (${resolved.matches} visual rows)")
+          +            else -> ActionOutcome(false, "exact click $label not found: $target")
+          +        }
+               }
+           
+               private fun rankCandidates(
+          @@ -4625,6 +4790,25 @@ internal class HybridAgentEngine(private val service: AgentService) {
+                   }
+               }
+           
+          +    private fun deterministicNavigatorNodesV43(snapshot: ScreenSnapshot): List<DeterministicUiNavigatorV43.NodeEvidence> =
+          +        snapshot.elements.take(MAX_UI_NODES).map { element ->
+          +            DeterministicUiNavigatorV43.NodeEvidence(
+          +                index = element.index,
+          +                text = safeNodeText(element),
+          +                description = safeDescription(element),
+          +                hint = if (isSensitiveElement(element)) "[REDACTED]" else cleanText(element.hintText),
+          +                resourceId = element.resourceId,
+          +                className = element.className,
+          +                clickable = element.isClickable,
+          +                scrollable = element.isScrollable,
+          +                enabled = element.isEnabled,
+          +                left = element.bounds.left,
+          +                top = element.bounds.top,
+          +                right = element.bounds.right,
+          +                bottom = element.bounds.bottom,
+          +            )
+          +        }
+          +
+               private suspend fun evaluateGoalLocallyV11(
+                   platform: AndroidPlatform,
+                   goal: String,
+          diff --git a/app/src/main/kotlin/ai/closepaw/app/PrimaryLocalGrammarV43.kt b/app/src/main/kotlin/ai/closepaw/app/PrimaryLocalGrammarV43.kt
+          new file mode 100644
+          index 0000000..9ab03c3
+          --- /dev/null
+          +++ b/app/src/main/kotlin/ai/closepaw/app/PrimaryLocalGrammarV43.kt
+          @@ -0,0 +1,298 @@
+          +package ai.closepaw.app
+          +
+          +import ai.closepaw.platform.AppInfo
+          +import java.text.Normalizer
+          +import java.util.Locale
+          +
+          +/**
+          + * RC11 request-scoped semantic GBNF for the phone-local llama.cpp-compatible Primary.
+          + *
+          + * V36 constrained only syntax and still allowed arbitrary semantic arguments. V37 removes
+          + * arbitrary side-effect arguments entirely. The model can only emit actions whose targets
+          + * are grounded in the current request: an explicitly requested installed app, a node index
+          + * present in the current snapshot, a bounded scroll/wait/system action, or escalation.
+          + *
+          + * The existing V33 parser + RC11 runtime validation remain authoritative after generation.
+          + */
+          +internal object PrimaryLocalGrammarV43 {
+          +    internal data class Spec(
+          +        val grammar: String,
+          +        val forcedAction: String? = null,
+          +        val mode: String,
+          +    )
+          +
+          +    private data class NodeChoice(
+          +        val index: Int,
+          +        val text: String,
+          +        val description: String,
+          +        val clickable: Boolean,
+          +        val scrollable: Boolean,
+          +    )
+          +
+          +    fun build(
+          +        requestId: String,
+          +        request: String,
+          +        installedApps: List<AppInfo>,
+          +    ): Spec {
+          +        require(requestId.isNotBlank()) { "Primary grammar requires a request lease" }
+          +        val lease = "REQ|$requestId|"
+          +        val goal = block(request, "GOAL_BEGIN", "GOAL_END")
+          +        val currentPackage = request.lineSequence()
+          +            .firstOrNull { it.startsWith("CURRENT_APP:") }
+          +            ?.substringAfter("CURRENT_APP:")
+          +            ?.trim()
+          +            .orEmpty()
+          +        val nodes = parseNodes(request)
+          +
+          +        val explicitlyRequestedApp = explicitOpenTarget(goal, installedApps)
+          +        if (explicitlyRequestedApp != null && explicitlyRequestedApp.packageName != currentPackage) {
+          +            val action = "OPEN_APP|${protocolEscape(explicitlyRequestedApp.packageName)}"
+          +            return forced(lease, action, "forced_explicit_open_app")
+          +        }
+          +
+          +        val explicitVisibleNode = explicitVisibleTarget(goal, nodes)
+          +        if (explicitVisibleNode != null) {
+          +            val action = "CLICK_NODE|${explicitVisibleNode.index}"
+          +            return forced(lease, action, "forced_explicit_visible_target")
+          +        }
+          +
+          +        val rules = linkedMapOf<String, String>()
+          +
+          +        // V43: never let the small local planner pick an arbitrary clickable node merely
+          +        // because it is present on screen. Directly named targets were already forced above.
+          +        // Fallback clicks are limited to nodes with meaningful lexical overlap with USER_GOAL;
+          +        // otherwise Primary must scroll/wait/escalate and External Brain remains the reasoning
+          +        // fallback. This keeps grounding authoritative and removes the CLICK_NODE|<random row>
+          +        // failure mode seen on Samsung Settings.
+          +        val clickableIndices = nodes
+          +            .filter { it.clickable && nodeRelevantToGoal(goal, it) }
+          +            .map { it.index }
+          +            .distinct()
+          +            .sorted()
+          +        if (clickableIndices.isNotEmpty()) {
+          +            rules["click-node"] = "\"CLICK_NODE|\" (${alternatives(clickableIndices.map(Int::toString))})"
+          +        }
+          +
+          +        val scrollableIndices = nodes.filter { it.scrollable }.map { it.index }.distinct().sorted()
+          +        if (scrollableIndices.isNotEmpty()) {
+          +            rules["scroll-node"] = "\"SCROLL_NODE|\" (${alternatives(scrollableIndices.map(Int::toString))}) \"|\" direction"
+          +        }
+          +
+          +        // Generic scroll and short wait are reversible/observation-safe. Free-form text, app
+          +        // names, DONE, VERIFY_TEXT, and text entry are intentionally absent in fallback mode.
+          +        rules["scroll"] = "\"SCROLL|\" direction"
+          +        rules["wait"] = "\"WAIT|\" (\"250\" | \"500\" | \"1000\" | \"1500\" | \"2000\")"
+          +
+          +        if (explicitSystemAction(goal, "back", listOf("back", "go back", "برگرد", "عقب"))) {
+          +            rules["back"] = "\"BACK\""
+          +        }
+          +        if (explicitSystemAction(goal, "home", listOf("home", "go home", "هوم", "خانه"))) {
+          +            rules["home"] = "\"HOME\""
+          +        }
+          +        if (explicitSystemAction(goal, "recents", listOf("recents", "recent apps", "برنامه های اخیر", "برنامه‌های اخیر"))) {
+          +            rules["recents"] = "\"RECENTS\""
+          +        }
+          +
+          +        val actionNames = rules.keys.toList()
+          +        val actionAlternatives = actionNames.joinToString(" | ")
+          +        val grammar = buildString {
+          +            appendLine("root ::= ${gbnfLiteral(lease)} action | escalate")
+          +            appendLine("action ::= $actionAlternatives")
+          +            rules.forEach { (name, rhs) -> appendLine("$name ::= $rhs") }
+          +            appendLine("direction ::= \"UP\" | \"DOWN\"")
+          +            appendLine("escalate ::= \"PRIMARY_ESCALATE|\" escalation-reason")
+          +            appendLine("escalation-reason ::= \"insufficient_context\" | \"ambiguous_target\" | \"unsupported_action\"")
+          +        }.trimEnd()
+          +        return Spec(grammar = grammar, forcedAction = null, mode = "goal_grounded_fallback")
+          +    }
+          +
+          +    private fun forced(lease: String, action: String, mode: String): Spec {
+          +        val grammar = "root ::= ${gbnfLiteral(lease + action)}"
+          +        return Spec(grammar = grammar, forcedAction = action, mode = mode)
+          +    }
+          +
+          +    private fun parseNodes(request: String): List<NodeChoice> {
+          +        val nodesBlock = block(request, "NODES_BEGIN", "NODES_END")
+          +        val nodePattern = Regex("""^\[(\d+)]\s+.*$""")
+          +        val textPattern = Regex("""\st=\"([^\"]*)\"""")
+          +        val descPattern = Regex("""\sd=\"([^\"]*)\"""")
+          +        return nodesBlock.lineSequence().mapNotNull { raw ->
+          +            val line = raw.trim()
+          +            val match = nodePattern.matchEntire(line) ?: return@mapNotNull null
+          +            val index = match.groupValues[1].toIntOrNull() ?: return@mapNotNull null
+          +            NodeChoice(
+          +                index = index,
+          +                text = textPattern.find(line)?.groupValues?.getOrNull(1).orEmpty(),
+          +                description = descPattern.find(line)?.groupValues?.getOrNull(1).orEmpty(),
+          +                clickable = Regex("(?:^|\\s)C(?:\\s|$)").containsMatchIn(line),
+          +                scrollable = Regex("(?:^|\\s)S(?:\\s|$)").containsMatchIn(line),
+          +            )
+          +        }.toList()
+          +    }
+          +
+          +    private fun explicitOpenTarget(goal: String, installedApps: List<AppInfo>): AppInfo? {
+          +        if (goal.isBlank()) return null
+          +        val sentences = goal.split(Regex("[\\n.!?؟]+"))
+          +            .map(::normalize)
+          +            .filter { it.isNotBlank() }
+          +
+          +        val matches = installedApps.filter { app ->
+          +            val label = normalize(app.label)
+          +            val pkg = normalize(app.packageName)
+          +            if (label.length < 2 && pkg.length < 2) return@filter false
+          +            sentences.any { sentence ->
+          +                val mentionsApp = containsPhrase(sentence, label) || containsPhrase(sentence, pkg)
+          +                val affirmativeOpen = listOf("open", "launch", "start", "باز کن", "بازش کن").any { containsPhrase(sentence, normalize(it)) }
+          +                val negativeOpen = listOf(
+          +                    "do not open", "dont open", "don't open", "never open",
+          +                    "باز نکن", "بازش نکن",
+          +                ).any { containsPhrase(sentence, normalize(it)) }
+          +                mentionsApp && affirmativeOpen && !negativeOpen
+          +            }
+          +        }.distinctBy { it.packageName }
+          +
+          +        return matches.singleOrNull()
+          +    }
+          +
+          +    private fun explicitVisibleTarget(goal: String, nodes: List<NodeChoice>): NodeChoice? {
+          +        val phrases = explicitNavigationPhrases(goal)
+          +        if (phrases.isEmpty()) return null
+          +
+          +        // V43 preserves ordered navigation matching when a directly named target is already visible. A completed earlier step normally
+          +        // becomes a non-clickable page title, so the first still-clickable exact target is the
+          +        // current step. Ambiguity within one step remains fail-closed.
+          +        for (phrase in phrases) {
+          +            val candidates = nodes.filter { node ->
+          +                if (!node.clickable) return@filter false
+          +                val values = listOf(node.text, node.description)
+          +                    .map(::normalize)
+          +                    .filter { it.length >= 2 && it !in GENERIC_NODE_WORDS }
+          +                values.any { value -> phrase == value || containsPhrase(phrase, value) }
+          +            }.distinctBy { it.index }
+          +            if (candidates.size == 1) return candidates.single()
+          +            if (candidates.size > 1) return null
+          +        }
+          +        return null
+          +    }
+          +
+          +    private fun explicitNavigationPhrases(goal: String): List<String> {
+          +        val out = mutableListOf<String>()
+          +        val patterns = listOf(
+          +            Regex("(?i)\\bgo\\s+to\\s+(?:the\\s+)?([^\\n.!?؛;]+)"),
+          +            Regex("(?i)\\b(?:tap|click|select|choose)\\s+(?:on\\s+)?(?:the\\s+)?([^\\n.!?؛;]+)"),
+          +            Regex("برو\\s+به\\s+([^\\n.!?؟؛;]+)"),
+          +            Regex("روی\\s+([^\\n.!?؟؛;]+?)\\s+(?:بزن|کلیک کن)"),
+          +            Regex("([^\\n.!?؟؛;]+?)\\s+(?:را|رو)\\s+انتخاب\\s+کن"),
+          +        )
+          +        patterns.forEach { regex ->
+          +            regex.findAll(goal).forEach { match ->
+          +                val raw = match.groupValues.getOrNull(1).orEmpty()
+          +                normalizeTargetPhrase(raw).takeIf { it.isNotBlank() }?.let(out::add)
+          +            }
+          +        }
+          +        return out.distinct()
+          +    }
+          +
+          +    private fun normalizeTargetPhrase(raw: String): String {
+          +        var value = normalize(raw)
+          +        val removableSuffixes = listOf(
+          +            " screen", " settings", " setting", " menu", " option", " section", " page",
+          +            " صفحه", " تنظیمات", " منو", " گزینه", " بخش",
+          +        ).map(::normalize)
+          +        for (suffix in removableSuffixes) {
+          +            if (value.endsWith(suffix) && value.length > suffix.length + 1) {
+          +                value = value.removeSuffix(suffix).trim()
+          +            }
+          +        }
+          +        return value
+          +    }
+          +
+          +    private fun nodeRelevantToGoal(goal: String, node: NodeChoice): Boolean {
+          +        val goalTokens = normalize(goal)
+          +            .split(' ')
+          +            .filter { it.length >= 3 && it !in GOAL_STOP_WORDS }
+          +            .toSet()
+          +        if (goalTokens.isEmpty()) return false
+          +        val nodeText = normalize(listOf(node.text, node.description).joinToString(" "))
+          +        if (nodeText.isBlank()) return false
+          +        val nodeTokens = nodeText.split(' ').filter { it.length >= 2 }.toSet()
+          +        if (nodeTokens.any { it in goalTokens }) return true
+          +        return goalTokens.any { token -> containsPhrase(nodeText, token) }
+          +    }
+          +
+          +    private fun explicitSystemAction(goal: String, canonical: String, phrases: List<String>): Boolean {
+          +        val normalizedGoal = normalize(goal)
+          +        if (normalizedGoal.isBlank()) return false
+          +        return phrases.map(::normalize).any { phrase ->
+          +            containsPhrase(normalizedGoal, phrase) && !containsPhrase(normalizedGoal, "do not $canonical")
+          +        }
+          +    }
+          +
+          +    private fun block(value: String, begin: String, end: String): String {
+          +        val after = value.substringAfter("$begin\n", missingDelimiterValue = "")
+          +        if (after.isBlank()) return ""
+          +        return after.substringBefore("\n$end", missingDelimiterValue = after)
+          +    }
+          +
+          +    private fun normalize(value: String): String {
+          +        val deaccented = Normalizer.normalize(value, Normalizer.Form.NFKD)
+          +            .replace(Regex("\\p{M}+"), "")
+          +            .lowercase(Locale.ROOT)
+          +            .replace('ي', 'ی')
+          +            .replace('ك', 'ک')
+          +        return deaccented
+          +            .replace(Regex("[^\\p{L}\\p{N}._-]+"), " ")
+          +            .replace(Regex("\\s+"), " ")
+          +            .trim()
+          +    }
+          +
+          +    private fun containsPhrase(haystack: String, needle: String): Boolean {
+          +        if (needle.isBlank()) return false
+          +        if (haystack == needle) return true
+          +        return (" $haystack ").contains(" $needle ")
+          +    }
+          +
+          +    private fun alternatives(values: List<String>): String =
+          +        values.distinct().joinToString(" | ") { gbnfLiteral(it) }
+          +
+          +    private fun protocolEscape(value: String): String = buildString {
+          +        value.forEach { ch ->
+          +            when (ch) {
+          +                '\\' -> append("\\\\")
+          +                '|' -> append("\\|")
+          +                '\n' -> append("\\n")
+          +                '\r' -> append("\\r")
+          +                '\t' -> append("\\t")
+          +                else -> append(ch)
+          +            }
+          +        }
+          +    }
+          +
+          +    private fun gbnfLiteral(value: String): String = buildString {
+          +        append('"')
+          +        value.forEach { ch ->
+          +            when (ch) {
+          +                '\\' -> append("\\\\")
+          +                '"' -> append("\\\"")
+          +                '\n' -> append("\\n")
+          +                '\r' -> append("\\r")
+          +                '\t' -> append("\\t")
+          +                else -> append(ch)
+          +            }
+          +        }
+          +        append('"')
+          +    }
+          +
+          +    private val GENERIC_NODE_WORDS = setOf(
+          +        "settings", "setting", "menu", "button", "back", "home", "close", "open",
+          +        "تنظیمات", "منو", "دکمه", "بستن", "باز",
+          +    )
+          +
+          +
+          +    private val GOAL_STOP_WORDS = setOf(
+          +        "open", "launch", "start", "stop", "when", "once", "visible", "shown", "appears",
+          +        "settings", "setting", "screen", "page", "menu", "option", "section", "current",
+          +        "go", "to", "the", "and", "then", "do", "not", "change", "any", "until", "scroll",
+          +        "click", "tap", "select", "choose", "with", "this", "that", "from", "into", "inside",
+          +    )
+          +}
+          diff --git a/app/src/main/res/values/strings.xml b/app/src/main/res/values/strings.xml
+          index db84f1c..83e9321 100644
+          --- a/app/src/main/res/values/strings.xml
+          +++ b/app/src/main/res/values/strings.xml
+          @@ -1,5 +1,5 @@
+           <?xml version="1.0" encoding="utf-8"?>
+           <resources>
+          -    <string name="app_name">ClosePaw RC11 042</string>
+          +    <string name="app_name">ClosePaw RC11 043</string>
+               <string name="accessibility_service_description">ClosePaw acts as an on-device automation agent. With your permission, it reads on-screen elements and performs taps, swipes, and text input only when you start a task. It does not run in the background or monitor other apps.</string>
+           </resources>
+          diff --git a/app/src/test/kotlin/ai/closepaw/app/DeterministicUiNavigatorV43Test.kt b/app/src/test/kotlin/ai/closepaw/app/DeterministicUiNavigatorV43Test.kt
+          new file mode 100644
+          index 0000000..e396f58
+          --- /dev/null
+          +++ b/app/src/test/kotlin/ai/closepaw/app/DeterministicUiNavigatorV43Test.kt
+          @@ -0,0 +1,159 @@
+          +package ai.closepaw.app
+          +
+          +import org.junit.Assert.assertEquals
+          +import org.junit.Assert.assertFalse
+          +import org.junit.Assert.assertTrue
+          +import org.junit.Test
+          +
+          +class DeterministicUiNavigatorV43Test {
+          +    private fun n(
+          +        index: Int,
+          +        text: String = "",
+          +        top: Int,
+          +        bottom: Int,
+          +        left: Int = 20,
+          +        right: Int = 700,
+          +        clickable: Boolean = false,
+          +        scrollable: Boolean = false,
+          +    ) = DeterministicUiNavigatorV43.NodeEvidence(
+          +        index = index,
+          +        text = text,
+          +        description = "",
+          +        hint = "",
+          +        resourceId = "",
+          +        className = "TextView",
+          +        clickable = clickable,
+          +        scrollable = scrollable,
+          +        enabled = true,
+          +        left = left,
+          +        top = top,
+          +        right = right,
+          +        bottom = bottom,
+          +    )
+          +
+          +    @Test fun missingExplicitTargetScansInsteadOfPickingArbitraryRow() {
+          +        val decision = DeterministicUiNavigatorV43.decide(
+          +            "Open Settings.\nGo to Display.\nStop when Display settings is visible.",
+          +            listOf(
+          +                n(1, "Settings", 60, 150),
+          +                n(2, "Connections", 500, 620, clickable = true),
+          +                n(3, "Galaxy AI", 650, 770, clickable = true),
+          +                n(4, "", 300, 1700, scrollable = true),
+          +            ),
+          +        )
+          +        assertTrue(decision is DeterministicUiNavigatorV43.Decision.Scan)
+          +        assertEquals(DeterministicUiNavigatorV43.Direction.DOWN, (decision as DeterministicUiNavigatorV43.Decision.Scan).preferredDirection)
+          +        assertEquals("Display", decision.target)
+          +    }
+          +
+          +    @Test fun exactChildLabelGroundsToSingleClickableParentRow() {
+          +        val decision = DeterministicUiNavigatorV43.decide(
+          +            "Open Settings.\nGo to Apps.\nStop when Apps settings page is visible.",
+          +            listOf(
+          +                n(1, "Settings", 60, 150),
+          +                n(10, "", 700, 840, left = 20, right = 700, clickable = true),
+          +                n(11, "Apps", 725, 795, left = 120, right = 350),
+          +            ),
+          +        )
+          +        assertEquals(10, (decision as DeterministicUiNavigatorV43.Decision.Click).index)
+          +    }
+          +
+          +    @Test fun nestedClickableDuplicatesOnSameVisualRowCollapse() {
+          +        val decision = DeterministicUiNavigatorV43.decide(
+          +            "Go to Apps.",
+          +            listOf(
+          +                n(10, "Apps", 700, 840, left = 20, right = 700, clickable = true),
+          +                n(11, "Apps", 725, 795, left = 120, right = 350, clickable = true),
+          +            ),
+          +        )
+          +        assertTrue(decision is DeterministicUiNavigatorV43.Decision.Click)
+          +    }
+          +
+          +    @Test fun trueDuplicateRowsRemainAmbiguous() {
+          +        val decision = DeterministicUiNavigatorV43.decide(
+          +            "Go to Apps.",
+          +            listOf(
+          +                n(10, "Apps", 500, 620, clickable = true),
+          +                n(20, "Apps", 1000, 1120, clickable = true),
+          +            ),
+          +        )
+          +        assertTrue(decision is DeterministicUiNavigatorV43.Decision.Ambiguous)
+          +    }
+          +
+          +    @Test fun pageHeaderMarksEarlierStepCompleteAndAdvances() {
+          +        val decision = DeterministicUiNavigatorV43.decide(
+          +            "Open Settings.\nGo to Apps.\nGo to Choose default apps.\nStop when Choose default apps page is visible.",
+          +            listOf(
+          +                n(1, "Apps", 60, 150),
+          +                n(12, "Choose default apps", 420, 540, clickable = true),
+          +                n(13, "Samsung app settings", 580, 700, clickable = true),
+          +            ),
+          +        )
+          +        assertEquals(12, (decision as DeterministicUiNavigatorV43.Decision.Click).index)
+          +    }
+          +
+          +    @Test fun clickedRowCanBeVerifiedAsDestinationHeaderWithoutFalsePositiveRowMatching() {
+          +        val page = listOf(
+          +            n(1, "Apps", 60, 150),
+          +            n(2, "Choose default apps", 420, 540, clickable = true),
+          +        )
+          +        assertTrue(DeterministicUiNavigatorV43.isDestinationHeader("Apps", page))
+          +
+          +        val mainList = listOf(
+          +            n(10, "Apps", 700, 840, clickable = true),
+          +            n(11, "Apps", 725, 795, left = 120, right = 350),
+          +        )
+          +        assertFalse(DeterministicUiNavigatorV43.isDestinationHeader("Apps", mainList))
+          +    }
+          +
+          +    @Test fun visibleOnlyGoalNeverClicksTarget() {
+          +        val visible = DeterministicUiNavigatorV43.decide(
+          +            "Open Settings.\nScroll until About phone is visible.\nDo not open About phone.\nStop when About phone is visible.",
+          +            listOf(n(30, "About phone", 1200, 1320, clickable = true)),
+          +        )
+          +        assertEquals(DeterministicUiNavigatorV43.Decision.None, visible)
+          +
+          +        val missing = DeterministicUiNavigatorV43.decide(
+          +            "Open Settings.\nScroll until About phone is visible.\nDo not open About phone.\nStop when About phone is visible.",
+          +            listOf(n(4, "Software update", 1200, 1320, clickable = true)),
+          +        )
+          +        assertTrue(missing is DeterministicUiNavigatorV43.Decision.Scan)
+          +        assertFalse(missing is DeterministicUiNavigatorV43.Decision.Click)
+          +    }
+          +
+          +    @Test fun boundedScanReversesAfterDownBoundaryAndThenExhausts() {
+          +        val p = DeterministicUiNavigatorV43.ScanProgress()
+          +        assertEquals(DeterministicUiNavigatorV43.Direction.DOWN, DeterministicUiNavigatorV43.nextDirection(p, DeterministicUiNavigatorV43.Direction.DOWN))
+          +        DeterministicUiNavigatorV43.recordScroll(p, DeterministicUiNavigatorV43.Direction.DOWN, viewportMoved = false)
+          +        assertEquals(DeterministicUiNavigatorV43.Direction.UP, DeterministicUiNavigatorV43.nextDirection(p, DeterministicUiNavigatorV43.Direction.DOWN))
+          +        DeterministicUiNavigatorV43.recordScroll(p, DeterministicUiNavigatorV43.Direction.UP, viewportMoved = false)
+          +        assertTrue(DeterministicUiNavigatorV43.exhausted(p))
+          +    }
+          +    @Test fun dispatchGroundingPreservesTextIdentityWhileClickingParentRow() {
+          +        val nodes = listOf(
+          +            n(10, "", 700, 840, left = 20, right = 700, clickable = true),
+          +            n(11, "Apps", 725, 795, left = 120, right = 350),
+          +        )
+          +        val resolved = DeterministicUiNavigatorV43.resolveDispatchTarget(
+          +            "Apps",
+          +            DeterministicUiNavigatorV43.SemanticChannel.TEXT,
+          +            nodes,
+          +        ) as DeterministicUiNavigatorV43.Decision.Click
+          +        assertEquals(10, resolved.index)
+          +        assertEquals("Apps", resolved.target)
+          +        assertEquals(DeterministicUiNavigatorV43.SemanticChannel.TEXT, resolved.channel)
+          +    }
+          +
+          +    @Test fun dispatchGroundingFailsClosedAcrossSeparateRows() {
+          +        val resolved = DeterministicUiNavigatorV43.resolveDispatchTarget(
+          +            "Apps",
+          +            DeterministicUiNavigatorV43.SemanticChannel.TEXT,
+          +            listOf(
+          +                n(10, "Apps", 500, 620, clickable = true),
+          +                n(20, "Apps", 1000, 1120, clickable = true),
+          +            ),
+          +        )
+          +        assertTrue(resolved is DeterministicUiNavigatorV43.Decision.Ambiguous)
+          +    }
+          +
+          +}
+          diff --git a/app/src/test/kotlin/ai/closepaw/app/PrimaryLocalGrammarV43Test.kt b/app/src/test/kotlin/ai/closepaw/app/PrimaryLocalGrammarV43Test.kt
+          new file mode 100644
+          index 0000000..ed3b143
+          --- /dev/null
+          +++ b/app/src/test/kotlin/ai/closepaw/app/PrimaryLocalGrammarV43Test.kt
+          @@ -0,0 +1,66 @@
+          +package ai.closepaw.app
+          +
+          +import ai.closepaw.platform.AppInfo
+          +import org.junit.Assert.assertEquals
+          +import org.junit.Assert.assertFalse
+          +import org.junit.Assert.assertNull
+          +import org.junit.Assert.assertTrue
+          +import org.junit.Test
+          +
+          +class PrimaryLocalGrammarV43Test {
+          +    private val apps = listOf(
+          +        AppInfo("com.android.settings", "Settings", true),
+          +        AppInfo("com.google.android.gm", "Gmail", false),
+          +    )
+          +
+          +    @Test fun explicitVisibleTargetStillForcesExactNode() {
+          +        val spec = PrimaryLocalGrammarV43.build(
+          +            "R1",
+          +            request(
+          +                "Open Settings.\nGo to Display.\nStop when Display settings is visible.",
+          +                "com.android.settings",
+          +                "[3] TextView t=\"Display\" C\n[4] TextView t=\"Connections\" C",
+          +            ),
+          +            apps,
+          +        )
+          +        assertEquals("CLICK_NODE|3", spec.forcedAction)
+          +    }
+          +
+          +    @Test fun fallbackCannotClickCompletelyUnrelatedRows() {
+          +        val spec = PrimaryLocalGrammarV43.build(
+          +            "R2",
+          +            request(
+          +                "Find install unknown apps without using search.",
+          +                "com.android.settings",
+          +                "[2] TextView t=\"Connections\" C\n[3] TextView t=\"Galaxy AI\" C\n[9] RecyclerView S",
+          +            ),
+          +            apps,
+          +        )
+          +        assertNull(spec.forcedAction)
+          +        assertFalse(spec.grammar.contains("CLICK_NODE|"))
+          +        assertTrue(spec.grammar.contains("PRIMARY_ESCALATE|"))
+          +    }
+          +
+          +    @Test fun goalRelevantAppsRowCanRemainAPlannerChoice() {
+          +        val spec = PrimaryLocalGrammarV43.build(
+          +            "R3",
+          +            request(
+          +                "Find which apps are allowed to install unknown apps.",
+          +                "com.android.settings",
+          +                "[2] TextView t=\"Connections\" C\n[7] TextView t=\"Apps\" C\n[9] RecyclerView S",
+          +            ),
+          +            apps,
+          +        )
+          +        assertNull(spec.forcedAction)
+          +        assertTrue(spec.grammar.contains("\"7\""))
+          +        assertFalse(spec.grammar.contains("\"2\""))
+          +        assertEquals("goal_grounded_fallback", spec.mode)
+          +    }
+          +
+          +    private fun request(goal: String, currentApp: String, nodes: String): String =
+          +        listOf(
+          +            "CP_PRIMARY_V29", "TASK=T", "REQ=unused", "TURN=1",
+          +            "GOAL_BEGIN", goal, "GOAL_END", "CURRENT_APP: $currentApp",
+          +            "NODES_BEGIN", nodes, "NODES_END",
+          +        ).joinToString("\n")
+          +}
+          PATCH043
+          git apply --check /tmp/043.patch
+          git apply /tmp/043.patch
+          echo '043 isolated patch apply: PASS' >> 043-verification-report.txt
+
+      - name: 043 source isolation and frozen correctness gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PYISO043'
+          from pathlib import Path
+          import hashlib, json
+          def sha(data: bytes): return hashlib.sha256(data).hexdigest()
+          def sf(path): return sha(Path(path).read_bytes())
+          baseline = json.loads(Path('043-baseline-source-manifest.json').read_text())
+          current = {}
+          for p in sorted(Path('app').rglob('*')):
+              if not p.is_file(): continue
+              rel = p.as_posix()
+              if rel.startswith('app/build/'): continue
+              current[rel] = sf(rel)
+          changed = {p for p in baseline.keys() & current.keys() if baseline[p] != current[p]}
+          added = set(current) - set(baseline)
+          removed = set(baseline) - set(current)
+          allowed_changed = {
+              'app/build.gradle.kts',
+              'app/src/main/res/values/strings.xml',
+              'app/src/main/kotlin/ai/closepaw/app/HybridAgentEngine.kt',
+          }
+          allowed_added = {
+              'app/src/main/kotlin/ai/closepaw/app/DeterministicUiNavigatorV43.kt',
+              'app/src/main/kotlin/ai/closepaw/app/PrimaryLocalGrammarV43.kt',
+              'app/src/test/kotlin/ai/closepaw/app/DeterministicUiNavigatorV43Test.kt',
+              'app/src/test/kotlin/ai/closepaw/app/PrimaryLocalGrammarV43Test.kt',
+          }
+          if changed != allowed_changed:
+              raise SystemExit(f'043 unexpected changed files: {sorted(changed)} expected {sorted(allowed_changed)}')
+          if added != allowed_added:
+              raise SystemExit(f'043 unexpected added files: {sorted(added)} expected {sorted(allowed_added)}')
+          if removed:
+              raise SystemExit(f'043 unexpectedly removed files: {sorted(removed)}')
+
+          frozen = json.loads(Path('043-baseline-critical-hashes.json').read_text())
+          engine = Path('app/src/main/kotlin/ai/closepaw/app/HybridAgentEngine.kt').read_text(encoding='utf-8')
+          def region(a, b):
+              s = engine.find(a)
+              if s < 0: raise SystemExit('043 critical start missing after patch: ' + a)
+              e = engine.find(b, s)
+              if e < 0: raise SystemExit('043 critical end missing after patch: ' + b)
+              return engine[s:e].encode()
+          now = {
+              'rc8_restore': sha(region('// RC8: only strong identity evidence may authorize a restore-side navigation.','private suspend fun restoreSidebarShapeIfNeeded(')),
+              'durable_transaction': sha(region('private suspend fun executeActionTransactionV9(','private fun receiptHistoryLineV9(')),
+              'v33_primary_plan_validation': sha(region('private suspend fun requestPrimaryPlanV9(','private fun buildBrainRequest(')),
+              'brain_request_builder': sha(region('private fun buildBrainRequest(','private fun buildRepairRequest(')),
+              'brain_excursion_capture': sha(region('private suspend fun captureBrainExcursionFrame(','private suspend fun restoreAfterBrainExcursion(')),
+              'brain_restore': sha(region('private suspend fun restoreAfterBrainExcursion(','private fun configuredBrainV9(): ChatBrainSettings')),
+              'configured_brain_route': sha(region('private fun configuredBrainV9(): ChatBrainSettings','private suspend fun sendConfiguredBrainMessageV9(')),
+              'brain_send': sha(region('private suspend fun sendConfiguredBrainMessageV9(','private suspend fun waitForMatchingBrainResponseV9(')),
+              'goal_postcondition_v41_file': sf('app/src/main/kotlin/ai/closepaw/app/GoalPostconditionV41.kt'),
+              'primary_grammar_v41_file': sf('app/src/main/kotlin/ai/closepaw/app/PrimaryLocalGrammarV41.kt'),
+              'hybrid_protocol_file': sf('app/src/main/kotlin/ai/closepaw/app/HybridAgentProtocol.kt'),
+              'rc11_policy_file': sf('app/src/main/kotlin/ai/closepaw/app/RC11CorrectnessPolicy.kt'),
+              'http_transport_v32_file': sf('app/src/main/kotlin/ai/closepaw/app/PrimaryLocalHttpTransportV32.kt'),
+              'v37_grammar_file': sf('app/src/main/kotlin/ai/closepaw/app/PrimaryLocalGrammarV37.kt'),
+              'v37_trace_file': sf('app/src/main/kotlin/ai/closepaw/app/HybridTraceEventsV37.kt'),
+              'brain_settings_store_file': sf('app/src/main/kotlin/ai/closepaw/app/ChatBrainSettingsStore.kt'),
+              'brain_target_resolver_v40_file': sf('app/src/main/kotlin/ai/closepaw/app/ConfiguredBrainTargetResolverV40.kt'),
+              'bridge_source': sf('tools/termux-bridge/closepaw_bridge.py'),
+          }
+          if now != frozen:
+              bad = [k for k in frozen if now.get(k) != frozen[k]]
+              raise SystemExit('043 modified frozen correctness regions/files: ' + ', '.join(bad))
+          Path('043-postpatch-source-manifest.json').write_text(json.dumps(current, indent=2, sort_keys=True) + '\n')
+          with Path('043-verification-report.txt').open('a') as f:
+              f.write('Source isolation exact allowlist: PASS\n')
+              f.write('RC8/durable/V33/V32/V37/V41-goal/Brain binding+locator+send+restore/trace/bridge frozen: PASS\n')
+          print('043 SOURCE ISOLATION + FROZEN CORRECTNESS: PASS')
+          PYISO043
+
+      - name: 043 grounding-first architecture and regression audit
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PYAUDIT043'
+          from pathlib import Path
+          engine = Path('app/src/main/kotlin/ai/closepaw/app/HybridAgentEngine.kt').read_text(encoding='utf-8')
+          nav = Path('app/src/main/kotlin/ai/closepaw/app/DeterministicUiNavigatorV43.kt').read_text(encoding='utf-8')
+          grammar = Path('app/src/main/kotlin/ai/closepaw/app/PrimaryLocalGrammarV43.kt').read_text(encoding='utf-8')
+          store = Path('app/src/main/kotlin/ai/closepaw/app/ChatBrainSettingsStore.kt').read_text(encoding='utf-8')
+          gradle = Path('app/build.gradle.kts').read_text(encoding='utf-8')
+          strings = Path('app/src/main/res/values/strings.xml').read_text(encoding='utf-8')
+
+          # Controller wiring: explicit targets are grounded/scan-searched before planner freedom,
+          # but every side effect still enters the existing HybridPlan -> RC11 transaction path.
+          for token in [
+              'DeterministicUiNavigatorV43.decide(',
+              'DETERMINISTIC_V43|CLICK|',
+              'DETERMINISTIC_V43|SCAN|',
+              'DETERMINISTIC_V43|EXHAUSTED|',
+              'selectedPlanSource = "DETERMINISTIC_V43"',
+              'MAX_DETERMINISTIC_NAV_ACTIONS_V43 = 24',
+              'DeterministicUiNavigatorV43.recordScroll(',
+              'viewportMoved = receipt.accepted',
+              'PrimaryLocalGrammarV43.build(lease, request, installedApps)',
+              'clickGroundedSemanticTargetV43(',
+              'resolveDispatchTarget(',
+              'clickedTargetBecameHeaderV43',
+              'isDestinationHeader(',
+          ]:
+              if token not in engine: raise SystemExit('043 missing engine contract: ' + token)
+          if 'PrimaryLocalGrammarV41.build(lease, request, installedApps)' in engine:
+              raise SystemExit('043 engine still invokes V41 Primary grammar')
+
+          # Ensure deterministic click plans preserve semantic identity (TEXT/DESCRIPTION) instead
+          # of executing a blank parent container as a free CLICK_NODE.
+          if 'HybridAction.ClickNode(deterministicDecision.index)' in engine:
+              raise SystemExit('043 deterministic route still emits raw CLICK_NODE parent handles')
+          for token in [
+              'HybridAction.ClickText(deterministicDecision.target)',
+              'HybridAction.ClickDesc(deterministicDecision.target)',
+          ]:
+              if token not in engine: raise SystemExit('043 semantic deterministic click missing: ' + token)
+
+          # The deterministic block must occur after persisted Brain-plan recovery and before Primary.
+          p_resume = engine.find('if (resumableBrainPlan != null)')
+          p_nav = engine.find('DeterministicUiNavigatorV43.decide(')
+          p_primary = engine.find('requestPrimaryPlanV9(task.id, primaryRequestId, primaryRequest)', p_nav)
+          if min(p_resume, p_nav, p_primary) < 0 or not (p_resume < p_nav < p_primary):
+              raise SystemExit('043 deterministic route ordering is not recovery -> grounding -> Primary')
+
+          # Existing durable transaction is still used downstream; no direct platform side effects
+          # are allowed inside the pure navigator.
+          for forbidden in ['platform.performAction', 'launchApp(', 'AccessibilityService', 'UIAction.']:
+              if forbidden in nav: raise SystemExit('043 pure navigator contains direct side effect: ' + forbidden)
+
+          # Bounded scroll-until-visible: exact target, re-observe per turn, no-progress boundary,
+          # reverse direction, finite swipe budget, and visible-only target never clicks.
+          for token in [
+              'MAX_SWIPES_PER_DIRECTION = 8',
+              'viewportMoved: Boolean',
+              'downBoundary = true',
+              'upBoundary = true',
+              'nextDirection(',
+              'explicitScrollUntilTarget(',
+              'if (exactVisible(visibleOnlyTarget, nodes)) return Decision.None',
+              'resolveActionableTarget(',
+              'clusterSameVisualRows(',
+              'insideClickableContainer(',
+              'SemanticChannel.TEXT',
+              'SemanticChannel.DESCRIPTION',
+              'resolveDispatchTarget(',
+          ]:
+              if token not in nav: raise SystemExit('043 navigator contract missing: ' + token)
+
+          # Primary can no longer select every clickable row merely because it exists. Only
+          # goal-grounded candidates, scroll/wait, and fail-closed escalation are exposed.
+          for token in [
+              'goal_grounded_fallback',
+              'nodeRelevantToGoal(goal, it)',
+              'PRIMARY_ESCALATE|',
+          ]:
+              if token not in grammar: raise SystemExit('043 grammar contract missing: ' + token)
+          for forbidden in ['arg ::=', 'SET_TEXT_NODE|" arg', 'CLICK_TEXT|" arg', 'DONE|']:
+              if forbidden in grammar: raise SystemExit('043 free-form executable semantic argument reintroduced: ' + forbidden)
+          if 'nodes.filter { it.clickable }.map { it.index }' in grammar:
+              raise SystemExit('043 arbitrary all-clickable fallback reintroduced')
+
+          # Verify-after-act remains strict. A same-package intermediate click can only count when
+          # an actionable target becomes the same semantic non-clickable destination header.
+          s_receipt = engine.find('private suspend fun buildPostActionReceiptV9(')
+          e_receipt = engine.find('private fun receiptHistoryLineV9(', s_receipt)
+          receipt = engine[s_receipt:e_receipt]
+          for token in [
+              'clickTargetWasGroundedBeforeV43',
+              'clickedTargetBecameHeaderV43',
+              'beforePackage == afterObs.packageName',
+              'executorSuccess && !interrupted && changed',
+              'DeterministicUiNavigatorV43.isDestinationHeader(',
+          ]:
+              if token not in receipt: raise SystemExit('043 verified-click receipt contract missing: ' + token)
+
+          # Existing local completion / Samsung authoritative foreground / transport stay wired.
+          for token in [
+              'GoalPostconditionV41.parse(goal, apps)',
+              'GoalPostconditionV41.evaluate(',
+              'observedPackage(platform)',
+              'PRIMARY_CUSTOM_HTTP_TIMEOUT_MS = 180_000L',
+              'PRIMARY_CUSTOM_MAX_OUTPUT_TOKENS = 64L',
+              'appendLine(task.goal)',
+          ]:
+              if token not in engine: raise SystemExit('043 frozen runtime wiring missing: ' + token)
+
+          # One-time external Brain binding/locator stays deterministic and consumes zero model calls.
+          for token in ['KEY_APP_PACKAGE', 'KEY_CHAT_TITLE', 'getSharedPreferences', 'saveAppPackage', 'saveChatTitle']:
+              if token not in store: raise SystemExit('043 persistent Brain binding contract missing: ' + token)
+          s = engine.find('private suspend fun ensureConfiguredBrainConversationV9(')
+          e = engine.find('private suspend fun sendConfiguredBrainMessageV9(', s)
+          if s < 0 or e < 0: raise SystemExit('043 configured Brain conversation region missing')
+          locator = engine[s:e]
+          for token in ['requestPrimaryPlanV9(', 'ChatCompletionClient', 'LLMClient', 'buildPrimaryModelRequest(']:
+              if token in locator: raise SystemExit('043 Brain locator unexpectedly consumes model path: ' + token)
+
+          if 'take(600)' in engine: raise SystemExit('043 reintroduced user-goal tail truncation')
+          if 'applicationIdSuffix = ".rc11c043"' not in gradle: raise SystemExit('043 application id missing')
+          if 'versionNameSuffix = "-rc11-c043"' not in gradle: raise SystemExit('043 version suffix missing')
+          if '<string name="app_name">ClosePaw RC11 043</string>' not in strings: raise SystemExit('043 label missing')
+
+          with Path('043-verification-report.txt').open('a') as f:
+              f.write('Grounding-first exact target controller with bounded verified scan: PASS\n')
+              f.write('No arbitrary all-clickable model fallback for unresolved targets: PASS\n')
+              f.write('Semantic child label -> unique clickable row grounding with fresh dispatch re-grounding: PASS\n')
+              f.write('Intermediate clickable-row -> non-clickable-page-header postcondition: PASS\n')
+              f.write('Visible-only scroll goal never clicks target: PASS\n')
+              f.write('Configured External Brain persistent binding and zero-token locator preserved: PASS\n')
+          print('043 GROUNDING-FIRST ARCHITECTURE AUDIT: PASS')
+          PYAUDIT043
+
+      - name: 043 clean Kotlin compile gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./gradlew clean :app:compileDebugKotlin --stacktrace --no-daemon --no-configuration-cache
+          echo '043 clean Kotlin compile: PASS' >> 043-verification-report.txt
+
+      - name: 043 targeted deterministic navigation goal Brain V37 V33 RC11 and bridge tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./gradlew :app:testDebugUnitTest \
+            --tests ai.closepaw.app.DeterministicUiNavigatorV43Test \
+            --tests ai.closepaw.app.PrimaryLocalGrammarV43Test \
+            --tests ai.closepaw.app.GoalPostconditionV41Test \
+            --tests ai.closepaw.app.PrimaryLocalGrammarV41Test \
+            --tests ai.closepaw.app.ConfiguredBrainTargetResolverV40Test \
+            --tests ai.closepaw.app.LocalGoalCompletionV40Test \
+            --tests ai.closepaw.app.PrimaryLocalGrammarV37Test \
+            --tests ai.closepaw.app.HybridTraceEventsV37Test \
+            --tests ai.closepaw.app.PrimaryLocalGrammarV36Test \
+            --tests ai.closepaw.app.PrimaryFormatComplianceV33Test \
+            --tests ai.closepaw.app.PrimaryLocalHttpTransportV32Test \
+            --tests ai.closepaw.app.RC11CorrectnessPolicyTest \
+            --tests ai.closepaw.termux.ClosePawBridgeResourceTest \
+            --stacktrace --no-daemon --no-configuration-cache
+          echo '043 targeted deterministic-nav/goal/Brain/V37/V33/RC11/bridge tests: PASS' >> 043-verification-report.txt
+
+      - name: 043 full unit tests and clean rebuild
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./gradlew :app:testDebugUnitTest :app:assembleDebug --stacktrace --no-daemon --no-configuration-cache
+          echo '043 full unit tests: PASS' >> 043-verification-report.txt
+          echo '043 debug APK rebuild: PASS' >> 043-verification-report.txt
+
+      - name: 043 APK identity integrity native-runtime and signature gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          mapfile -t APKS < <(find app/build/outputs/apk/debug -maxdepth 1 -type f -name '*.apk' -print)
+          if [ "${#APKS[@]}" -ne 1 ]; then echo "Expected exactly one debug APK, found ${#APKS[@]}" >&2; exit 1; fi
+          APK="${APKS[0]}"
+          unzip -tq "$APK" >/dev/null
+          SIZE="$(stat -c %s "$APK")"
+          if [ "$SIZE" -lt 50000000 ]; then echo "APK unexpectedly small: $SIZE bytes" >&2; exit 1; fi
+          CONTENTS="$(zipinfo -1 "$APK")"
+          for ENTRY in AndroidManifest.xml classes.dex lib/arm64-v8a/libllama.so lib/arm64-v8a/libggml.so lib/arm64-v8a/libinference_engine.so lib/arm64-v8a/libinference_engine_jni.so lib/arm64-v8a/libinference_engine_llamacpp_backend.so; do
+            if ! grep -Fxq "$ENTRY" <<<"$CONTENTS"; then echo "Required APK entry missing: $ENTRY" >&2; exit 1; fi
+          done
+          AAPT="$(find "$ANDROID_HOME/build-tools" -type f -name aapt -print | sort -V | tail -n 1)"
+          APKSIGNER="$(find "$ANDROID_HOME/build-tools" -type f -name apksigner -print | sort -V | tail -n 1)"
+          test -x "$AAPT"; test -x "$APKSIGNER"
+          BADGING="$($AAPT dump badging "$APK")"
+          grep -Fq "package: name='ai.closepaw.rc11c043'" <<<"$BADGING" || { echo '043 APK package identity mismatch' >&2; exit 1; }
+          grep -Fq "application-label:'ClosePaw RC11 043'" <<<"$BADGING" || { echo '043 APK label mismatch' >&2; exit 1; }
+          grep -Fq "sdkVersion:'31'" <<<"$BADGING" || { echo '043 APK minSdk mismatch' >&2; exit 1; }
+          grep -Fq "targetSdkVersion:'36'" <<<"$BADGING" || { echo '043 APK targetSdk mismatch' >&2; exit 1; }
+          "$APKSIGNER" verify --verbose "$APK" > 043-apksigner-verification.txt
+          APK_SHA="$(sha256sum "$APK" | awk '{print $1}')"
+          {
+            echo "APK path: $APK"
+            echo "APK size bytes: $SIZE"
+            echo "APK SHA256: $APK_SHA"
+            echo 'APK ZIP integrity: PASS'
+            echo 'APK package identity ai.closepaw.rc11c043: PASS'
+            echo 'APK app label ClosePaw RC11 043: PASS'
+            echo 'minSdk 31 / targetSdk 36: PASS'
+            echo 'arm64 local-inference runtime libraries: PASS'
+            echo 'APK signature verification: PASS'
+          } >> 043-verification-report.txt
+          echo "043 APK FULL INTEGRITY GATE: PASS | size=$SIZE | sha256=$APK_SHA"
+
+      - name: Prepare 043 full verified source snapshot
+        if: success()
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf 043-full-source
+          mkdir -p 043-full-source
+          rsync -a --exclude='.git/' --exclude='.github/' --exclude='.gradle/' --exclude='app/build/' --exclude='043-full-source/' ./ 043-full-source/
+          test -f 043-full-source/app/src/main/kotlin/ai/closepaw/app/HybridAgentEngine.kt
+          test -f 043-full-source/app/src/main/kotlin/ai/closepaw/app/DeterministicUiNavigatorV43.kt
+          test -f 043-full-source/app/src/main/kotlin/ai/closepaw/app/PrimaryLocalGrammarV43.kt
+          test -f 043-full-source/app/src/main/kotlin/ai/closepaw/app/GoalPostconditionV41.kt
+          test -f 043-full-source/app/src/main/kotlin/ai/closepaw/app/ConfiguredBrainTargetResolverV40.kt
+          test -f 043-full-source/app/src/main/kotlin/ai/closepaw/app/PrimaryLocalGrammarV37.kt
+          test -f 043-full-source/app/src/main/kotlin/ai/closepaw/app/HybridTraceEventsV37.kt
+          test -f 043-full-source/tools/termux-bridge/closepaw_bridge.py
+          test "$(sha256sum 043-full-source/tools/termux-bridge/closepaw_bridge.py | awk '{print $1}')" = "707906f17acde07c0a86cb45c3c76b7a554f3ffcc39acc17f76f32e376749b2c"
+
+      - name: Upload 043 verification proof
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: 043-ClosePaw-RC11-verification-proof
+          if-no-files-found: warn
+          path: |
+            043-verification-report.txt
+            043-baseline-source-manifest.json
+            043-postpatch-source-manifest.json
+            043-baseline-critical-hashes.json
+            043-apksigner-verification.txt
+
+      - name: Upload 043 full verified source
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: 043-ClosePaw-RC11-verified-full-source
+          if-no-files-found: error
+          path: 043-full-source/
+
+      - name: Upload 043 APK
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: 043-ClosePaw-RC11-APK
+          if-no-files-found: error
+          path: app/build/outputs/apk/debug/app-debug.apk
+
+      - name: Upload 043 failure sources
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: 043-ClosePaw-RC11-failure-sources
+          if-no-files-found: warn
+          path: |
+            app/src/main/kotlin/ai/closepaw/app/HybridAgentEngine.kt
+            app/src/main/kotlin/ai/closepaw/app/DeterministicUiNavigatorV43.kt
+            app/src/main/kotlin/ai/closepaw/app/PrimaryLocalGrammarV43.kt
+            app/src/main/kotlin/ai/closepaw/app/GoalPostconditionV41.kt
+            app/src/main/kotlin/ai/closepaw/app/ConfiguredBrainTargetResolverV40.kt
+            app/src/main/kotlin/ai/closepaw/app/PrimaryLocalGrammarV37.kt
+            app/src/main/kotlin/ai/closepaw/app/HybridTraceEventsV37.kt
+            app/src/test/kotlin/ai/closepaw/app/DeterministicUiNavigatorV43Test.kt
+            app/src/test/kotlin/ai/closepaw/app/PrimaryLocalGrammarV43Test.kt
+            043-verification-report.txt
