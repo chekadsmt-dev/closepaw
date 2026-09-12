@@ -1,0 +1,772 @@
+name: 045 - ClosePaw RC11 Conservative Prerequisite-Scoped Navigation
+
+'on':
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Setup Java 17
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Restore exact verified 043 full source
+        uses: actions/download-artifact@v5
+        with:
+          name: 043-ClosePaw-RC11-verified-full-source
+          path: /tmp/043-source
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: 34701607130
+
+      - name: Verify and activate exact 043 baseline
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f /tmp/043-source/app/src/main/kotlin/ai/closepaw/app/HybridAgentEngine.kt
+          test -f /tmp/043-source/app/src/main/kotlin/ai/closepaw/app/DeterministicUiNavigatorV43.kt
+          test -f /tmp/043-source/app/src/main/kotlin/ai/closepaw/app/PrimaryLocalGrammarV43.kt
+          test -f /tmp/043-source/app/src/main/kotlin/ai/closepaw/app/GoalPostconditionV41.kt
+          test -f /tmp/043-source/app/src/main/kotlin/ai/closepaw/app/ConfiguredBrainTargetResolverV40.kt
+          test -f /tmp/043-source/app/src/main/kotlin/ai/closepaw/app/PrimaryLocalGrammarV37.kt
+          test -f /tmp/043-source/app/src/main/kotlin/ai/closepaw/app/HybridTraceEventsV37.kt
+          test -f /tmp/043-source/tools/termux-bridge/closepaw_bridge.py
+          find . -mindepth 1 -maxdepth 1 ! -name .git ! -name .github -exec rm -rf {} +
+          cp -a /tmp/043-source/. ./
+
+          python3 - <<'PYBASE045'
+          from pathlib import Path
+          import hashlib
+          expected = {
+              'app/src/main/kotlin/ai/closepaw/app/HybridAgentEngine.kt': '87974b4da2d26022390baafd10a99862571642cbf00205a11c8549e98c891fc8',
+              'app/src/main/kotlin/ai/closepaw/app/DeterministicUiNavigatorV43.kt': '945670dd4f8818b10933245a27298dfe0de4b9da590c54f06a9ba4657e11301f',
+              'app/src/main/kotlin/ai/closepaw/app/PrimaryLocalGrammarV43.kt': 'fdfdae46f9fd865336e2f57e65c6f62684fc1b7ffd909eba1d1b49ad8937dab3',
+              'app/src/main/kotlin/ai/closepaw/app/GoalPostconditionV41.kt': '42378756c3b51de1acadc0c00e4102541108436bb196c5991e111b3c1375dc53',
+              'app/src/main/kotlin/ai/closepaw/app/PrimaryLocalGrammarV41.kt': 'ec2dcebae54b663bee3ba3e0f5d2cc50c58b6531076cc085c471d8c612a18e43',
+              'app/src/main/kotlin/ai/closepaw/app/HybridAgentProtocol.kt': '6c386d7e712c1f19f1d106f324d500b2fead4fc4b30a1b043cb368db16ebc03e',
+              'app/src/main/kotlin/ai/closepaw/app/RC11CorrectnessPolicy.kt': '6d2069354b970927dc4729a00355a74e8139f60efadb866e3f9e9b2c020e67b6',
+              'app/src/main/kotlin/ai/closepaw/app/PrimaryLocalHttpTransportV32.kt': '1e9e9dc2e4625277eb8eecd08792d4ed1e7c2952e374f20745808ba1bbfb7739',
+              'app/src/main/kotlin/ai/closepaw/app/PrimaryLocalGrammarV37.kt': '50fec2dfd085e29fd56efc7d9317cc4e8f6b2ed8a242e4b1d9189090a0e97ab2',
+              'app/src/main/kotlin/ai/closepaw/app/HybridTraceEventsV37.kt': 'ecd85c4d77335f2fa289ebf8ae4e804b7dfebe5a24e918d2d6e8413be20e9a42',
+              'app/src/main/kotlin/ai/closepaw/app/ChatBrainSettingsStore.kt': '063f89a0d7b4dd08f16642ee7454a5a871e7d3b4d8318f1373808be307350f41',
+              'app/src/main/kotlin/ai/closepaw/app/ConfiguredBrainTargetResolverV40.kt': '6404241048b37ccf0cdb835fc8be406401c568926f8751fbff3ccaef35bb15c9',
+              'app/build.gradle.kts': '3e6d89157482ff175189d557507e8fb297c9a101d37db9da71fbc80a8432a822',
+              'app/src/main/res/values/strings.xml': '70032a6736c2cebab748ef40d414879fdbdc180a5b1c57ebdd45c97f561bf157',
+              'tools/termux-bridge/closepaw_bridge.py': '707906f17acde07c0a86cb45c3c76b7a554f3ffcc39acc17f76f32e376749b2c',
+          }
+          for rel, wanted in expected.items():
+              p = Path(rel)
+              if not p.is_file(): raise SystemExit('045 baseline missing: ' + rel)
+              got = hashlib.sha256(p.read_bytes()).hexdigest()
+              if got != wanted: raise SystemExit(f'045 baseline hash mismatch {rel}: {got} != {wanted}')
+          Path('045-verification-report.txt').write_text(
+              'ClosePaw RC11 045 verification report\n'
+              '=====================================\n'
+              'Base: exact verified 043 full-source artifact from successful run 34701607130.\n'
+              'Regression evidence: 043 scanned ClosePaw itself for later Settings targets before the explicit Open Settings prerequisite was satisfied.\n'
+              'V45 fix: explicit app prerequisite + exact foreground package gate before deterministic in-app search.\n'
+              'Frozen: V43 navigator/grammar, V41 goal semantics, RC8 restore, durable transaction, V33 validation, V32 transport, V37 regression, External Brain binding/locator/send/restore, trace, bridge.\n',
+              encoding='utf-8',
+          )
+          print('045 EXACT VERIFIED 043 BASELINE HASH GATE: PASS')
+          PYBASE045
+
+      - name: Baseline 043 clean compile before any 045 change
+        shell: bash
+        run: |
+          set -euo pipefail
+          chmod +x ./gradlew
+          ./gradlew clean :app:compileDebugKotlin --stacktrace --no-daemon --no-configuration-cache
+          echo 'Baseline 043 clean Kotlin compile BEFORE 045 patch: PASS' >> 045-verification-report.txt
+
+      - name: Freeze exact 043 source and correctness regions
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PYFREEZE045'
+          from pathlib import Path
+          import hashlib, json
+          def sha(data: bytes): return hashlib.sha256(data).hexdigest()
+          def sf(path): return sha(Path(path).read_bytes())
+          manifest = {}
+          for p in sorted(Path('app').rglob('*')):
+              if not p.is_file(): continue
+              rel = p.as_posix()
+              if rel.startswith('app/build/'): continue
+              manifest[rel] = sf(rel)
+          if len(manifest) < 700: raise SystemExit(f'045 baseline app manifest unexpectedly small: {len(manifest)}')
+          Path('045-baseline-source-manifest.json').write_text(json.dumps(manifest, indent=2, sort_keys=True) + '\n')
+
+          engine = Path('app/src/main/kotlin/ai/closepaw/app/HybridAgentEngine.kt').read_text(encoding='utf-8')
+          def region(a, b):
+              s = engine.find(a)
+              if s < 0: raise SystemExit('045 critical start missing: ' + a)
+              e = engine.find(b, s)
+              if e < 0: raise SystemExit('045 critical end missing: ' + b)
+              return engine[s:e].encode()
+          critical = {
+              'rc8_restore': sha(region('// RC8: only strong identity evidence may authorize a restore-side navigation.','private suspend fun restoreSidebarShapeIfNeeded(')),
+              'durable_transaction': sha(region('private suspend fun executeActionTransactionV9(','private fun receiptHistoryLineV9(')),
+              'v33_primary_plan_validation': sha(region('private suspend fun requestPrimaryPlanV9(','private fun buildBrainRequest(')),
+              'brain_request_builder': sha(region('private fun buildBrainRequest(','private fun buildRepairRequest(')),
+              'brain_excursion_capture': sha(region('private suspend fun captureBrainExcursionFrame(','private suspend fun restoreAfterBrainExcursion(')),
+              'brain_restore': sha(region('private suspend fun restoreAfterBrainExcursion(','private fun configuredBrainV9(): ChatBrainSettings')),
+              'configured_brain_route': sha(region('private fun configuredBrainV9(): ChatBrainSettings','private suspend fun sendConfiguredBrainMessageV9(')),
+              'brain_send': sha(region('private suspend fun sendConfiguredBrainMessageV9(','private suspend fun waitForMatchingBrainResponseV9(')),
+              'navigator_v43_file': sf('app/src/main/kotlin/ai/closepaw/app/DeterministicUiNavigatorV43.kt'),
+              'primary_grammar_v43_file': sf('app/src/main/kotlin/ai/closepaw/app/PrimaryLocalGrammarV43.kt'),
+              'goal_postcondition_v41_file': sf('app/src/main/kotlin/ai/closepaw/app/GoalPostconditionV41.kt'),
+              'primary_grammar_v41_file': sf('app/src/main/kotlin/ai/closepaw/app/PrimaryLocalGrammarV41.kt'),
+              'hybrid_protocol_file': sf('app/src/main/kotlin/ai/closepaw/app/HybridAgentProtocol.kt'),
+              'rc11_policy_file': sf('app/src/main/kotlin/ai/closepaw/app/RC11CorrectnessPolicy.kt'),
+              'http_transport_v32_file': sf('app/src/main/kotlin/ai/closepaw/app/PrimaryLocalHttpTransportV32.kt'),
+              'v37_grammar_file': sf('app/src/main/kotlin/ai/closepaw/app/PrimaryLocalGrammarV37.kt'),
+              'v37_trace_file': sf('app/src/main/kotlin/ai/closepaw/app/HybridTraceEventsV37.kt'),
+              'brain_settings_store_file': sf('app/src/main/kotlin/ai/closepaw/app/ChatBrainSettingsStore.kt'),
+              'brain_target_resolver_v40_file': sf('app/src/main/kotlin/ai/closepaw/app/ConfiguredBrainTargetResolverV40.kt'),
+              'bridge_source': sf('tools/termux-bridge/closepaw_bridge.py'),
+          }
+          Path('045-baseline-critical-hashes.json').write_text(json.dumps(critical, indent=2, sort_keys=True) + '\n')
+          print('045 BASELINE FREEZE: PASS')
+          PYFREEZE045
+
+      - name: Apply isolated 045 prerequisite sequencing patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > /tmp/045.patch <<'PATCH045'
+          diff --git a/app/build.gradle.kts b/app/build.gradle.kts
+          index d6fa6ef..e2ca8be 100644
+          --- a/app/build.gradle.kts
+          +++ b/app/build.gradle.kts
+          @@ -46,8 +46,8 @@ android {
+           
+               buildTypes {
+                   debug {
+          -    applicationIdSuffix = ".rc11c043"
+          -    versionNameSuffix = "-rc11-c043"
+          +    applicationIdSuffix = ".rc11c045"
+          +    versionNameSuffix = "-rc11-c045"
+           
+               val evalSsl = project.findProperty("insecureSslForEval")?.toString()?.toBoolean() ?: false
+               buildConfigField("boolean", "INSECURE_SSL_FOR_EVAL", evalSsl.toString())
+          diff --git a/app/src/main/kotlin/ai/closepaw/app/GoalAppPrerequisiteV45.kt b/app/src/main/kotlin/ai/closepaw/app/GoalAppPrerequisiteV45.kt
+          new file mode 100644
+          index 0000000..7b3d196
+          --- /dev/null
+          +++ b/app/src/main/kotlin/ai/closepaw/app/GoalAppPrerequisiteV45.kt
+          @@ -0,0 +1,103 @@
+          +package ai.closepaw.app
+          +
+          +import ai.closepaw.platform.AppInfo
+          +import java.text.Normalizer
+          +import java.util.Locale
+          +
+          +/**
+          + * Conservative task-local app-scope gate for deterministic in-app navigation.
+          + *
+          + * Deterministic navigation is authorized only when the user's goal contains one uniquely-resolved
+          + * affirmative app-open prerequisite AND a fresh foreground observation proves that exact package
+          + * is active. Tasks without such an explicit app boundary stay on the normal Primary/External path
+          + * rather than allowing a blind scan of whichever app happens to be foreground.
+          + *
+          + * A visible IME/keyboard also blocks deterministic navigation for that turn. This prevents the
+          + * bounded scanner from acting through transient input/clipboard UI; the normal reasoning route can
+          + * first restore a stable app surface.
+          + */
+          +internal object GoalAppPrerequisiteV45 {
+          +    internal sealed interface Resolution {
+          +        data object None : Resolution
+          +        data class Unique(val packageName: String, val label: String) : Resolution
+          +        data object Unresolved : Resolution
+          +    }
+          +
+          +    fun resolve(goal: String, installedApps: List<AppInfo>): Resolution {
+          +        if (goal.isBlank()) return Resolution.None
+          +        val sentences = goal.split(Regex("[\\n.!?؟]+"))
+          +            .map(::normalize)
+          +            .filter { it.isNotBlank() }
+          +
+          +        val affirmativeOpenSentences = sentences.filter { sentence ->
+          +            val affirmative = OPEN_VERBS.any { containsPhrase(sentence, it) }
+          +            val negative = NEGATIVE_OPEN_PHRASES.any { containsPhrase(sentence, it) }
+          +            affirmative && !negative
+          +        }
+          +        if (affirmativeOpenSentences.isEmpty()) return Resolution.None
+          +
+          +        val matches = installedApps.filter { app ->
+          +            val label = normalize(app.label)
+          +            val pkg = normalize(app.packageName)
+          +            if (label.length < 2 && pkg.length < 2) return@filter false
+          +            affirmativeOpenSentences.any { sentence ->
+          +                (label.isNotBlank() && containsPhrase(sentence, label)) ||
+          +                    (pkg.isNotBlank() && containsPhrase(sentence, pkg))
+          +            }
+          +        }.distinctBy { it.packageName }
+          +
+          +        return when (matches.size) {
+          +            1 -> matches.single().let { Resolution.Unique(it.packageName, it.label) }
+          +            else -> Resolution.Unresolved
+          +        }
+          +    }
+          +
+          +    fun allowsDeterministic(
+          +        resolution: Resolution,
+          +        currentPackage: String?,
+          +        keyboardVisible: Boolean,
+          +    ): Boolean {
+          +        if (keyboardVisible) return false
+          +        return when (resolution) {
+          +            Resolution.None -> false
+          +            is Resolution.Unique -> currentPackage == resolution.packageName
+          +            Resolution.Unresolved -> false
+          +        }
+          +    }
+          +
+          +    fun requiredPackage(resolution: Resolution): String? =
+          +        (resolution as? Resolution.Unique)?.packageName
+          +
+          +    fun historyLabel(resolution: Resolution): String = when (resolution) {
+          +        Resolution.None -> "no_explicit_app_scope"
+          +        is Resolution.Unique -> resolution.packageName
+          +        Resolution.Unresolved -> "unresolved_explicit_open"
+          +    }
+          +
+          +    private fun normalize(value: String): String {
+          +        val deaccented = Normalizer.normalize(value, Normalizer.Form.NFKD)
+          +            .replace(Regex("\\p{M}+"), "")
+          +            .lowercase(Locale.ROOT)
+          +            .replace('ي', 'ی')
+          +            .replace('ك', 'ک')
+          +        return deaccented
+          +            .replace(Regex("[^\\p{L}\\p{N}._-]+"), " ")
+          +            .replace(Regex("\\s+"), " ")
+          +            .trim()
+          +    }
+          +
+          +    private fun containsPhrase(haystack: String, needle: String): Boolean {
+          +        if (needle.isBlank()) return false
+          +        if (haystack == needle) return true
+          +        return (" $haystack ").contains(" $needle ")
+          +    }
+          +
+          +    private val OPEN_VERBS = listOf(
+          +        "open", "launch", "start", "باز کن", "بازش کن",
+          +    ).map(::normalize)
+          +
+          +    private val NEGATIVE_OPEN_PHRASES = listOf(
+          +        "do not open", "dont open", "don't open", "never open",
+          +        "باز نکن", "بازش نکن",
+          +    ).map(::normalize)
+          +}
+          diff --git a/app/src/main/kotlin/ai/closepaw/app/HybridAgentEngine.kt b/app/src/main/kotlin/ai/closepaw/app/HybridAgentEngine.kt
+          index 961da73..37a3f24 100644
+          --- a/app/src/main/kotlin/ai/closepaw/app/HybridAgentEngine.kt
+          +++ b/app/src/main/kotlin/ai/closepaw/app/HybridAgentEngine.kt
+          @@ -438,6 +438,8 @@ internal class HybridAgentEngine(private val service: AgentService) {
+                       val brainStateConsults = mutableMapOf<String, Int>()
+                       val primaryStateConsults = mutableMapOf<String, Int>()
+                       val deterministicScansV43 = mutableMapOf<String, DeterministicUiNavigatorV43.ScanProgress>()
+          +            val installedAppsForTaskV45 = runCatching { platform.getInstalledApps() }.getOrDefault(emptyList())
+          +            val appPrerequisiteV45 = GoalAppPrerequisiteV45.resolve(task.goal, installedAppsForTaskV45)
+                       var deterministicActionCountV43 = 0
+                       var pendingDeterministicDecisionV43: DeterministicUiNavigatorV43.Decision? = null
+                       var pendingDeterministicDirectionV43: DeterministicUiNavigatorV43.Direction? = null
+          @@ -659,7 +661,27 @@ internal class HybridAgentEngine(private val service: AgentService) {
+                                   var deterministicEscalationV43: String? = null
+                                   pendingDeterministicDecisionV43 = null
+                                   pendingDeterministicDirectionV43 = null
+          -                        if (targetChat == null && deterministicActionCountV43 < MAX_DETERMINISTIC_NAV_ACTIONS_V43) {
+          +                        // V45 conservative prerequisite/package/IME gate. V43 may only scan/click
+          +                        // after one explicit app-open prerequisite has been uniquely resolved and
+          +                        // the same fresh observation proves that exact package is foreground.
+          +                        // A visible keyboard/IME also blocks deterministic navigation for this turn.
+          +                        val deterministicScopeAllowedV45 = GoalAppPrerequisiteV45.allowsDeterministic(
+          +                            resolution = appPrerequisiteV45,
+          +                            currentPackage = currentPackage,
+          +                            keyboardVisible = ui.keyboardVisible,
+          +                        )
+          +                        if (!deterministicScopeAllowedV45) {
+          +                            deterministicScansV43.clear()
+          +                            history +=
+          +                                "DETERMINISTIC_V45|SCOPE_WAIT|required=" +
+          +                                    GoalAppPrerequisiteV45.historyLabel(appPrerequisiteV45) +
+          +                                    "|current=" + currentPackage.orEmpty() +
+          +                                    "|keyboard=" + ui.keyboardVisible
+          +                        }
+          +
+          +                        if (targetChat == null && deterministicScopeAllowedV45 &&
+          +                            deterministicActionCountV43 < MAX_DETERMINISTIC_NAV_ACTIONS_V43
+          +                        ) {
+                                       val deterministicDecision = DeterministicUiNavigatorV43.decide(
+                                           goal = task.goal,
+                                           nodes = deterministicNavigatorNodesV43(ui),
+          @@ -719,7 +741,9 @@ internal class HybridAgentEngine(private val service: AgentService) {
+                                           }
+                                           DeterministicUiNavigatorV43.Decision.None -> Unit
+                                       }
+          -                        } else if (targetChat == null && deterministicActionCountV43 >= MAX_DETERMINISTIC_NAV_ACTIONS_V43) {
+          +                        } else if (targetChat == null && deterministicScopeAllowedV45 &&
+          +                            deterministicActionCountV43 >= MAX_DETERMINISTIC_NAV_ACTIONS_V43
+          +                        ) {
+                                       deterministicEscalationV43 = "deterministic navigation action budget exhausted"
+                                       history += "DETERMINISTIC_V43|ACTION_BUDGET_EXHAUSTED"
+                                   }
+          diff --git a/app/src/main/res/values/strings.xml b/app/src/main/res/values/strings.xml
+          index 83e9321..5dcf066 100644
+          --- a/app/src/main/res/values/strings.xml
+          +++ b/app/src/main/res/values/strings.xml
+          @@ -1,5 +1,5 @@
+           <?xml version="1.0" encoding="utf-8"?>
+           <resources>
+          -    <string name="app_name">ClosePaw RC11 043</string>
+          +    <string name="app_name">ClosePaw RC11 045</string>
+               <string name="accessibility_service_description">ClosePaw acts as an on-device automation agent. With your permission, it reads on-screen elements and performs taps, swipes, and text input only when you start a task. It does not run in the background or monitor other apps.</string>
+           </resources>
+          diff --git a/app/src/test/kotlin/ai/closepaw/app/GoalAppPrerequisiteV45Test.kt b/app/src/test/kotlin/ai/closepaw/app/GoalAppPrerequisiteV45Test.kt
+          new file mode 100644
+          index 0000000..cd51b5a
+          --- /dev/null
+          +++ b/app/src/test/kotlin/ai/closepaw/app/GoalAppPrerequisiteV45Test.kt
+          @@ -0,0 +1,58 @@
+          +package ai.closepaw.app
+          +
+          +import ai.closepaw.platform.AppInfo
+          +import org.junit.Assert.assertEquals
+          +import org.junit.Assert.assertFalse
+          +import org.junit.Assert.assertTrue
+          +import org.junit.Test
+          +
+          +class GoalAppPrerequisiteV45Test {
+          +    private val apps = listOf(
+          +        AppInfo("com.android.settings", "Settings", true),
+          +        AppInfo("com.openai.chatgpt", "ChatGPT", false),
+          +    )
+          +
+          +    @Test
+          +    fun `open Settings gates deterministic navigation until exact foreground proof`() {
+          +        val r = GoalAppPrerequisiteV45.resolve(
+          +            "Open Settings.\nGo to Apps.\nStop when Apps settings page is visible.", apps,
+          +        )
+          +        assertEquals("com.android.settings", GoalAppPrerequisiteV45.requiredPackage(r))
+          +        assertFalse(GoalAppPrerequisiteV45.allowsDeterministic(r, "ai.closepaw.rc11c045", false))
+          +        assertFalse(GoalAppPrerequisiteV45.allowsDeterministic(r, "com.samsung.android.honeyboard", false))
+          +        assertTrue(GoalAppPrerequisiteV45.allowsDeterministic(r, "com.android.settings", false))
+          +    }
+          +
+          +    @Test
+          +    fun `keyboard blocks deterministic navigation even inside correct app`() {
+          +        val r = GoalAppPrerequisiteV45.resolve("Open Settings. Go to Apps.", apps)
+          +        assertFalse(GoalAppPrerequisiteV45.allowsDeterministic(r, "com.android.settings", true))
+          +    }
+          +
+          +    @Test
+          +    fun `goal without explicit app-open boundary never authorizes blind deterministic scan`() {
+          +        val r = GoalAppPrerequisiteV45.resolve(
+          +            "Scroll until About phone is visible. Do not open About phone.", apps,
+          +        )
+          +        assertTrue(r is GoalAppPrerequisiteV45.Resolution.None)
+          +        assertFalse(GoalAppPrerequisiteV45.allowsDeterministic(r, "ai.closepaw.rc11c045", false))
+          +        assertFalse(GoalAppPrerequisiteV45.allowsDeterministic(r, "com.android.settings", false))
+          +    }
+          +
+          +    @Test
+          +    fun `original unknown-apps goal binds Settings`() {
+          +        val r = GoalAppPrerequisiteV45.resolve(
+          +            "I need to find which apps are allowed to install unknown apps.\n" +
+          +                "Open the correct Android Settings screen.\n" +
+          +                "Do not use Settings search.\nDo not change any setting.", apps,
+          +        )
+          +        assertEquals("com.android.settings", GoalAppPrerequisiteV45.requiredPackage(r))
+          +    }
+          +
+          +    @Test
+          +    fun `unresolvable explicit app-open does not authorize scan`() {
+          +        val r = GoalAppPrerequisiteV45.resolve("Open MysteryApp. Go to Display.", apps)
+          +        assertTrue(r is GoalAppPrerequisiteV45.Resolution.Unresolved)
+          +        assertFalse(GoalAppPrerequisiteV45.allowsDeterministic(r, "ai.closepaw.rc11c045", false))
+          +    }
+          +}
+          diff --git a/app/src/test/kotlin/ai/closepaw/app/V45SequencingContractTest.kt b/app/src/test/kotlin/ai/closepaw/app/V45SequencingContractTest.kt
+          new file mode 100644
+          index 0000000..06b6809
+          --- /dev/null
+          +++ b/app/src/test/kotlin/ai/closepaw/app/V45SequencingContractTest.kt
+          @@ -0,0 +1,61 @@
+          +package ai.closepaw.app
+          +
+          +import ai.closepaw.platform.AppInfo
+          +import org.junit.Assert.assertEquals
+          +import org.junit.Assert.assertFalse
+          +import org.junit.Assert.assertTrue
+          +import org.junit.Test
+          +
+          +class V45SequencingContractTest {
+          +    private val apps = listOf(
+          +        AppInfo("com.android.settings", "Settings", true),
+          +        AppInfo("com.openai.chatgpt", "ChatGPT", false),
+          +    )
+          +    private val goal = "Open Settings.\nGo to Apps.\nStop when Apps settings page is visible."
+          +
+          +    @Test
+          +    fun `wrong foreground blocks navigator while Primary grammar forces exact prerequisite app`() {
+          +        val scope = GoalAppPrerequisiteV45.resolve(goal, apps)
+          +        assertFalse(GoalAppPrerequisiteV45.allowsDeterministic(scope, "ai.closepaw.rc11c045", false))
+          +        val spec = PrimaryLocalGrammarV43.build(
+          +            "R45", request(goal, "ai.closepaw.rc11c045", "[1] TextView t=\"What can I help you with?\" C"), apps,
+          +        )
+          +        assertEquals("OPEN_APP|com.android.settings", spec.forcedAction)
+          +        assertEquals("forced_explicit_open_app", spec.mode)
+          +    }
+          +
+          +    @Test
+          +    fun `exact Settings foreground unlocks existing V43 exact grounding`() {
+          +        val scope = GoalAppPrerequisiteV45.resolve(goal, apps)
+          +        assertTrue(GoalAppPrerequisiteV45.allowsDeterministic(scope, "com.android.settings", false))
+          +        val decision = DeterministicUiNavigatorV43.decide(
+          +            goal,
+          +            listOf(
+          +                node(1, "Settings", clickable = false, top = 40, bottom = 130),
+          +                node(7, "Apps", clickable = true, top = 700, bottom = 820),
+          +            ),
+          +        )
+          +        assertTrue(decision is DeterministicUiNavigatorV43.Decision.Click)
+          +        assertEquals("Apps", (decision as DeterministicUiNavigatorV43.Decision.Click).target)
+          +    }
+          +
+          +    @Test
+          +    fun `keyboard preserves safe fallback instead of deterministic click`() {
+          +        val scope = GoalAppPrerequisiteV45.resolve(goal, apps)
+          +        assertFalse(GoalAppPrerequisiteV45.allowsDeterministic(scope, "com.android.settings", true))
+          +    }
+          +
+          +    private fun request(goal: String, currentApp: String, nodes: String): String =
+          +        listOf(
+          +            "CP_PRIMARY_V29", "TASK=T", "REQ=unused", "TURN=1",
+          +            "GOAL_BEGIN", goal, "GOAL_END", "CURRENT_APP: $currentApp",
+          +            "NODES_BEGIN", nodes, "NODES_END",
+          +        ).joinToString("\n")
+          +
+          +    private fun node(index: Int, text: String, clickable: Boolean, top: Int, bottom: Int) =
+          +        DeterministicUiNavigatorV43.NodeEvidence(
+          +            index = index, text = text, description = "", hint = "", resourceId = "",
+          +            className = "android.widget.TextView", clickable = clickable, scrollable = false,
+          +            enabled = true, left = 20, top = top, right = 1000, bottom = bottom,
+          +        )
+          +}
+          PATCH045
+          test "$(sha256sum /tmp/045.patch | awk '{print $1}')" = "1dc8be4b28e45b602ac2bd61dbd775a5f973a540879adb3c316fef95e7eea5ff"
+          git apply --check /tmp/045.patch
+          git apply /tmp/045.patch
+          echo '045 exact patch SHA256 + git apply check: PASS' >> 045-verification-report.txt
+
+      - name: 045 source isolation and frozen correctness gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PYISO045'
+          from pathlib import Path
+          import hashlib, json
+          def sha(data: bytes): return hashlib.sha256(data).hexdigest()
+          def sf(path): return sha(Path(path).read_bytes())
+          baseline = json.loads(Path('045-baseline-source-manifest.json').read_text())
+          current = {}
+          for p in sorted(Path('app').rglob('*')):
+              if not p.is_file(): continue
+              rel = p.as_posix()
+              if rel.startswith('app/build/'): continue
+              current[rel] = sf(rel)
+          changed = {p for p in baseline.keys() & current.keys() if baseline[p] != current[p]}
+          added = set(current) - set(baseline)
+          removed = set(baseline) - set(current)
+          allowed_changed = {
+              'app/build.gradle.kts',
+              'app/src/main/res/values/strings.xml',
+              'app/src/main/kotlin/ai/closepaw/app/HybridAgentEngine.kt',
+          }
+          allowed_added = {
+              'app/src/main/kotlin/ai/closepaw/app/GoalAppPrerequisiteV45.kt',
+              'app/src/test/kotlin/ai/closepaw/app/GoalAppPrerequisiteV45Test.kt',
+              'app/src/test/kotlin/ai/closepaw/app/V45SequencingContractTest.kt',
+          }
+          if changed != allowed_changed:
+              raise SystemExit(f'045 unexpected changed files: {sorted(changed)} expected {sorted(allowed_changed)}')
+          if added != allowed_added:
+              raise SystemExit(f'045 unexpected added files: {sorted(added)} expected {sorted(allowed_added)}')
+          if removed:
+              raise SystemExit(f'045 unexpectedly removed files: {sorted(removed)}')
+
+          expected_post = {
+              'app/build.gradle.kts': 'bbda0ec1de77b7ff68e1d17543f3de2561e57fd6bd25c2f6bdf291c55a1d07dc',
+              'app/src/main/res/values/strings.xml': '601f1b3eb2b75e4f91da3ec12111661be5175c9b441348eed0e4ac09726a1056',
+              'app/src/main/kotlin/ai/closepaw/app/HybridAgentEngine.kt': '65f59cc09b3559362c2096b86a3b836716b45c05b209665fec2e77ae39ddd31e',
+              'app/src/main/kotlin/ai/closepaw/app/GoalAppPrerequisiteV45.kt': 'b1be3b8953bc0620a921d6e639e68ee1ae4a61952d20a52943da148a3edbee37',
+              'app/src/test/kotlin/ai/closepaw/app/GoalAppPrerequisiteV45Test.kt': '85aaae0bac7ffdc99ac08e561b7d4a6f4744d4a2fcb34557021cefa192faf629',
+              'app/src/test/kotlin/ai/closepaw/app/V45SequencingContractTest.kt': '4f83c621d3daa65e90530b9b27772d5da0510090cbc8680b6d36540e61184f73',
+          }
+          for rel, wanted in expected_post.items():
+              got = sf(rel)
+              if got != wanted: raise SystemExit(f'045 exact post-patch hash mismatch {rel}: {got} != {wanted}')
+
+          frozen = json.loads(Path('045-baseline-critical-hashes.json').read_text())
+          engine = Path('app/src/main/kotlin/ai/closepaw/app/HybridAgentEngine.kt').read_text(encoding='utf-8')
+          def region(a, b):
+              s = engine.find(a)
+              if s < 0: raise SystemExit('045 critical start missing after patch: ' + a)
+              e = engine.find(b, s)
+              if e < 0: raise SystemExit('045 critical end missing after patch: ' + b)
+              return engine[s:e].encode()
+          now = {
+              'rc8_restore': sha(region('// RC8: only strong identity evidence may authorize a restore-side navigation.','private suspend fun restoreSidebarShapeIfNeeded(')),
+              'durable_transaction': sha(region('private suspend fun executeActionTransactionV9(','private fun receiptHistoryLineV9(')),
+              'v33_primary_plan_validation': sha(region('private suspend fun requestPrimaryPlanV9(','private fun buildBrainRequest(')),
+              'brain_request_builder': sha(region('private fun buildBrainRequest(','private fun buildRepairRequest(')),
+              'brain_excursion_capture': sha(region('private suspend fun captureBrainExcursionFrame(','private suspend fun restoreAfterBrainExcursion(')),
+              'brain_restore': sha(region('private suspend fun restoreAfterBrainExcursion(','private fun configuredBrainV9(): ChatBrainSettings')),
+              'configured_brain_route': sha(region('private fun configuredBrainV9(): ChatBrainSettings','private suspend fun sendConfiguredBrainMessageV9(')),
+              'brain_send': sha(region('private suspend fun sendConfiguredBrainMessageV9(','private suspend fun waitForMatchingBrainResponseV9(')),
+              'navigator_v43_file': sf('app/src/main/kotlin/ai/closepaw/app/DeterministicUiNavigatorV43.kt'),
+              'primary_grammar_v43_file': sf('app/src/main/kotlin/ai/closepaw/app/PrimaryLocalGrammarV43.kt'),
+              'goal_postcondition_v41_file': sf('app/src/main/kotlin/ai/closepaw/app/GoalPostconditionV41.kt'),
+              'primary_grammar_v41_file': sf('app/src/main/kotlin/ai/closepaw/app/PrimaryLocalGrammarV41.kt'),
+              'hybrid_protocol_file': sf('app/src/main/kotlin/ai/closepaw/app/HybridAgentProtocol.kt'),
+              'rc11_policy_file': sf('app/src/main/kotlin/ai/closepaw/app/RC11CorrectnessPolicy.kt'),
+              'http_transport_v32_file': sf('app/src/main/kotlin/ai/closepaw/app/PrimaryLocalHttpTransportV32.kt'),
+              'v37_grammar_file': sf('app/src/main/kotlin/ai/closepaw/app/PrimaryLocalGrammarV37.kt'),
+              'v37_trace_file': sf('app/src/main/kotlin/ai/closepaw/app/HybridTraceEventsV37.kt'),
+              'brain_settings_store_file': sf('app/src/main/kotlin/ai/closepaw/app/ChatBrainSettingsStore.kt'),
+              'brain_target_resolver_v40_file': sf('app/src/main/kotlin/ai/closepaw/app/ConfiguredBrainTargetResolverV40.kt'),
+              'bridge_source': sf('tools/termux-bridge/closepaw_bridge.py'),
+          }
+          if now != frozen:
+              bad = [k for k in frozen if now.get(k) != frozen[k]]
+              raise SystemExit('045 modified frozen correctness regions/files: ' + ', '.join(bad))
+          Path('045-postpatch-source-manifest.json').write_text(json.dumps(current, indent=2, sort_keys=True) + '\n')
+          with Path('045-verification-report.txt').open('a') as f:
+              f.write('Source isolation exact allowlist + exact postpatch hashes: PASS\n')
+              f.write('V43 navigator/grammar + RC8/durable/V33/V32/V37/V41/Brain/trace/bridge frozen: PASS\n')
+          print('045 SOURCE ISOLATION + FROZEN CORRECTNESS: PASS')
+          PYISO045
+
+      - name: 045 prerequisite sequencing architecture regression audit
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PYAUDIT045'
+          from pathlib import Path
+          engine = Path('app/src/main/kotlin/ai/closepaw/app/HybridAgentEngine.kt').read_text(encoding='utf-8')
+          gate = Path('app/src/main/kotlin/ai/closepaw/app/GoalAppPrerequisiteV45.kt').read_text(encoding='utf-8')
+          nav = Path('app/src/main/kotlin/ai/closepaw/app/DeterministicUiNavigatorV43.kt').read_text(encoding='utf-8')
+          grammar = Path('app/src/main/kotlin/ai/closepaw/app/PrimaryLocalGrammarV43.kt').read_text(encoding='utf-8')
+          gradle = Path('app/build.gradle.kts').read_text(encoding='utf-8')
+          strings = Path('app/src/main/res/values/strings.xml').read_text(encoding='utf-8')
+
+          for token in [
+              'installedAppsForTaskV45 = runCatching { platform.getInstalledApps() }',
+              'appPrerequisiteV45 = GoalAppPrerequisiteV45.resolve(task.goal, installedAppsForTaskV45)',
+              'GoalAppPrerequisiteV45.allowsDeterministic(',
+              'currentPackage = currentPackage',
+              'keyboardVisible = ui.keyboardVisible',
+              'DETERMINISTIC_V45|SCOPE_WAIT|required=',
+              'targetChat == null && deterministicScopeAllowedV45',
+              'DeterministicUiNavigatorV43.decide(',
+              'requestPrimaryPlanV9(task.id, primaryRequestId, primaryRequest)',
+          ]:
+              if token not in engine: raise SystemExit('045 engine scope contract missing: ' + token)
+
+          p_current = engine.find('val currentPackage = observedPackage(platform)')
+          p_gate = engine.find('val deterministicScopeAllowedV45 =', p_current)
+          p_nav = engine.find('DeterministicUiNavigatorV43.decide(', p_gate)
+          p_primary = engine.find('requestPrimaryPlanV9(task.id, primaryRequestId, primaryRequest)', p_nav)
+          if min(p_current, p_gate, p_nav, p_primary) < 0 or not (p_current < p_gate < p_nav < p_primary):
+              raise SystemExit('045 ordering must be fresh foreground -> conservative scope gate -> navigator -> Primary')
+
+          mismatch_start = engine.find('if (!deterministicScopeAllowedV45) {', p_gate)
+          mismatch_end = engine.find('if (targetChat == null && deterministicScopeAllowedV45', mismatch_start)
+          if mismatch_start < 0 or mismatch_end < 0: raise SystemExit('045 mismatch branch not found')
+          mismatch = engine[mismatch_start:mismatch_end]
+          for forbidden in ['selectedPlan =', 'platform.performAction', 'HybridAction.Scroll(', 'HybridAction.Click']:
+              if forbidden in mismatch: raise SystemExit('045 blocked scope branch can act: ' + forbidden)
+          if 'deterministicEscalationV43 =' in mismatch:
+              raise SystemExit('045 blocked scope branch terminal-escalates instead of deferring to Primary')
+
+          for token in [
+              'Resolution.None -> false',
+              'is Resolution.Unique -> currentPackage == resolution.packageName',
+              'Resolution.Unresolved -> false',
+              'if (keyboardVisible) return false',
+              'NEGATIVE_OPEN_PHRASES',
+          ]:
+              if token not in gate: raise SystemExit('045 conservative gate contract missing: ' + token)
+
+          # V43 behavior is intentionally frozen; scope gating is the only runtime navigation change.
+          for token in ['MAX_SWIPES_PER_DIRECTION = 8', 'resolveDispatchTarget(', 'isDestinationHeader(']:
+              if token not in nav: raise SystemExit('045 frozen V43 navigator contract missing: ' + token)
+          for token in ['forced_explicit_open_app', 'goal_grounded_fallback', 'explicitOpenTarget(']:
+              if token not in grammar: raise SystemExit('045 frozen V43 grammar contract missing: ' + token)
+
+          if 'applicationIdSuffix = ".rc11c045"' not in gradle: raise SystemExit('045 application id missing')
+          if 'versionNameSuffix = "-rc11-c045"' not in gradle: raise SystemExit('045 version suffix missing')
+          if '<string name="app_name">ClosePaw RC11 045</string>' not in strings: raise SystemExit('045 app label missing')
+          if 'take(600)' in engine: raise SystemExit('045 reintroduced user-goal truncation')
+
+          with Path('045-verification-report.txt').open('a') as f:
+              f.write('Exact app prerequisite + fresh foreground proof required before deterministic navigation: PASS\n')
+              f.write('No explicit app scope and visible keyboard both fail closed to Primary/External path: PASS\n')
+              f.write('V43 exact grounding/search and Primary grammar preserved byte-for-byte: PASS\n')
+          print('045 CONSERVATIVE SCOPE/SEQUENCING ARCHITECTURE AUDIT: PASS')
+          PYAUDIT045
+
+      - name: 045 clean Kotlin compile gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./gradlew clean :app:compileDebugKotlin --stacktrace --no-daemon --no-configuration-cache
+          echo '045 clean Kotlin compile: PASS' >> 045-verification-report.txt
+
+      - name: 045 targeted prerequisite navigation goal Brain V43 V37 V33 RC11 and bridge tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./gradlew :app:testDebugUnitTest \
+            --tests ai.closepaw.app.GoalAppPrerequisiteV45Test \
+            --tests ai.closepaw.app.V45SequencingContractTest \
+            --tests ai.closepaw.app.DeterministicUiNavigatorV43Test \
+            --tests ai.closepaw.app.PrimaryLocalGrammarV43Test \
+            --tests ai.closepaw.app.GoalPostconditionV41Test \
+            --tests ai.closepaw.app.PrimaryLocalGrammarV41Test \
+            --tests ai.closepaw.app.ConfiguredBrainTargetResolverV40Test \
+            --tests ai.closepaw.app.LocalGoalCompletionV40Test \
+            --tests ai.closepaw.app.PrimaryLocalGrammarV37Test \
+            --tests ai.closepaw.app.HybridTraceEventsV37Test \
+            --tests ai.closepaw.app.PrimaryLocalGrammarV36Test \
+            --tests ai.closepaw.app.PrimaryFormatComplianceV33Test \
+            --tests ai.closepaw.app.PrimaryLocalHttpTransportV32Test \
+            --tests ai.closepaw.app.RC11CorrectnessPolicyTest \
+            --tests ai.closepaw.termux.ClosePawBridgeResourceTest \
+            --stacktrace --no-daemon --no-configuration-cache
+          echo '045 targeted prerequisite/nav/goal/Brain/V43/V37/V33/RC11/bridge tests: PASS' >> 045-verification-report.txt
+
+      - name: 045 full unit tests and clean rebuild
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./gradlew :app:testDebugUnitTest :app:assembleDebug --stacktrace --no-daemon --no-configuration-cache
+          echo '045 full unit tests: PASS' >> 045-verification-report.txt
+          echo '045 debug APK rebuild: PASS' >> 045-verification-report.txt
+
+      - name: 045 APK identity integrity native-runtime and signature gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          mapfile -t APKS < <(find app/build/outputs/apk/debug -maxdepth 1 -type f -name '*.apk' -print)
+          if [ "${#APKS[@]}" -ne 1 ]; then echo "Expected exactly one debug APK, found ${#APKS[@]}" >&2; exit 1; fi
+          APK="${APKS[0]}"
+          unzip -tq "$APK" >/dev/null
+          SIZE="$(stat -c %s "$APK")"
+          if [ "$SIZE" -lt 50000000 ]; then echo "APK unexpectedly small: $SIZE bytes" >&2; exit 1; fi
+          CONTENTS="$(zipinfo -1 "$APK")"
+          for ENTRY in AndroidManifest.xml classes.dex lib/arm64-v8a/libllama.so lib/arm64-v8a/libggml.so lib/arm64-v8a/libinference_engine.so lib/arm64-v8a/libinference_engine_jni.so lib/arm64-v8a/libinference_engine_llamacpp_backend.so; do
+            if ! grep -Fxq "$ENTRY" <<<"$CONTENTS"; then echo "Required APK entry missing: $ENTRY" >&2; exit 1; fi
+          done
+          AAPT="$(find "$ANDROID_HOME/build-tools" -type f -name aapt -print | sort -V | tail -n 1)"
+          APKSIGNER="$(find "$ANDROID_HOME/build-tools" -type f -name apksigner -print | sort -V | tail -n 1)"
+          test -x "$AAPT"; test -x "$APKSIGNER"
+          BADGING="$($AAPT dump badging "$APK")"
+          grep -Fq "package: name='ai.closepaw.rc11c045'" <<<"$BADGING" || { echo '045 APK package identity mismatch' >&2; exit 1; }
+          grep -Fq "application-label:'ClosePaw RC11 045'" <<<"$BADGING" || { echo '045 APK label mismatch' >&2; exit 1; }
+          grep -Fq "sdkVersion:'31'" <<<"$BADGING" || { echo '045 APK minSdk mismatch' >&2; exit 1; }
+          grep -Fq "targetSdkVersion:'36'" <<<"$BADGING" || { echo '045 APK targetSdk mismatch' >&2; exit 1; }
+          "$APKSIGNER" verify --verbose "$APK" > 045-apksigner-verification.txt
+          APK_SHA="$(sha256sum "$APK" | awk '{print $1}')"
+          {
+            echo "APK path: $APK"
+            echo "APK size bytes: $SIZE"
+            echo "APK SHA256: $APK_SHA"
+            echo 'APK ZIP integrity: PASS'
+            echo 'APK package identity ai.closepaw.rc11c045: PASS'
+            echo 'APK app label ClosePaw RC11 045: PASS'
+            echo 'minSdk 31 / targetSdk 36: PASS'
+            echo 'arm64 local-inference runtime libraries: PASS'
+            echo 'APK signature verification: PASS'
+          } >> 045-verification-report.txt
+          echo "045 APK FULL INTEGRITY GATE: PASS | size=$SIZE | sha256=$APK_SHA"
+
+      - name: Prepare 045 full verified source snapshot
+        if: success()
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf 045-full-source
+          mkdir -p 045-full-source
+          rsync -a --exclude='.git/' --exclude='.github/' --exclude='.gradle/' --exclude='app/build/' --exclude='045-full-source/' ./ 045-full-source/
+          test -f 045-full-source/app/src/main/kotlin/ai/closepaw/app/HybridAgentEngine.kt
+          test -f 045-full-source/app/src/main/kotlin/ai/closepaw/app/GoalAppPrerequisiteV45.kt
+          test -f 045-full-source/app/src/main/kotlin/ai/closepaw/app/DeterministicUiNavigatorV43.kt
+          test -f 045-full-source/app/src/main/kotlin/ai/closepaw/app/PrimaryLocalGrammarV43.kt
+          test -f 045-full-source/app/src/main/kotlin/ai/closepaw/app/GoalPostconditionV41.kt
+          test -f 045-full-source/app/src/main/kotlin/ai/closepaw/app/ConfiguredBrainTargetResolverV40.kt
+          test -f 045-full-source/app/src/main/kotlin/ai/closepaw/app/PrimaryLocalGrammarV37.kt
+          test -f 045-full-source/tools/termux-bridge/closepaw_bridge.py
+          test "$(sha256sum 045-full-source/tools/termux-bridge/closepaw_bridge.py | awk '{print $1}')" = "707906f17acde07c0a86cb45c3c76b7a554f3ffcc39acc17f76f32e376749b2c"
+
+      - name: Upload 045 verification proof
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: 045-ClosePaw-RC11-verification-proof
+          if-no-files-found: warn
+          path: |
+            045-verification-report.txt
+            045-baseline-source-manifest.json
+            045-postpatch-source-manifest.json
+            045-baseline-critical-hashes.json
+            045-apksigner-verification.txt
+
+      - name: Upload 045 full verified source
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: 045-ClosePaw-RC11-verified-full-source
+          if-no-files-found: error
+          path: 045-full-source/
+
+      - name: Upload 045 APK
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: 045-ClosePaw-RC11-APK
+          if-no-files-found: error
+          path: app/build/outputs/apk/debug/app-debug.apk
+
+      - name: Upload 045 failure sources
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: 045-ClosePaw-RC11-failure-sources
+          if-no-files-found: warn
+          path: |
+            app/src/main/kotlin/ai/closepaw/app/HybridAgentEngine.kt
+            app/src/main/kotlin/ai/closepaw/app/GoalAppPrerequisiteV45.kt
+            app/src/main/kotlin/ai/closepaw/app/DeterministicUiNavigatorV43.kt
+            app/src/main/kotlin/ai/closepaw/app/PrimaryLocalGrammarV43.kt
+            app/src/main/kotlin/ai/closepaw/app/GoalPostconditionV41.kt
+            app/src/main/kotlin/ai/closepaw/app/ConfiguredBrainTargetResolverV40.kt
+            app/src/main/kotlin/ai/closepaw/app/PrimaryLocalGrammarV37.kt
+            app/src/main/kotlin/ai/closepaw/app/HybridTraceEventsV37.kt
+            app/src/test/kotlin/ai/closepaw/app/GoalAppPrerequisiteV45Test.kt
+            app/src/test/kotlin/ai/closepaw/app/V45SequencingContractTest.kt
+            app/src/test/kotlin/ai/closepaw/app/DeterministicUiNavigatorV43Test.kt
+            app/src/test/kotlin/ai/closepaw/app/PrimaryLocalGrammarV43Test.kt
+            045-verification-report.txt
