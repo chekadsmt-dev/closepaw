@@ -1,0 +1,544 @@
+name: 049 - ClosePaw RC11 Receipt Package Continuity (No Navigation Rewrite)
+
+'on':
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Setup Java 17
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Restore exact verified 048 Source of Truth by manifest identity
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          EXPECTED_NAME='048-ClosePaw-RC11-verified-full-source'
+          EXPECTED_MANIFEST_SHA='bf01d5507e646811f2b5aad29d9b6ce78156a234b599511fddadb7f465768580'
+          rm -rf /tmp/048-source /tmp/048-candidate /tmp/048-artifacts.json
+          mkdir -p /tmp/048-source
+
+          curl -fsSL \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H 'Accept: application/vnd.github+json' \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts?name=${EXPECTED_NAME}&per_page=100" \
+            -o /tmp/048-artifacts.json
+
+          python3 - <<'PYIDS' > /tmp/048-artifact-ids.txt
+          import json
+          d=json.load(open('/tmp/048-artifacts.json'))
+          rows=[a for a in d.get('artifacts',[]) if not a.get('expired',False) and a.get('name')=='048-ClosePaw-RC11-verified-full-source']
+          rows.sort(key=lambda a:a.get('created_at',''), reverse=True)
+          for a in rows:
+              print(f"{a['id']}|{(a.get('workflow_run') or {}).get('id','')}")
+          PYIDS
+
+          FOUND=''
+          FOUND_RUN=''
+          while IFS='|' read -r ARTIFACT_ID RUN_ID; do
+            [ -n "$ARTIFACT_ID" ] || continue
+            rm -rf /tmp/048-candidate /tmp/048-candidate.zip
+            mkdir -p /tmp/048-candidate
+            curl -fsSL -L \
+              -H "Authorization: Bearer $GH_TOKEN" \
+              -H 'Accept: application/vnd.github+json' \
+              "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/${ARTIFACT_ID}/zip" \
+              -o /tmp/048-candidate.zip
+            unzip -q /tmp/048-candidate.zip -d /tmp/048-candidate
+            MANIFEST="$(find /tmp/048-candidate -type f -name '048-postpatch-source-manifest.json' -print -quit)"
+            [ -n "$MANIFEST" ] || continue
+            SHA="$(sha256sum "$MANIFEST" | awk '{print $1}')"
+            if [ "$SHA" = "$EXPECTED_MANIFEST_SHA" ]; then
+              ROOT="$(dirname "$MANIFEST")"
+              cp -a "$ROOT"/. /tmp/048-source/
+              FOUND="$ARTIFACT_ID"
+              FOUND_RUN="$RUN_ID"
+              break
+            fi
+          done < /tmp/048-artifact-ids.txt
+
+          [ -n "$FOUND" ] || { echo 'Exact verified 048 artifact not found by manifest identity' >&2; exit 1; }
+          echo "BASELINE_ARTIFACT_ID=$FOUND" >> "$GITHUB_ENV"
+          echo "BASELINE_RUN_ID=$FOUND_RUN" >> "$GITHUB_ENV"
+          echo "Exact 048 artifact id=$FOUND run=$FOUND_RUN"
+
+      - name: Verify and activate exact 048 Source of Truth
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f /tmp/048-source/app/src/main/kotlin/ai/closepaw/app/HybridAgentEngine.kt
+          test -f /tmp/048-source/app/src/main/kotlin/ai/closepaw/app/WorkSurfaceV47.kt
+          test -f /tmp/048-source/048-postpatch-source-manifest.json
+          test "$(sha256sum /tmp/048-source/048-postpatch-source-manifest.json | awk '{print $1}')" = "bf01d5507e646811f2b5aad29d9b6ce78156a234b599511fddadb7f465768580"
+
+          find . -mindepth 1 -maxdepth 1 ! -name .git ! -name .github -exec rm -rf {} +
+          cp -a /tmp/048-source/. ./
+
+          python3 - <<'PYBASE'
+          from pathlib import Path
+          import hashlib,json,os
+          def sf(p): return hashlib.sha256(Path(p).read_bytes()).hexdigest()
+          expected=json.loads(Path('048-postpatch-source-manifest.json').read_text())
+          current={}
+          for p in sorted(Path('app').rglob('*')):
+              if p.is_file() and not p.as_posix().startswith('app/build/'):
+                  current[p.as_posix()]=sf(p)
+          if current != expected:
+              missing=sorted(set(expected)-set(current))
+              added=sorted(set(current)-set(expected))
+              changed=sorted(k for k in set(expected)&set(current) if expected[k]!=current[k])
+              raise SystemExit(f'048 full-source manifest mismatch missing={missing[:10]} added={added[:10]} changed={changed[:10]}')
+          critical={
+            'app/src/main/kotlin/ai/closepaw/app/HybridAgentEngine.kt':'8c79fb52de3a52ec09ba8935012ea5293a2b241da16fe56a30ab3cc9ae813aee',
+            'app/src/main/kotlin/ai/closepaw/app/WorkSurfaceV47.kt':'683a9f6d8b5c8a676ba00bb9cda4cf954314470afae4a9b2bf1ab3862f6ea47e',
+            'app/src/main/kotlin/ai/closepaw/app/CausalDestinationV46.kt':'eed7423a080b1d8b8b8a40ac943f88a62db658c5eb12f9a638fc3974cc938e73',
+            'app/src/main/kotlin/ai/closepaw/app/BrainExcursionRecoveryV46.kt':'69a0e3bc752d3ef72c25e3814c5aa6d58f420fe3ae6c6e40f563f12f62233dd9',
+            'app/src/main/kotlin/ai/closepaw/app/ForegroundPackageV46.kt':'04aaf90450345edb7964e53aa3929fbeb99517ef2b3c96ba81e4dfa65cab8e74',
+            'app/src/main/kotlin/ai/closepaw/app/GoalPostconditionV41.kt':'42378756c3b51de1acadc0c00e4102541108436bb196c5991e111b3c1375dc53',
+            'app/src/main/kotlin/ai/closepaw/app/DeterministicUiNavigatorV43.kt':'945670dd4f8818b10933245a27298dfe0de4b9da590c54f06a9ba4657e11301f',
+            'app/src/main/kotlin/ai/closepaw/app/PrimaryLocalGrammarV43.kt':'fdfdae46f9fd865336e2f57e65c6f62684fc1b7ffd909eba1d1b49ad8937dab3',
+            'app/src/main/kotlin/ai/closepaw/app/GoalAppPrerequisiteV45.kt':'b1be3b8953bc0620a921d6e639e68ee1ae4a61952d20a52943da148a3edbee37',
+            'app/src/main/kotlin/ai/closepaw/platform/AccessibilityPlatform.kt':'d9595d75a141c5c843195878fb13c0f32ab2121cabab65903026fd3b2a189a25',
+            'app/build.gradle.kts':'86016612cbfac20020e90fe187c1228fb25f4f31025db7a0dfbbe11708874b50',
+            'app/src/main/res/values/strings.xml':'c30f6f1d905782417146bd0387998f5a48fb4741fb265766de57b8b4ee3db0b0',
+          }
+          for p,w in critical.items():
+              got=sf(p)
+              if got!=w: raise SystemExit(f'048 critical baseline mismatch {p}: {got} != {w}')
+          Path('049-verification-report.txt').write_text(
+              'ClosePaw RC11 049 verification report\n'
+              f'Base: exact verified 048 full-source artifact id={os.getenv("BASELINE_ARTIFACT_ID","")} run={os.getenv("BASELINE_RUN_ID","")} matched by 048 postpatch manifest identity.\n'
+              'Runtime evidence: 048 again reached Samsung Default apps, but terminal causal proof missed and a later Primary turn was grammar-forced to stale OPEN_APP Settings.\n'
+              'Root defect fixed here: V48 preserved the post-click snapshot but still re-read package/work-surface after the receipt; snapshot and package were therefore not from one stable observation.\n'
+              'Fix scope: use receipt.afterPackage with receipt.afterSnapshot for causal completion; persist existing work-surface failure metadata into exported diagnostics only.\n'
+              'Explicitly frozen: WorkSurfaceV47 selector semantics, V43 navigator, V45 sequencing, V46 causal alias rules/Brain recovery, V37/V43 grammar, RC11 transaction safety, RC8 restore, V32 transport, AccessibilityPlatform, exact OPEN_APP behavior.\n',
+              encoding='utf-8')
+          print('049 EXACT VERIFIED 048 BASELINE: PASS')
+          PYBASE
+
+      - name: Baseline 048 clean compile before any 049 change
+        shell: bash
+        run: |
+          set -euo pipefail
+          chmod +x ./gradlew
+          ./gradlew clean :app:compileDebugKotlin --stacktrace --no-daemon --no-configuration-cache
+          echo 'Baseline 048 clean compile: PASS' >> 049-verification-report.txt
+
+      - name: Freeze 048 protected correctness surfaces
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PYFREEZE'
+          from pathlib import Path
+          import hashlib,json
+          def h(b): return hashlib.sha256(b).hexdigest()
+          def sf(p): return h(Path(p).read_bytes())
+          base={}
+          for p in sorted(Path('app').rglob('*')):
+              if p.is_file() and not p.as_posix().startswith('app/build/'):
+                  base[p.as_posix()]=sf(p)
+          Path('049-baseline-source-manifest.json').write_text(json.dumps(base,indent=2,sort_keys=True)+'\n')
+          eng=Path('app/src/main/kotlin/ai/closepaw/app/HybridAgentEngine.kt').read_text()
+          def reg(a,b):
+              s=eng.find(a); e=eng.find(b,s)
+              if s<0 or e<0: raise SystemExit(f'protected region missing: {a} -> {b}')
+              return h(eng[s:e].encode())
+          frozen={
+            'rc8_restore':reg('// RC8: only strong identity evidence may authorize a restore-side navigation.','private suspend fun restoreSidebarShapeIfNeeded('),
+            'durable_transaction':reg('private suspend fun executeActionTransactionV9(','private fun receiptHistoryLineV9('),
+            'v33_validation':reg('private suspend fun requestPrimaryPlanV9(','private fun buildBrainRequest('),
+            'brain_restore':reg('private suspend fun restoreAfterBrainExcursion(','private fun configuredBrainV9(): ChatBrainSettings'),
+            'brain_send':reg('private suspend fun sendConfiguredBrainMessageV9(','private suspend fun waitForMatchingBrainResponseV9('),
+            'open_app_exact':reg('private suspend fun openApp(platform: AndroidPlatform, name: String): ActionOutcome {','private suspend fun clickByText('),
+            'package_surface_pre_diag':reg('private fun packageSurfaceVisibleV47(platform: AndroidPlatform, expectedPackage: String): Boolean {','            if (!interactable) {'),
+            'package_surface_return_tail':reg('            interactable\n        } finally {','    private fun effectiveExpectedPackageV47('),
+            'navigator_v43':sf('app/src/main/kotlin/ai/closepaw/app/DeterministicUiNavigatorV43.kt'),
+            'grammar_v43':sf('app/src/main/kotlin/ai/closepaw/app/PrimaryLocalGrammarV43.kt'),
+            'prereq_v45':sf('app/src/main/kotlin/ai/closepaw/app/GoalAppPrerequisiteV45.kt'),
+            'goal_v41':sf('app/src/main/kotlin/ai/closepaw/app/GoalPostconditionV41.kt'),
+            'causal_v46':sf('app/src/main/kotlin/ai/closepaw/app/CausalDestinationV46.kt'),
+            'brain_recovery_v46':sf('app/src/main/kotlin/ai/closepaw/app/BrainExcursionRecoveryV46.kt'),
+            'foreground_v46':sf('app/src/main/kotlin/ai/closepaw/app/ForegroundPackageV46.kt'),
+            'work_surface_v47':sf('app/src/main/kotlin/ai/closepaw/app/WorkSurfaceV47.kt'),
+            'protocol':sf('app/src/main/kotlin/ai/closepaw/app/HybridAgentProtocol.kt'),
+            'rc11':sf('app/src/main/kotlin/ai/closepaw/app/RC11CorrectnessPolicy.kt'),
+            'transport':sf('app/src/main/kotlin/ai/closepaw/app/PrimaryLocalHttpTransportV32.kt'),
+            'brain_target':sf('app/src/main/kotlin/ai/closepaw/app/ConfiguredBrainTargetResolverV40.kt'),
+            'accessibility_platform':sf('app/src/main/kotlin/ai/closepaw/platform/AccessibilityPlatform.kt'),
+            'bridge':sf('tools/termux-bridge/closepaw_bridge.py'),
+          }
+          Path('049-baseline-critical-hashes.json').write_text(json.dumps(frozen,indent=2,sort_keys=True)+'\n')
+          print('049 FREEZE: PASS')
+          PYFREEZE
+
+      - name: Apply isolated 049 receipt-package-continuity patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > /tmp/049.patch <<'PATCH049'
+          diff --git a/app/build.gradle.kts b/app/build.gradle.kts
+          index 6d96d16..34883b2 100644
+          --- a/app/build.gradle.kts
+          +++ b/app/build.gradle.kts
+          @@ -46,8 +46,8 @@ android {
+ 
+               buildTypes {
+                   debug {
+          -    applicationIdSuffix = ".rc11c048"
+          -    versionNameSuffix = "-rc11-c048"
+          +    applicationIdSuffix = ".rc11c049"
+          +    versionNameSuffix = "-rc11-c049"
+ 
+               val evalSsl = project.findProperty("insecureSslForEval")?.toString()?.toBoolean() ?: false
+               buildConfigField("boolean", "INSECURE_SSL_FOR_EVAL", evalSsl.toString())
+          diff --git a/app/src/main/kotlin/ai/closepaw/app/HybridAgentEngine.kt b/app/src/main/kotlin/ai/closepaw/app/HybridAgentEngine.kt
+          index efd4385..ee3e87d 100644
+          --- a/app/src/main/kotlin/ai/closepaw/app/HybridAgentEngine.kt
+          +++ b/app/src/main/kotlin/ai/closepaw/app/HybridAgentEngine.kt
+          @@ -1061,19 +1061,24 @@ internal class HybridAgentEngine(private val service: AgentService) {
+                                                       // that buildPostActionReceiptV9 used to accept the grounded click.
+                                                       // Never recapture here: Samsung window transitions can race that read.
+                                                       val postClickSnapshotV48 = receipt.afterSnapshot
+          -                                            val expectedPostClickPackageV47 =
+          +                                            // V49 closes the remaining observation-continuity gap: package
+          +                                            // identity must come from the SAME stable receipt observation as the
+          +                                            // post-click snapshot. A fresh observedPackage/work-surface read here
+          +                                            // can flicker after Samsung has already reached the destination page.
+          +                                            val expectedPostClickPackageV49 =
+                                                           GoalAppPrerequisiteV45.requiredPackage(appPrerequisiteV45)
+          -                                            val postClickPackageV47 = effectiveExpectedPackageV47(
+          -                                                platform = platform,
+          -                                                expectedPackage = expectedPostClickPackageV47,
+          -                                                observedPackage = observedPackage(platform),
+          -                                            )
+          -                                            val exactPostClickPackageV47 = postClickPackageV47.takeIf { pkg ->
+          -                                                expectedPostClickPackageV47 == null || pkg == expectedPostClickPackageV47
+          +                                            val exactPostClickPackageV49 = receipt.afterPackage?.takeIf { pkg ->
+          +                                                expectedPostClickPackageV49 == null || pkg == expectedPostClickPackageV49
+          +                                            }
+          +                                            if (expectedPostClickPackageV49 != null && exactPostClickPackageV49 == null) {
+          +                                                appendPrimaryDiagnosticV32(
+          +                                                    "CAUSAL_PACKAGE_V49|expected=$expectedPostClickPackageV49|" +
+          +                                                        "receiptAfter=${receipt.afterPackage ?: "?"}|decision=reject"
+          +                                                )
+                                                       }
+                                                       CausalDestinationV46.prove(
+                                                           sourceTarget = deterministic.target,
+          -                                                packageName = exactPostClickPackageV47,
+          +                                                packageName = exactPostClickPackageV49,
+                                                           nodes = deterministicNavigatorNodesV43(postClickSnapshotV48),
+                                                       )?.let { alias ->
+                                                           verifiedPageAliasesV46.removeAll { existing ->
+          @@ -1081,7 +1086,7 @@ internal class HybridAgentEngine(private val service: AgentService) {
+                                                           }
+                                                           verifiedPageAliasesV46 += alias
+                                                           history +=
+          -                                                    "CAUSAL_DESTINATION_V48|${alias.sourceTarget}|${alias.destinationHeader}|${alias.packageName}"
+          +                                                    "CAUSAL_DESTINATION_V49|${alias.sourceTarget}|${alias.destinationHeader}|${alias.packageName}"
+ 
+                                                           // Use THIS exact post-click snapshot for terminal proof. Do not take a
+                                                           // second package/window observation that could flicker during Samsung
+          @@ -1104,7 +1109,7 @@ internal class HybridAgentEngine(private val service: AgentService) {
+                                                                   ) &&
+                                                                   scopeVerifiedV9(task.goal, postClickSnapshotV48)
+                                                           if (terminalCausalV47) {
+          -                                                    history += "LOCAL_GOAL_COMPLETE_V48|receipt_snapshot_causal_destination"
+          +                                                    history += "LOCAL_GOAL_COMPLETE_V49|receipt_snapshot_and_package_causal_destination"
+                                                               finishSuccess("Goal verified locally after grounded navigation")
+                                                               return
+                                                           }
+          @@ -4097,15 +4102,16 @@ internal class HybridAgentEngine(private val service: AgentService) {
+                           activeRootPackage = activeRootPackage,
+                       )
+                       if (!interactable) {
+          -                // V48 diagnostic only: no UI text/content is logged, only package/window metadata.
+          -                Log.w(
+          -                    TAG,
+          -                    "WORK_SURFACE_V48|expected=$expectedPackage|activeRoot=${activeRootPackage ?: "?"}|" +
+          +                // V49 diagnostic persistence only. Selector behavior is intentionally unchanged.
+          +                // Export the same metadata to the diagnostics ZIP instead of Logcat-only evidence.
+          +                val diagnosticV49 =
+          +                    "WORK_SURFACE_V49|expected=$expectedPackage|activeRoot=${activeRootPackage ?: "?"}|" +
+                                   evidence.joinToString(prefix = "windows=[", postfix = "]", separator = ";") { row ->
+                                       "pkg=${row.packageName ?: "?"},app=${row.applicationWindow}," +
+                                           "layer=${row.layer},active=${row.active},focused=${row.focused}"
+          -                        },
+          -                )
+          +                        }
+          +                Log.w(TAG, diagnosticV49)
+          +                appendPrimaryDiagnosticV32(diagnosticV49)
+                       }
+                       interactable
+                   } finally {
+          diff --git a/app/src/main/res/values/strings.xml b/app/src/main/res/values/strings.xml
+          index 3a846f2..9201573 100644
+          --- a/app/src/main/res/values/strings.xml
+          +++ b/app/src/main/res/values/strings.xml
+          @@ -1,5 +1,5 @@
+           <?xml version="1.0" encoding="utf-8"?>
+           <resources>
+          -    <string name="app_name">ClosePaw RC11 048</string>
+          +    <string name="app_name">ClosePaw RC11 049</string>
+               <string name="accessibility_service_description">ClosePaw acts as an on-device automation agent. With your permission, it reads on-screen elements and performs taps, swipes, and text input only when you start a task. It does not run in the background or monitor other apps.</string>
+           </resources>
+          PATCH049
+          test "$(sha256sum /tmp/049.patch | awk '{print $1}')" = "79a19b5d08afa7c05a4956b8efbfb252178fa602e1b9e5475135d1b34f596067"
+          git apply --check /tmp/049.patch
+          git apply /tmp/049.patch
+          cp /tmp/049.patch 049-isolated.patch
+          echo '049 isolated patch applied sha256=79a19b5d08afa7c05a4956b8efbfb252178fa602e1b9e5475135d1b34f596067' >> 049-verification-report.txt
+
+      - name: Verify 049 source isolation and frozen regions
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PYISO'
+          from pathlib import Path
+          import hashlib,json
+          def h(b): return hashlib.sha256(b).hexdigest()
+          def sf(p): return h(Path(p).read_bytes())
+          baseline=json.loads(Path('049-baseline-source-manifest.json').read_text())
+          current={}
+          for p in sorted(Path('app').rglob('*')):
+              if p.is_file() and not p.as_posix().startswith('app/build/'):
+                  current[p.as_posix()]=sf(p)
+          changed=sorted(k for k in set(baseline)&set(current) if baseline[k]!=current[k])
+          added=sorted(set(current)-set(baseline))
+          removed=sorted(set(baseline)-set(current))
+          allowed=sorted([
+            'app/build.gradle.kts',
+            'app/src/main/kotlin/ai/closepaw/app/HybridAgentEngine.kt',
+            'app/src/main/res/values/strings.xml',
+          ])
+          if changed != allowed or added or removed:
+              raise SystemExit(f'049 source isolation failed changed={changed} added={added} removed={removed}')
+
+          frozen=json.loads(Path('049-baseline-critical-hashes.json').read_text())
+          eng=Path('app/src/main/kotlin/ai/closepaw/app/HybridAgentEngine.kt').read_text()
+          def reg(a,b):
+              s=eng.find(a); e=eng.find(b,s)
+              if s<0 or e<0: raise SystemExit(f'protected region missing postpatch: {a} -> {b}')
+              return h(eng[s:e].encode())
+          now={
+            'rc8_restore':reg('// RC8: only strong identity evidence may authorize a restore-side navigation.','private suspend fun restoreSidebarShapeIfNeeded('),
+            'durable_transaction':reg('private suspend fun executeActionTransactionV9(','private fun receiptHistoryLineV9('),
+            'v33_validation':reg('private suspend fun requestPrimaryPlanV9(','private fun buildBrainRequest('),
+            'brain_restore':reg('private suspend fun restoreAfterBrainExcursion(','private fun configuredBrainV9(): ChatBrainSettings'),
+            'brain_send':reg('private suspend fun sendConfiguredBrainMessageV9(','private suspend fun waitForMatchingBrainResponseV9('),
+            'open_app_exact':reg('private suspend fun openApp(platform: AndroidPlatform, name: String): ActionOutcome {','private suspend fun clickByText('),
+            'package_surface_pre_diag':reg('private fun packageSurfaceVisibleV47(platform: AndroidPlatform, expectedPackage: String): Boolean {','            if (!interactable) {'),
+            'package_surface_return_tail':reg('            interactable\n        } finally {','    private fun effectiveExpectedPackageV47('),
+            'navigator_v43':sf('app/src/main/kotlin/ai/closepaw/app/DeterministicUiNavigatorV43.kt'),
+            'grammar_v43':sf('app/src/main/kotlin/ai/closepaw/app/PrimaryLocalGrammarV43.kt'),
+            'prereq_v45':sf('app/src/main/kotlin/ai/closepaw/app/GoalAppPrerequisiteV45.kt'),
+            'goal_v41':sf('app/src/main/kotlin/ai/closepaw/app/GoalPostconditionV41.kt'),
+            'causal_v46':sf('app/src/main/kotlin/ai/closepaw/app/CausalDestinationV46.kt'),
+            'brain_recovery_v46':sf('app/src/main/kotlin/ai/closepaw/app/BrainExcursionRecoveryV46.kt'),
+            'foreground_v46':sf('app/src/main/kotlin/ai/closepaw/app/ForegroundPackageV46.kt'),
+            'work_surface_v47':sf('app/src/main/kotlin/ai/closepaw/app/WorkSurfaceV47.kt'),
+            'protocol':sf('app/src/main/kotlin/ai/closepaw/app/HybridAgentProtocol.kt'),
+            'rc11':sf('app/src/main/kotlin/ai/closepaw/app/RC11CorrectnessPolicy.kt'),
+            'transport':sf('app/src/main/kotlin/ai/closepaw/app/PrimaryLocalHttpTransportV32.kt'),
+            'brain_target':sf('app/src/main/kotlin/ai/closepaw/app/ConfiguredBrainTargetResolverV40.kt'),
+            'accessibility_platform':sf('app/src/main/kotlin/ai/closepaw/platform/AccessibilityPlatform.kt'),
+            'bridge':sf('tools/termux-bridge/closepaw_bridge.py'),
+          }
+          bad={k:(frozen[k],now[k]) for k in frozen if frozen[k]!=now[k]}
+          if bad: raise SystemExit(f'049 frozen-region regression: {bad}')
+
+          Path('049-postpatch-source-manifest.json').write_text(json.dumps(current,indent=2,sort_keys=True)+'\n')
+          print('049 SOURCE ISOLATION + FROZEN REGIONS: PASS')
+          PYISO
+
+      - name: Audit 049 architecture contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PYAUDIT'
+          from pathlib import Path
+          e=Path('app/src/main/kotlin/ai/closepaw/app/HybridAgentEngine.kt').read_text()
+          gradle=Path('app/build.gradle.kts').read_text()
+          strings=Path('app/src/main/res/values/strings.xml').read_text()
+
+          # Preserve V48 fixes: effective CURRENT_APP and stable receipt snapshot.
+          if 'snapshot = buildPrimaryUiSnapshotV9(\n                                        snapshot = ui,\n                                        currentPackage = currentPackage,' not in e:
+              raise SystemExit('V48 effective Primary CURRENT_APP propagation lost')
+          ps=e[e.find('private fun buildPrimaryUiSnapshotV9('):e.find('private fun buildUiSnapshot(', e.find('private fun buildPrimaryUiSnapshotV9('))]
+          if 'val currentPkg = currentPackage.orEmpty()' not in ps or 'observedPackage(platform)' in ps:
+              raise SystemExit('V48 Primary snapshot regression')
+          if 'val afterSnapshot: ScreenSnapshot' not in e:
+              raise SystemExit('V48 receipt snapshot field lost')
+          receipt=e[e.find('private suspend fun buildPostActionReceiptV9('):e.find('private suspend fun executeActionTransactionV9(', e.find('private suspend fun buildPostActionReceiptV9('))]
+          if 'afterSnapshot = after' not in receipt:
+              raise SystemExit('V48 stable receipt snapshot storage lost')
+
+          post=e.find('if (selectedPlanSource == "DETERMINISTIC_V43")')
+          cs=e.find('is DeterministicUiNavigatorV43.Decision.Click -> {', post)
+          ce=e.find('pendingDeterministicDecisionV43 = null', cs)
+          if min(post,cs,ce) < 0: raise SystemExit('deterministic click block missing')
+          click=e[cs:ce]
+          required=[
+            'if (receipt.accepted)',
+            'val postClickSnapshotV48 = receipt.afterSnapshot',
+            'val exactPostClickPackageV49 = receipt.afterPackage?.takeIf',
+            'CausalDestinationV46.prove(',
+            'packageName = exactPostClickPackageV49',
+            'deterministicNavigatorNodesV43(postClickSnapshotV48)',
+            'LOCAL_GOAL_COMPLETE_V49|receipt_snapshot_and_package_causal_destination',
+          ]
+          for token in required:
+              if token not in click: raise SystemExit('V49 causal continuity missing '+token)
+          forbidden=['platform.captureScreen()', 'effectiveExpectedPackageV47(', 'observedPackage(platform)']
+          for token in forbidden:
+              if token in click: raise SystemExit('V49 post-receipt causal block still re-observes: '+token)
+
+          # WorkSurface selector behavior remains unchanged; diagnostics are now exportable.
+          if 'WORK_SURFACE_V49|expected=' not in e or 'appendPrimaryDiagnosticV32(diagnosticV49)' not in e:
+              raise SystemExit('V49 exported work-surface diagnostics missing')
+          if 'applicationIdSuffix = ".rc11c049"' not in gradle or 'versionNameSuffix = "-rc11-c049"' not in gradle:
+              raise SystemExit('049 identity missing')
+          if 'ClosePaw RC11 049' not in strings:
+              raise SystemExit('049 label missing')
+          if 'take(600)' in e:
+              raise SystemExit('goal truncation reintroduced')
+          with Path('049-verification-report.txt').open('a') as out:
+              out.write('V48 effective Primary CURRENT_APP preserved: PASS\n')
+              out.write('V48 exact stable receipt snapshot preserved: PASS\n')
+              out.write('V49 causal package comes only from receipt.afterPackage: PASS\n')
+              out.write('No fresh package/window/snapshot read in accepted deterministic click causal proof: PASS\n')
+              out.write('WorkSurfaceV47 selector semantics and all frozen correctness surfaces unchanged: PASS\n')
+              out.write('Work-surface failure metadata now persists into exported diagnostics: PASS\n')
+          print('049 ARCHITECTURE CONTRACT AUDIT: PASS')
+          PYAUDIT
+
+      - name: 049 clean Kotlin compile gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./gradlew clean :app:compileDebugKotlin --stacktrace --no-daemon --no-configuration-cache
+          echo '049 clean Kotlin compile: PASS' >> 049-verification-report.txt
+
+      - name: 049 targeted regression tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./gradlew :app:testDebugUnitTest \
+            --tests ai.closepaw.app.WorkSurfaceV47Test \
+            --tests ai.closepaw.app.ForegroundPackageV46Test \
+            --tests ai.closepaw.app.CausalDestinationV46Test \
+            --tests ai.closepaw.app.BrainExcursionRecoveryV46Test \
+            --tests ai.closepaw.app.GoalAppPrerequisiteV45Test \
+            --tests ai.closepaw.app.V45SequencingContractTest \
+            --tests ai.closepaw.app.DeterministicUiNavigatorV43Test \
+            --tests ai.closepaw.app.PrimaryLocalGrammarV43Test \
+            --tests ai.closepaw.app.GoalPostconditionV41Test \
+            --tests ai.closepaw.app.ConfiguredBrainTargetResolverV40Test \
+            --tests ai.closepaw.app.PrimaryLocalGrammarV37Test \
+            --tests ai.closepaw.app.PrimaryFormatComplianceV33Test \
+            --tests ai.closepaw.app.PrimaryLocalHttpTransportV32Test \
+            --tests ai.closepaw.app.RC11CorrectnessPolicyTest \
+            --tests ai.closepaw.termux.ClosePawBridgeResourceTest \
+            --stacktrace --no-daemon --no-configuration-cache
+          echo '049 targeted regression tests: PASS' >> 049-verification-report.txt
+
+      - name: 049 full unit tests and clean rebuild
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./gradlew :app:testDebugUnitTest :app:assembleDebug --stacktrace --no-daemon --no-configuration-cache
+          echo '049 full tests + assemble: PASS' >> 049-verification-report.txt
+
+      - name: 049 APK identity integrity native-runtime and signature gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          mapfile -t APKS < <(find app/build/outputs/apk/debug -maxdepth 1 -type f -name '*.apk' -print)
+          [ "${#APKS[@]}" -eq 1 ] || { echo 'expected one APK' >&2; exit 1; }
+          APK="${APKS[0]}"
+          unzip -tq "$APK" >/dev/null
+          SIZE="$(stat -c %s "$APK")"
+          [ "$SIZE" -gt 50000000 ] || { echo 'APK too small' >&2; exit 1; }
+          CONTENTS="$(zipinfo -1 "$APK")"
+          for E in AndroidManifest.xml classes.dex lib/arm64-v8a/libllama.so lib/arm64-v8a/libggml.so lib/arm64-v8a/libinference_engine.so lib/arm64-v8a/libinference_engine_jni.so lib/arm64-v8a/libinference_engine_llamacpp_backend.so; do
+            grep -Fxq "$E" <<<"$CONTENTS" || { echo "missing $E" >&2; exit 1; }
+          done
+          AAPT="$(find "$ANDROID_HOME/build-tools" -type f -name aapt -print | sort -V | tail -n1)"
+          APKSIGNER="$(find "$ANDROID_HOME/build-tools" -type f -name apksigner -print | sort -V | tail -n1)"
+          BADGING="$($AAPT dump badging "$APK")"
+          grep -Fq "package: name='ai.closepaw.rc11c049'" <<<"$BADGING"
+          grep -Fq "application-label:'ClosePaw RC11 049'" <<<"$BADGING"
+          grep -Fq "sdkVersion:'31'" <<<"$BADGING"
+          grep -Fq "targetSdkVersion:'36'" <<<"$BADGING"
+          "$APKSIGNER" verify --verbose "$APK" > 049-apksigner-verification.txt
+          echo "049 APK gate PASS sha256=$(sha256sum "$APK" | awk '{print $1}') size=$SIZE" | tee -a 049-verification-report.txt
+
+      - name: Prepare 049 full verified source snapshot
+        if: success()
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf 049-full-source
+          mkdir -p 049-full-source
+          rsync -a --exclude='.git/' --exclude='.github/' --exclude='.gradle/' --exclude='app/build/' --exclude='049-full-source/' ./ 049-full-source/
+          test -f 049-full-source/app/src/main/kotlin/ai/closepaw/app/HybridAgentEngine.kt
+          test -f 049-full-source/app/src/main/kotlin/ai/closepaw/app/WorkSurfaceV47.kt
+          test -f 049-full-source/049-postpatch-source-manifest.json
+
+      - name: Upload 049 verification proof
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: 049-ClosePaw-RC11-verification-proof
+          if-no-files-found: warn
+          path: |
+            049-verification-report.txt
+            049-isolated.patch
+            049-baseline-source-manifest.json
+            049-postpatch-source-manifest.json
+            049-baseline-critical-hashes.json
+            049-apksigner-verification.txt
+
+      - name: Upload 049 full verified source
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: 049-ClosePaw-RC11-verified-full-source
+          if-no-files-found: error
+          path: 049-full-source/
+
+      - name: Upload 049 APK
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: 049-ClosePaw-RC11-APK
+          if-no-files-found: error
+          path: app/build/outputs/apk/debug/app-debug.apk
+
+      - name: Upload 049 failure sources
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: 049-ClosePaw-RC11-failure-sources
+          if-no-files-found: warn
+          path: |
+            app/src/main/kotlin/ai/closepaw/app/HybridAgentEngine.kt
+            app/src/main/kotlin/ai/closepaw/app/WorkSurfaceV47.kt
+            app/src/main/kotlin/ai/closepaw/app/CausalDestinationV46.kt
+            app/src/main/kotlin/ai/closepaw/app/BrainExcursionRecoveryV46.kt
+            app/src/main/kotlin/ai/closepaw/app/GoalAppPrerequisiteV45.kt
+            app/src/main/kotlin/ai/closepaw/app/DeterministicUiNavigatorV43.kt
+            049-verification-report.txt
+            049-isolated.patch
