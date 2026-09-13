@@ -1,0 +1,983 @@
+name: 050 - ClosePaw RC11 Android Window-Event Provenance Recovery
+
+'on':
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Setup Java 17
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Restore exact verified 049 Source of Truth by manifest identity
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          EXPECTED_NAME='049-ClosePaw-RC11-verified-full-source'
+          EXPECTED_MANIFEST_SHA='d3a833e99d33f220db678051e540358b3b6d2f5e97cf4916047171f95fb8503b'
+          rm -rf /tmp/049-source /tmp/049-candidate /tmp/049-artifacts.json
+          mkdir -p /tmp/049-source
+
+          curl -fsSL \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H 'Accept: application/vnd.github+json' \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts?name=${EXPECTED_NAME}&per_page=100" \
+            -o /tmp/049-artifacts.json
+
+          python3 - <<'PYIDS' > /tmp/049-artifact-ids.txt
+          import json
+          d=json.load(open('/tmp/049-artifacts.json'))
+          rows=[a for a in d.get('artifacts',[]) if not a.get('expired',False) and a.get('name')=='049-ClosePaw-RC11-verified-full-source']
+          rows.sort(key=lambda a:a.get('created_at',''), reverse=True)
+          for a in rows:
+              print(f"{a['id']}|{(a.get('workflow_run') or {}).get('id','')}")
+          PYIDS
+
+          FOUND=''
+          FOUND_RUN=''
+          while IFS='|' read -r ARTIFACT_ID RUN_ID; do
+            [ -n "$ARTIFACT_ID" ] || continue
+            rm -rf /tmp/049-candidate /tmp/049-candidate.zip
+            mkdir -p /tmp/049-candidate
+            curl -fsSL -L \
+              -H "Authorization: Bearer $GH_TOKEN" \
+              -H 'Accept: application/vnd.github+json' \
+              "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/${ARTIFACT_ID}/zip" \
+              -o /tmp/049-candidate.zip
+            unzip -q /tmp/049-candidate.zip -d /tmp/049-candidate
+            MANIFEST="$(find /tmp/049-candidate -type f -name '049-postpatch-source-manifest.json' -print -quit)"
+            [ -n "$MANIFEST" ] || continue
+            SHA="$(sha256sum "$MANIFEST" | awk '{print $1}')"
+            if [ "$SHA" = "$EXPECTED_MANIFEST_SHA" ]; then
+              ROOT="$(dirname "$MANIFEST")"
+              cp -a "$ROOT"/. /tmp/049-source/
+              FOUND="$ARTIFACT_ID"
+              FOUND_RUN="$RUN_ID"
+              break
+            fi
+          done < /tmp/049-artifact-ids.txt
+
+          [ -n "$FOUND" ] || { echo 'Exact verified 049 artifact not found by manifest identity' >&2; exit 1; }
+          echo "BASELINE_ARTIFACT_ID=$FOUND" >> "$GITHUB_ENV"
+          echo "BASELINE_RUN_ID=$FOUND_RUN" >> "$GITHUB_ENV"
+          echo "Exact 049 artifact id=$FOUND run=$FOUND_RUN"
+
+      - name: Verify and activate exact 049 Source of Truth
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f /tmp/049-source/app/src/main/kotlin/ai/closepaw/app/HybridAgentEngine.kt
+          test -f /tmp/049-source/app/src/main/kotlin/ai/closepaw/app/AgentService.kt
+          test -f /tmp/049-source/049-postpatch-source-manifest.json
+          test "$(sha256sum /tmp/049-source/049-postpatch-source-manifest.json | awk '{print $1}')" = "d3a833e99d33f220db678051e540358b3b6d2f5e97cf4916047171f95fb8503b"
+
+          find . -mindepth 1 -maxdepth 1 ! -name .git ! -name .github -exec rm -rf {} +
+          cp -a /tmp/049-source/. ./
+
+          python3 - <<'PYBASE'
+          from pathlib import Path
+          import hashlib,json,os
+          def sf(p): return hashlib.sha256(Path(p).read_bytes()).hexdigest()
+          expected=json.loads(Path('049-postpatch-source-manifest.json').read_text())
+          current={}
+          for p in sorted(Path('app').rglob('*')):
+              if p.is_file() and not p.as_posix().startswith('app/build/'):
+                  current[p.as_posix()]=sf(p)
+          if current != expected:
+              missing=sorted(set(expected)-set(current))
+              added=sorted(set(current)-set(expected))
+              changed=sorted(k for k in set(expected)&set(current) if expected[k]!=current[k])
+              raise SystemExit(f'049 full-source manifest mismatch missing={missing[:10]} added={added[:10]} changed={changed[:10]}')
+          critical={
+            'app/src/main/kotlin/ai/closepaw/app/HybridAgentEngine.kt':'d48624f801a644c78d782b9362ef7bfa77f192a4b83334a2f3238d310c1ba290',
+            'app/src/main/kotlin/ai/closepaw/app/AgentService.kt':'c745c25b1597843bf228398d8098a7fd5ebc19824f56324af706270fb432e8a3',
+            'app/src/main/kotlin/ai/closepaw/app/WorkSurfaceV47.kt':'683a9f6d8b5c8a676ba00bb9cda4cf954314470afae4a9b2bf1ab3862f6ea47e',
+            'app/src/main/kotlin/ai/closepaw/app/CausalDestinationV46.kt':'eed7423a080b1d8b8b8a40ac943f88a62db658c5eb12f9a638fc3974cc938e73',
+            'app/src/main/kotlin/ai/closepaw/app/DeterministicUiNavigatorV43.kt':'945670dd4f8818b10933245a27298dfe0de4b9da590c54f06a9ba4657e11301f',
+            'app/src/main/kotlin/ai/closepaw/app/PrimaryLocalGrammarV43.kt':'fdfdae46f9fd865336e2f57e65c6f62684fc1b7ffd909eba1d1b49ad8937dab3',
+            'app/src/main/kotlin/ai/closepaw/app/GoalAppPrerequisiteV45.kt':'b1be3b8953bc0620a921d6e639e68ee1ae4a61952d20a52943da148a3edbee37',
+            'app/src/main/kotlin/ai/closepaw/platform/AccessibilityPlatform.kt':'d9595d75a141c5c843195878fb13c0f32ab2121cabab65903026fd3b2a189a25',
+            'app/src/main/kotlin/ai/closepaw/ui/settings/PermissionsAdvancedSettingsPage.kt':'062336a6f34de4c630f5554bea3793de52696486e00d7abb893cbd9d984b79b6',
+            'app/build.gradle.kts':'fbe1496be99e0e435f0c07eafbcbc81043930a79380363ca7c946404334d1444',
+            'app/src/main/res/values/strings.xml':'e35c736d501447cc09cc495ee4d0230f8c0f247ca090c872c38ef0d4061123ba',
+          }
+          for p,w in critical.items():
+              got=sf(p)
+              if got!=w: raise SystemExit(f'049 critical baseline mismatch {p}: {got} != {w}')
+          Path('050-verification-report.txt').write_text(
+              'ClosePaw RC11 050 verification report\n'
+              f'Base: exact verified 049 full-source artifact id={os.getenv("BASELINE_ARTIFACT_ID","")} run={os.getenv("BASELINE_RUN_ID","")} matched by 049 postpatch manifest identity.\n'
+              'Runtime evidence: Samsung exposes an active/focused TYPE_APPLICATION window while its root/package is temporarily null, so V47 exact package proof blocks the already-proven V43 navigator.\n'
+              'Fix scope: framework AccessibilityEvent package + windowId provenance, bounded by age/current active window/conflict checks; causal event title fallback only after a grounded receipt-accepted click; dynamic diagnostics filename.\n'
+              'Explicitly frozen: V43 navigator, V45 prerequisite ordering, V37/V43 grammar, WorkSurfaceV47 helper semantics, V46 causal alias rules, RC11 transaction safety, RC8 restore, V32 transport, AccessibilityPlatform and exact OPEN_APP behavior.\n',
+              encoding='utf-8')
+          print('050 EXACT VERIFIED 049 BASELINE: PASS')
+          PYBASE
+
+      - name: Baseline 049 clean compile before 050 patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          chmod +x ./gradlew
+          ./gradlew clean :app:compileDebugKotlin --stacktrace --no-daemon --no-configuration-cache
+          echo 'Baseline 049 clean compile: PASS' >> 050-verification-report.txt
+
+      - name: Freeze protected correctness surfaces
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PYFREEZE'
+          from pathlib import Path
+          import hashlib,json
+          def h(b): return hashlib.sha256(b).hexdigest()
+          def sf(p): return h(Path(p).read_bytes())
+          base={}
+          for p in sorted(Path('app').rglob('*')):
+              if p.is_file() and not p.as_posix().startswith('app/build/'):
+                  base[p.as_posix()]=sf(p)
+          Path('050-baseline-source-manifest.json').write_text(json.dumps(base,indent=2,sort_keys=True)+'\n')
+          eng=Path('app/src/main/kotlin/ai/closepaw/app/HybridAgentEngine.kt').read_text()
+          def reg(a,b):
+              s=eng.find(a); e=eng.find(b,s)
+              if s<0 or e<0: raise SystemExit(f'protected region missing: {a} -> {b}')
+              return h(eng[s:e].encode())
+          frozen={
+            'rc8_restore':reg('// RC8: only strong identity evidence may authorize a restore-side navigation.','private suspend fun restoreSidebarShapeIfNeeded('),
+            'durable_transaction':reg('private suspend fun executeActionTransactionV9(','private fun receiptHistoryLineV9('),
+            'v33_validation':reg('private suspend fun requestPrimaryPlanV9(','private fun buildBrainRequest('),
+            'brain_restore':reg('private suspend fun restoreAfterBrainExcursion(','private fun configuredBrainV9(): ChatBrainSettings'),
+            'brain_send':reg('private suspend fun sendConfiguredBrainMessageV9(','private suspend fun waitForMatchingBrainResponseV9('),
+            'open_app_exact':reg('private suspend fun openApp(platform: AndroidPlatform, name: String): ActionOutcome {','private suspend fun clickByText('),
+            'navigator_v43':sf('app/src/main/kotlin/ai/closepaw/app/DeterministicUiNavigatorV43.kt'),
+            'grammar_v43':sf('app/src/main/kotlin/ai/closepaw/app/PrimaryLocalGrammarV43.kt'),
+            'prereq_v45':sf('app/src/main/kotlin/ai/closepaw/app/GoalAppPrerequisiteV45.kt'),
+            'goal_v41':sf('app/src/main/kotlin/ai/closepaw/app/GoalPostconditionV41.kt'),
+            'causal_v46':sf('app/src/main/kotlin/ai/closepaw/app/CausalDestinationV46.kt'),
+            'brain_recovery_v46':sf('app/src/main/kotlin/ai/closepaw/app/BrainExcursionRecoveryV46.kt'),
+            'foreground_v46':sf('app/src/main/kotlin/ai/closepaw/app/ForegroundPackageV46.kt'),
+            'work_surface_v47':sf('app/src/main/kotlin/ai/closepaw/app/WorkSurfaceV47.kt'),
+            'protocol':sf('app/src/main/kotlin/ai/closepaw/app/HybridAgentProtocol.kt'),
+            'rc11':sf('app/src/main/kotlin/ai/closepaw/app/RC11CorrectnessPolicy.kt'),
+            'transport':sf('app/src/main/kotlin/ai/closepaw/app/PrimaryLocalHttpTransportV32.kt'),
+            'brain_target':sf('app/src/main/kotlin/ai/closepaw/app/ConfiguredBrainTargetResolverV40.kt'),
+            'accessibility_platform':sf('app/src/main/kotlin/ai/closepaw/platform/AccessibilityPlatform.kt'),
+            'bridge':sf('tools/termux-bridge/closepaw_bridge.py'),
+          }
+          Path('050-baseline-critical-hashes.json').write_text(json.dumps(frozen,indent=2,sort_keys=True)+'\n')
+          print('050 FREEZE: PASS')
+          PYFREEZE
+
+      - name: Apply isolated 050 patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > /tmp/050.patch <<'PATCH050'
+          diff --git a/app/build.gradle.kts b/app/build.gradle.kts
+          index 34883b2..a735661 100644
+          --- a/app/build.gradle.kts
+          +++ b/app/build.gradle.kts
+          @@ -46,8 +46,8 @@ android {
+           
+               buildTypes {
+                   debug {
+          -    applicationIdSuffix = ".rc11c049"
+          -    versionNameSuffix = "-rc11-c049"
+          +    applicationIdSuffix = ".rc11c050"
+          +    versionNameSuffix = "-rc11-c050"
+           
+               val evalSsl = project.findProperty("insecureSslForEval")?.toString()?.toBoolean() ?: false
+               buildConfigField("boolean", "INSECURE_SSL_FOR_EVAL", evalSsl.toString())
+          diff --git a/app/src/main/kotlin/ai/closepaw/app/AccessibilityEventProvenanceV50.kt b/app/src/main/kotlin/ai/closepaw/app/AccessibilityEventProvenanceV50.kt
+          new file mode 100644
+          index 0000000..d4e5927
+          --- /dev/null
+          +++ b/app/src/main/kotlin/ai/closepaw/app/AccessibilityEventProvenanceV50.kt
+          @@ -0,0 +1,77 @@
+          +package ai.closepaw.app
+          +
+          +/**
+          + * Bounded package provenance recovered from AccessibilityEvent metadata when an OEM exposes an
+          + * active/focused TYPE_APPLICATION window but temporarily withholds that window's root/package.
+          + *
+          + * This is deliberately fail-closed: event evidence is accepted only when it is recent, names a
+          + * package, carries a real window id, and correlates to the currently active/focused application
+          + * window with the same id. Any conflicting active/focused application package rejects recovery.
+          + */
+          +internal object AccessibilityEventProvenanceV50 {
+          +    internal const val MAX_EVENT_AGE_MS: Long = 8_000L
+          +
+          +    internal data class EventEvidence(
+          +        val packageName: String,
+          +        val windowId: Int,
+          +        val revision: Long,
+          +        val observedAtUptimeMs: Long,
+          +        val eventType: Int,
+          +        val className: String?,
+          +        val textCandidates: List<String>,
+          +    )
+          +
+          +    internal data class WindowEvidence(
+          +        val windowId: Int,
+          +        val packageName: String?,
+          +        val applicationWindow: Boolean,
+          +        val layer: Int,
+          +        val active: Boolean,
+          +        val focused: Boolean,
+          +    )
+          +
+          +    internal data class Match(
+          +        val packageName: String,
+          +        val windowId: Int,
+          +        val revision: Long,
+          +        val textCandidates: List<String>,
+          +    )
+          +
+          +    internal fun recover(
+          +        event: EventEvidence?,
+          +        windows: List<WindowEvidence>,
+          +        nowUptimeMs: Long,
+          +        expectedPackage: String? = null,
+          +        maxAgeMs: Long = MAX_EVENT_AGE_MS,
+          +    ): Match? {
+          +        val e = event ?: return null
+          +        val pkg = e.packageName.trim().takeIf { it.isNotBlank() } ?: return null
+          +        if (e.windowId < 0) return null
+          +        if (expectedPackage != null && pkg != expectedPackage) return null
+          +
+          +        val age = nowUptimeMs - e.observedAtUptimeMs
+          +        if (age < 0L || age > maxAgeMs) return null
+          +
+          +        val activeAppWindows = windows.filter { it.applicationWindow && (it.active || it.focused) }
+          +        if (activeAppWindows.isEmpty()) return null
+          +        if (activeAppWindows.any { row ->
+          +                val observed = row.packageName?.trim().orEmpty()
+          +                observed.isNotBlank() && observed != pkg
+          +            }
+          +        ) {
+          +            return null
+          +        }
+          +
+          +        val correlated = activeAppWindows.filter { it.windowId == e.windowId }
+          +        if (correlated.size != 1) return null
+          +        val correlatedPackage = correlated.single().packageName?.trim().orEmpty()
+          +        if (correlatedPackage.isNotBlank() && correlatedPackage != pkg) return null
+          +
+          +        return Match(
+          +            packageName = pkg,
+          +            windowId = e.windowId,
+          +            revision = e.revision,
+          +            textCandidates = e.textCandidates.map(String::trim).filter(String::isNotBlank).distinct(),
+          +        )
+          +    }
+          +}
+          diff --git a/app/src/main/kotlin/ai/closepaw/app/AgentService.kt b/app/src/main/kotlin/ai/closepaw/app/AgentService.kt
+          index bcb1642..e191ff2 100644
+          --- a/app/src/main/kotlin/ai/closepaw/app/AgentService.kt
+          +++ b/app/src/main/kotlin/ai/closepaw/app/AgentService.kt
+          @@ -56,6 +56,11 @@ class AgentService : AccessibilityService() {
+                   @Volatile internal var hybridUiEventRevision: Long = 0L
+                   @Volatile internal var hybridUiLastEventAtMs: Long = 0L
+                   @Volatile internal var hybridUiLastEventType: Int = 0
+          +        // V50: Android-validated AccessibilityEvent package provenance for OEM windows whose
+          +        // active TYPE_APPLICATION root/package is temporarily unavailable. This is metadata only;
+          +        // HybridAgentEngine still correlates it to the current window id and rejects conflicts.
+          +        @Volatile
+          +        internal var hybridUiLastWindowEventV50: AccessibilityEventProvenanceV50.EventEvidence? = null
+           
+           
+                   private val _hybridUiEvents = MutableSharedFlow<HybridUiEvent>(
+          @@ -309,6 +314,30 @@ class AgentService : AccessibilityService() {
+                       hybridUiLastEventAtMs = android.os.SystemClock.uptimeMillis()
+                       hybridUiLastEventType = eventType
+                   }
+          +        if (eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED ||
+          +            eventType == AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED
+          +        ) {
+          +            val packageName = stableEvent.packageName?.toString()?.trim().orEmpty()
+          +            val windowId = stableEvent.windowId
+          +            if (packageName.isNotBlank() && windowId >= 0) {
+          +                val candidates = buildList {
+          +                    stableEvent.text.orEmpty().forEach { value ->
+          +                        value?.toString()?.trim()?.takeIf(String::isNotBlank)?.let(::add)
+          +                    }
+          +                    stableEvent.contentDescription?.toString()?.trim()
+          +                        ?.takeIf(String::isNotBlank)?.let(::add)
+          +                }.distinct().take(12)
+          +                hybridUiLastWindowEventV50 = AccessibilityEventProvenanceV50.EventEvidence(
+          +                    packageName = packageName,
+          +                    windowId = windowId,
+          +                    revision = hybridUiEventRevision,
+          +                    observedAtUptimeMs = hybridUiLastEventAtMs,
+          +                    eventType = eventType,
+          +                    className = stableEvent.className?.toString(),
+          +                    textCandidates = candidates,
+          +                )
+          +            }
+          +        }
+                   if (eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) {
+                       val eventDisplayId = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                           stableEvent.displayId
+          @@ -330,6 +359,7 @@ class AgentService : AccessibilityService() {
+               override fun onDestroy() {
+                   isServiceActive = false
+                   instance = null
+          +        hybridUiLastWindowEventV50 = null
+           
+                   if (smtRouter.isRunning) smtRouter.stop()
+                   hybridAgent.stop(clearQueue = true)
+          diff --git a/app/src/main/kotlin/ai/closepaw/app/HybridAgentEngine.kt b/app/src/main/kotlin/ai/closepaw/app/HybridAgentEngine.kt
+          index ee3e87d..821cb2c 100644
+          --- a/app/src/main/kotlin/ai/closepaw/app/HybridAgentEngine.kt
+          +++ b/app/src/main/kotlin/ai/closepaw/app/HybridAgentEngine.kt
+          @@ -229,6 +229,9 @@ internal class HybridAgentEngine(private val service: AgentService) {
+                   // V48: preserve the exact stable post-action observation used to accept the receipt.
+                   // Causal completion must consume this snapshot, never recapture after returning.
+                   val afterSnapshot: ScreenSnapshot,
+          +        // V50: last package-bearing window event observed after this action began.
+          +        // It is used only with strict window-id/age/conflict correlation.
+          +        val afterWindowEventV50: AccessibilityEventProvenanceV50.Match?,
+                   val beforeWorkStateKey: String,
+                   val afterWorkStateKey: String,
+                   val beforeContentFingerprint: String,
+          @@ -1076,17 +1079,60 @@ internal class HybridAgentEngine(private val service: AgentService) {
+                                                                   "receiptAfter=${receipt.afterPackage ?: "?"}|decision=reject"
+                                                           )
+                                                       }
+          -                                            CausalDestinationV46.prove(
+          +                                            val postClickNodesV50 = deterministicNavigatorNodesV43(postClickSnapshotV48)
+          +                                            val eventHeaderNodesV50 = receipt.afterWindowEventV50
+          +                                                ?.takeIf { event ->
+          +                                                    exactPostClickPackageV49 != null &&
+          +                                                        event.packageName == exactPostClickPackageV49
+          +                                                }
+          +                                                ?.textCandidates
+          +                                                .orEmpty()
+          +                                                .mapIndexed { index, title ->
+          +                                                    DeterministicUiNavigatorV43.NodeEvidence(
+          +                                                        index = -50_000 - index,
+          +                                                        text = title,
+          +                                                        description = "",
+          +                                                        hint = "",
+          +                                                        resourceId = "",
+          +                                                        className = "android.view.accessibility.AccessibilityEvent",
+          +                                                        clickable = false,
+          +                                                        scrollable = false,
+          +                                                        enabled = true,
+          +                                                        left = 0,
+          +                                                        top = 0,
+          +                                                        right = 1000,
+          +                                                        bottom = 120,
+          +                                                    )
+          +                                                }
+          +                                            val causalAliasFromSnapshotV50 = CausalDestinationV46.prove(
+                                                           sourceTarget = deterministic.target,
+                                                           packageName = exactPostClickPackageV49,
+          -                                                nodes = deterministicNavigatorNodesV43(postClickSnapshotV48),
+          -                                            )?.let { alias ->
+          +                                                nodes = postClickNodesV50,
+          +                                            )
+          +                                            val causalAliasFromEventV50 = if (causalAliasFromSnapshotV50 == null) {
+          +                                                CausalDestinationV46.prove(
+          +                                                    sourceTarget = deterministic.target,
+          +                                                    packageName = exactPostClickPackageV49,
+          +                                                    nodes = eventHeaderNodesV50,
+          +                                                )
+          +                                            } else null
+          +                                            val causalAliasV50 = causalAliasFromSnapshotV50 ?: causalAliasFromEventV50
+          +                                            val causalProofNodesV50 =
+          +                                                if (causalAliasFromSnapshotV50 != null) postClickNodesV50 else eventHeaderNodesV50
+          +                                            if (causalAliasFromEventV50 != null) {
+          +                                                appendPrimaryDiagnosticV32(
+          +                                                    "CAUSAL_EVENT_V50|source=${deterministic.target}|" +
+          +                                                        "package=${causalAliasFromEventV50.packageName}|windowId=${receipt.afterWindowEventV50?.windowId}|" +
+          +                                                        "revision=${receipt.afterWindowEventV50?.revision}|header=${causalAliasFromEventV50.destinationHeader}"
+          +                                                )
+          +                                            }
+          +                                            causalAliasV50?.let { alias ->
+                                                           verifiedPageAliasesV46.removeAll { existing ->
+                                                               existing.sourceTarget.equals(alias.sourceTarget, ignoreCase = true)
+                                                           }
+                                                           verifiedPageAliasesV46 += alias
+                                                           history +=
+          -                                                    "CAUSAL_DESTINATION_V49|${alias.sourceTarget}|${alias.destinationHeader}|${alias.packageName}"
+          +                                                    "CAUSAL_DESTINATION_V50|${alias.sourceTarget}|${alias.destinationHeader}|${alias.packageName}"
+           
+                                                           // Use THIS exact post-click snapshot for terminal proof. Do not take a
+                                                           // second package/window observation that could flicker during Samsung
+          @@ -1104,12 +1150,12 @@ internal class HybridAgentEngine(private val service: AgentService) {
+                                                                   CausalDestinationV46.provesStopTarget(
+                                                                       stopTarget = stopSpecV47.target,
+                                                                       currentPackage = alias.packageName,
+          -                                                            nodes = deterministicNavigatorNodesV43(postClickSnapshotV48),
+          +                                                            nodes = causalProofNodesV50,
+                                                                       aliases = listOf(alias),
+                                                                   ) &&
+                                                                   scopeVerifiedV9(task.goal, postClickSnapshotV48)
+                                                           if (terminalCausalV47) {
+          -                                                    history += "LOCAL_GOAL_COMPLETE_V49|receipt_snapshot_and_package_causal_destination"
+          +                                                    history += "LOCAL_GOAL_COMPLETE_V50|receipt_or_event_causal_destination"
+                                                               finishSuccess("Goal verified locally after grounded navigation")
+                                                               return
+                                                           }
+          @@ -1455,6 +1501,9 @@ internal class HybridAgentEngine(private val service: AgentService) {
+                   val beforeContent = contentFingerprintV9(before)
+                   val afterObs = stableObservationV9(platform, startEventRevision)
+                   val after = afterObs.snapshot
+          +        val afterWindowEventV50 = eventPackageMatchV50()?.takeIf { match ->
+          +            match.revision > startEventRevision
+          +        }
+                   val skeletonChanged = beforeSkeleton != afterObs.skeleton || beforePackage != afterObs.packageName
+                   val contentChanged = beforeContent != afterObs.content
+                   val target = semanticTargetV9(action, before)
+          @@ -1548,6 +1597,7 @@ internal class HybridAgentEngine(private val service: AgentService) {
+                       beforePackage = beforePackage,
+                       afterPackage = afterObs.packageName,
+                       afterSnapshot = after,
+          +            afterWindowEventV50 = afterWindowEventV50,
+                       beforeWorkStateKey = workStateKeyV9(
+                           before, beforePackage, inferScopeKeyV9(task.goal), action.javaClass.simpleName
+                       ),
+          @@ -4057,25 +4107,11 @@ internal class HybridAgentEngine(private val service: AgentService) {
+                * here, but remain fail-closed if a different active/focused application window is above the
+                * expected one. Accessibility overlays and the IME are excluded by construction.
+                */
+          -    private fun packageSurfaceVisibleV47(platform: AndroidPlatform, expectedPackage: String): Boolean {
+          -        if (expectedPackage.isBlank()) return false
+          -        if (platform.mode != PlatformMode.ACCESSIBILITY) {
+          -            return observedPackage(platform) == expectedPackage
+          -        }
+          -
+          -        val activeRoot = service.rootInActiveWindow
+          -        val activeRootPackage = if (activeRoot == null) null else try {
+          -            activeRoot.packageName?.toString()
+          -        } finally {
+          -            runCatching { activeRoot.recycle() }
+          -        }
+          -
+          +    private fun currentWindowEvidenceV50(): List<AccessibilityEventProvenanceV50.WindowEvidence> {
+                   val windows = try { service.windows } catch (_: Exception) { null }
+          -        if (windows.isNullOrEmpty()) {
+          -            return activeRootPackage == expectedPackage
+          -        }
+          +        if (windows.isNullOrEmpty()) return emptyList()
+                   return try {
+          -            val evidence = windows.asSequence()
+          +            windows.asSequence()
+                           .filter { window ->
+                               window.type != AccessibilityWindowInfo.TYPE_ACCESSIBILITY_OVERLAY &&
+                                   window.type != AccessibilityWindowInfo.TYPE_INPUT_METHOD
+          @@ -4087,7 +4123,8 @@ internal class HybridAgentEngine(private val service: AgentService) {
+                               } finally {
+                                   runCatching { root.recycle() }
+                               }
+          -                    WorkSurfaceV47.WindowEvidence(
+          +                    AccessibilityEventProvenanceV50.WindowEvidence(
+          +                        windowId = window.id,
+                                   packageName = pkg,
+                                   applicationWindow = window.type == AccessibilityWindowInfo.TYPE_APPLICATION,
+                                   layer = window.layer,
+          @@ -4096,29 +4133,83 @@ internal class HybridAgentEngine(private val service: AgentService) {
+                               )
+                           }
+                           .toList()
+          -            val interactable = WorkSurfaceV47.expectedPackageIsInteractable(
+          -                expectedPackage = expectedPackage,
+          -                windows = evidence,
+          -                activeRootPackage = activeRootPackage,
+          -            )
+          -            if (!interactable) {
+          -                // V49 diagnostic persistence only. Selector behavior is intentionally unchanged.
+          -                // Export the same metadata to the diagnostics ZIP instead of Logcat-only evidence.
+          -                val diagnosticV49 =
+          -                    "WORK_SURFACE_V49|expected=$expectedPackage|activeRoot=${activeRootPackage ?: "?"}|" +
+          -                        evidence.joinToString(prefix = "windows=[", postfix = "]", separator = ";") { row ->
+          -                            "pkg=${row.packageName ?: "?"},app=${row.applicationWindow}," +
+          -                                "layer=${row.layer},active=${row.active},focused=${row.focused}"
+          -                        }
+          -                Log.w(TAG, diagnosticV49)
+          -                appendPrimaryDiagnosticV32(diagnosticV49)
+          -            }
+          -            interactable
+                   } finally {
+                       windows.forEach { window -> runCatching { window.recycle() } }
+                   }
+               }
+           
+          +    private fun eventPackageMatchV50(expectedPackage: String? = null): AccessibilityEventProvenanceV50.Match? =
+          +        AccessibilityEventProvenanceV50.recover(
+          +            event = AgentService.hybridUiLastWindowEventV50,
+          +            windows = currentWindowEvidenceV50(),
+          +            nowUptimeMs = android.os.SystemClock.uptimeMillis(),
+          +            expectedPackage = expectedPackage,
+          +        )
+          +
+          +    private fun packageSurfaceVisibleV47(platform: AndroidPlatform, expectedPackage: String): Boolean {
+          +        if (expectedPackage.isBlank()) return false
+          +        if (platform.mode != PlatformMode.ACCESSIBILITY) {
+          +            return observedPackage(platform) == expectedPackage
+          +        }
+          +
+          +        val activeRoot = service.rootInActiveWindow
+          +        val activeRootPackage = if (activeRoot == null) null else try {
+          +            activeRoot.packageName?.toString()
+          +        } finally {
+          +            runCatching { activeRoot.recycle() }
+          +        }
+          +
+          +        val windowsV50 = currentWindowEvidenceV50()
+          +        if (windowsV50.isEmpty()) {
+          +            return activeRootPackage == expectedPackage
+          +        }
+          +
+          +        val workSurfaceRows = windowsV50.map { row ->
+          +            WorkSurfaceV47.WindowEvidence(
+          +                packageName = row.packageName,
+          +                applicationWindow = row.applicationWindow,
+          +                layer = row.layer,
+          +                active = row.active,
+          +                focused = row.focused,
+          +            )
+          +        }
+          +        val interactable = WorkSurfaceV47.expectedPackageIsInteractable(
+          +            expectedPackage = expectedPackage,
+          +            windows = workSurfaceRows,
+          +            activeRootPackage = activeRootPackage,
+          +        )
+          +        if (interactable) return true
+          +
+          +        // V50 Samsung null-root recovery: AccessibilityEvent.packageName is framework-validated,
+          +        // but it is accepted only when the same recent event.windowId correlates to the currently
+          +        // active/focused TYPE_APPLICATION window and no conflicting app package is visible.
+          +        val eventMatchV50 = AccessibilityEventProvenanceV50.recover(
+          +            event = AgentService.hybridUiLastWindowEventV50,
+          +            windows = windowsV50,
+          +            nowUptimeMs = android.os.SystemClock.uptimeMillis(),
+          +            expectedPackage = expectedPackage,
+          +        )
+          +        if (eventMatchV50 != null) {
+          +            appendPrimaryDiagnosticV32(
+          +                "WORK_SURFACE_V50|expected=$expectedPackage|decision=accept_event_provenance|" +
+          +                    "windowId=${eventMatchV50.windowId}|revision=${eventMatchV50.revision}"
+          +            )
+          +            return true
+          +        }
+          +
+          +        val lastEventV50 = AgentService.hybridUiLastWindowEventV50
+          +        val diagnosticV50 =
+          +            "WORK_SURFACE_V50|expected=$expectedPackage|activeRoot=${activeRootPackage ?: "?"}|" +
+          +                "lastEventPkg=${lastEventV50?.packageName ?: "?"}|lastEventWindow=${lastEventV50?.windowId ?: -1}|" +
+          +                windowsV50.joinToString(prefix = "windows=[", postfix = "]", separator = ";") { row ->
+          +                    "id=${row.windowId},pkg=${row.packageName ?: "?"},app=${row.applicationWindow}," +
+          +                        "layer=${row.layer},active=${row.active},focused=${row.focused}"
+          +                }
+          +        Log.w(TAG, diagnosticV50)
+          +        appendPrimaryDiagnosticV32(diagnosticV50)
+          +        return false
+          +    }
+          +
+               private fun effectiveExpectedPackageV47(
+                   platform: AndroidPlatform,
+                   expectedPackage: String?,
+          @@ -4150,7 +4241,9 @@ internal class HybridAgentEngine(private val service: AgentService) {
+                   } finally {
+                       runCatching { root.recycle() }
+                   }
+          -        return ForegroundPackageV46.choose(windowPackage, rootPackage)
+          +        val direct = ForegroundPackageV46.choose(windowPackage, rootPackage)
+          +        if (!direct.isNullOrBlank()) return direct
+          +        return eventPackageMatchV50()?.packageName
+               }
+           
+               private suspend fun awaitPackage(
+          diff --git a/app/src/main/kotlin/ai/closepaw/ui/settings/PermissionsAdvancedSettingsPage.kt b/app/src/main/kotlin/ai/closepaw/ui/settings/PermissionsAdvancedSettingsPage.kt
+          index 2f46085..b7c1e15 100644
+          --- a/app/src/main/kotlin/ai/closepaw/ui/settings/PermissionsAdvancedSettingsPage.kt
+          +++ b/app/src/main/kotlin/ai/closepaw/ui/settings/PermissionsAdvancedSettingsPage.kt
+          @@ -308,7 +308,7 @@ private fun DataStorageSection(
+                       }
+           
+                       Button(
+          -                onClick = { exportDiagnosticsLauncher.launch("ClosePaw-036-diagnostics.zip") },
+          +                onClick = { exportDiagnosticsLauncher.launch("ClosePaw-${BuildConfig.VERSION_NAME}-diagnostics.zip") },
+                           modifier = Modifier.fillMaxWidth(),
+                           shape = MaterialTheme.shapes.large,
+                       ) {
+          diff --git a/app/src/main/res/values/strings.xml b/app/src/main/res/values/strings.xml
+          index 9201573..a0fe983 100644
+          --- a/app/src/main/res/values/strings.xml
+          +++ b/app/src/main/res/values/strings.xml
+          @@ -1,5 +1,5 @@
+           <?xml version="1.0" encoding="utf-8"?>
+           <resources>
+          -    <string name="app_name">ClosePaw RC11 049</string>
+          +    <string name="app_name">ClosePaw RC11 050</string>
+               <string name="accessibility_service_description">ClosePaw acts as an on-device automation agent. With your permission, it reads on-screen elements and performs taps, swipes, and text input only when you start a task. It does not run in the background or monitor other apps.</string>
+           </resources>
+          diff --git a/app/src/test/kotlin/ai/closepaw/app/AccessibilityEventProvenanceV50Test.kt b/app/src/test/kotlin/ai/closepaw/app/AccessibilityEventProvenanceV50Test.kt
+          new file mode 100644
+          index 0000000..82a5c70
+          --- /dev/null
+          +++ b/app/src/test/kotlin/ai/closepaw/app/AccessibilityEventProvenanceV50Test.kt
+          @@ -0,0 +1,84 @@
+          +package ai.closepaw.app
+          +
+          +import org.junit.Assert.assertEquals
+          +import org.junit.Assert.assertNull
+          +import org.junit.Test
+          +
+          +class AccessibilityEventProvenanceV50Test {
+          +    private fun event(pkg: String = "com.android.settings", id: Int = 17, at: Long = 1_000L) =
+          +        AccessibilityEventProvenanceV50.EventEvidence(
+          +            packageName = pkg,
+          +            windowId = id,
+          +            revision = 12L,
+          +            observedAtUptimeMs = at,
+          +            eventType = 32,
+          +            className = "com.android.settings.Settings",
+          +            textCandidates = listOf("Default apps"),
+          +        )
+          +
+          +    private fun window(
+          +        id: Int = 17,
+          +        pkg: String? = null,
+          +        active: Boolean = true,
+          +        focused: Boolean = true,
+          +    ) = AccessibilityEventProvenanceV50.WindowEvidence(
+          +        windowId = id,
+          +        packageName = pkg,
+          +        applicationWindow = true,
+          +        layer = 4,
+          +        active = active,
+          +        focused = focused,
+          +    )
+          +
+          +    @Test fun recoversNullRootPackageOnlyForSameActiveWindow() {
+          +        val match = AccessibilityEventProvenanceV50.recover(
+          +            event = event(),
+          +            windows = listOf(window()),
+          +            nowUptimeMs = 2_000L,
+          +            expectedPackage = "com.android.settings",
+          +        )
+          +        assertEquals("com.android.settings", match?.packageName)
+          +        assertEquals(listOf("Default apps"), match?.textCandidates)
+          +    }
+          +
+          +    @Test fun rejectsDifferentWindowId() {
+          +        assertNull(
+          +            AccessibilityEventProvenanceV50.recover(
+          +                event = event(id = 17),
+          +                windows = listOf(window(id = 18)),
+          +                nowUptimeMs = 2_000L,
+          +            )
+          +        )
+          +    }
+          +
+          +    @Test fun rejectsConflictingActiveApplicationPackage() {
+          +        assertNull(
+          +            AccessibilityEventProvenanceV50.recover(
+          +                event = event(),
+          +                windows = listOf(window(), window(id = 18, pkg = "com.android.chrome")),
+          +                nowUptimeMs = 2_000L,
+          +            )
+          +        )
+          +    }
+          +
+          +    @Test fun rejectsStaleEvidence() {
+          +        assertNull(
+          +            AccessibilityEventProvenanceV50.recover(
+          +                event = event(at = 1_000L),
+          +                windows = listOf(window()),
+          +                nowUptimeMs = 20_000L,
+          +            )
+          +        )
+          +    }
+          +
+          +    @Test fun rejectsWrongExpectedPackage() {
+          +        assertNull(
+          +            AccessibilityEventProvenanceV50.recover(
+          +                event = event(),
+          +                windows = listOf(window()),
+          +                nowUptimeMs = 2_000L,
+          +                expectedPackage = "com.android.chrome",
+          +            )
+          +        )
+          +    }
+          +}
+          PATCH050
+          test "$(sha256sum /tmp/050.patch | awk '{print $1}')" = "a7d5eae5cb1222cb3cb9340e1e91eaebf65515aa3b59d8788b8ca94875bbaf6b"
+          git apply --check /tmp/050.patch
+          git apply /tmp/050.patch
+          cp /tmp/050.patch 050-isolated.patch
+          echo '050 isolated patch applied sha256=a7d5eae5cb1222cb3cb9340e1e91eaebf65515aa3b59d8788b8ca94875bbaf6b' >> 050-verification-report.txt
+
+      - name: Verify 050 source isolation, expected tree, and frozen regions
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PYISO'
+          from pathlib import Path
+          import hashlib,json
+          def h(b): return hashlib.sha256(b).hexdigest()
+          def sf(p): return h(Path(p).read_bytes())
+          baseline=json.loads(Path('050-baseline-source-manifest.json').read_text())
+          current={}
+          for p in sorted(Path('app').rglob('*')):
+              if p.is_file() and not p.as_posix().startswith('app/build/'):
+                  current[p.as_posix()]=sf(p)
+          changed=sorted(k for k in set(baseline)&set(current) if baseline[k]!=current[k])
+          added=sorted(set(current)-set(baseline))
+          removed=sorted(set(baseline)-set(current))
+          allowed_changed=sorted([
+            'app/build.gradle.kts',
+            'app/src/main/kotlin/ai/closepaw/app/AgentService.kt',
+            'app/src/main/kotlin/ai/closepaw/app/HybridAgentEngine.kt',
+            'app/src/main/kotlin/ai/closepaw/ui/settings/PermissionsAdvancedSettingsPage.kt',
+            'app/src/main/res/values/strings.xml',
+          ])
+          allowed_added=sorted([
+            'app/src/main/kotlin/ai/closepaw/app/AccessibilityEventProvenanceV50.kt',
+            'app/src/test/kotlin/ai/closepaw/app/AccessibilityEventProvenanceV50Test.kt',
+          ])
+          if changed != allowed_changed or added != allowed_added or removed:
+              raise SystemExit(f'050 source isolation failed changed={changed} added={added} removed={removed}')
+
+          expected_hashes={
+            'app/build.gradle.kts':'0303bcbd2a9777fd9daf3fa88c547db8da6f8793f34634e47b419743697cee91',
+            'app/src/main/kotlin/ai/closepaw/app/AccessibilityEventProvenanceV50.kt':'a8dc0afb76daa59ba6c80c3b29bef1a84559e2638795b523ada8fef2d4637b36',
+            'app/src/main/kotlin/ai/closepaw/app/AgentService.kt':'ba736d1ab325130c5e0b9c33be86bf6b49efa8c4c3141da2644753a1eaa3151c',
+            'app/src/main/kotlin/ai/closepaw/app/HybridAgentEngine.kt':'b05d55593b065be85fdb953823d383a553c8da28971241b1798b6d6de535f02c',
+            'app/src/main/kotlin/ai/closepaw/ui/settings/PermissionsAdvancedSettingsPage.kt':'2261c0c3d15a5fa1bf36591e4006c1628ef68d0dd065b1886684b274d79f8090',
+            'app/src/main/res/values/strings.xml':'80a08ce108e1bf7dbf954886fb47bfa088bde8c7205aba085f2162a85266b87c',
+            'app/src/test/kotlin/ai/closepaw/app/AccessibilityEventProvenanceV50Test.kt':'ec2da9a87bd27c6ebb005dc53e15f4843e23501c88baea6504f86a856c3329c3',
+          }
+          for p,w in expected_hashes.items():
+              got=sf(p)
+              if got!=w: raise SystemExit(f'050 expected file mismatch {p}: {got} != {w}')
+
+          if h((json.dumps(current,indent=2,sort_keys=True)+'\n').encode()) != 'fc9de9315177b68e4913358fbfa3bc23b92c18d2d90775d8009992546efd3cb0':
+              raise SystemExit('050 exact expected postpatch tree manifest hash mismatch')
+
+          frozen=json.loads(Path('050-baseline-critical-hashes.json').read_text())
+          eng=Path('app/src/main/kotlin/ai/closepaw/app/HybridAgentEngine.kt').read_text()
+          def reg(a,b):
+              s=eng.find(a); e=eng.find(b,s)
+              if s<0 or e<0: raise SystemExit(f'protected region missing postpatch: {a} -> {b}')
+              return h(eng[s:e].encode())
+          now={
+            'rc8_restore':reg('// RC8: only strong identity evidence may authorize a restore-side navigation.','private suspend fun restoreSidebarShapeIfNeeded('),
+            'durable_transaction':reg('private suspend fun executeActionTransactionV9(','private fun receiptHistoryLineV9('),
+            'v33_validation':reg('private suspend fun requestPrimaryPlanV9(','private fun buildBrainRequest('),
+            'brain_restore':reg('private suspend fun restoreAfterBrainExcursion(','private fun configuredBrainV9(): ChatBrainSettings'),
+            'brain_send':reg('private suspend fun sendConfiguredBrainMessageV9(','private suspend fun waitForMatchingBrainResponseV9('),
+            'open_app_exact':reg('private suspend fun openApp(platform: AndroidPlatform, name: String): ActionOutcome {','private suspend fun clickByText('),
+            'navigator_v43':sf('app/src/main/kotlin/ai/closepaw/app/DeterministicUiNavigatorV43.kt'),
+            'grammar_v43':sf('app/src/main/kotlin/ai/closepaw/app/PrimaryLocalGrammarV43.kt'),
+            'prereq_v45':sf('app/src/main/kotlin/ai/closepaw/app/GoalAppPrerequisiteV45.kt'),
+            'goal_v41':sf('app/src/main/kotlin/ai/closepaw/app/GoalPostconditionV41.kt'),
+            'causal_v46':sf('app/src/main/kotlin/ai/closepaw/app/CausalDestinationV46.kt'),
+            'brain_recovery_v46':sf('app/src/main/kotlin/ai/closepaw/app/BrainExcursionRecoveryV46.kt'),
+            'foreground_v46':sf('app/src/main/kotlin/ai/closepaw/app/ForegroundPackageV46.kt'),
+            'work_surface_v47':sf('app/src/main/kotlin/ai/closepaw/app/WorkSurfaceV47.kt'),
+            'protocol':sf('app/src/main/kotlin/ai/closepaw/app/HybridAgentProtocol.kt'),
+            'rc11':sf('app/src/main/kotlin/ai/closepaw/app/RC11CorrectnessPolicy.kt'),
+            'transport':sf('app/src/main/kotlin/ai/closepaw/app/PrimaryLocalHttpTransportV32.kt'),
+            'brain_target':sf('app/src/main/kotlin/ai/closepaw/app/ConfiguredBrainTargetResolverV40.kt'),
+            'accessibility_platform':sf('app/src/main/kotlin/ai/closepaw/platform/AccessibilityPlatform.kt'),
+            'bridge':sf('tools/termux-bridge/closepaw_bridge.py'),
+          }
+          bad={k:(frozen[k],now[k]) for k in frozen if frozen[k]!=now[k]}
+          if bad: raise SystemExit(f'050 frozen-region regression: {bad}')
+          Path('050-postpatch-source-manifest.json').write_text(json.dumps(current,indent=2,sort_keys=True)+'\n')
+          print('050 SOURCE ISOLATION + EXACT TREE + FROZEN REGIONS: PASS')
+          PYISO
+
+      - name: Audit 050 architecture contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PYAUDIT'
+          from pathlib import Path
+          e=Path('app/src/main/kotlin/ai/closepaw/app/HybridAgentEngine.kt').read_text()
+          s=Path('app/src/main/kotlin/ai/closepaw/app/AgentService.kt').read_text()
+          h=Path('app/src/main/kotlin/ai/closepaw/app/AccessibilityEventProvenanceV50.kt').read_text()
+          d=Path('app/src/main/kotlin/ai/closepaw/ui/settings/PermissionsAdvancedSettingsPage.kt').read_text()
+          gradle=Path('app/build.gradle.kts').read_text()
+          strings=Path('app/src/main/res/values/strings.xml').read_text()
+
+          required_engine=[
+            'eventPackageMatchV50()',
+            'AccessibilityEventProvenanceV50.recover(',
+            'expectedPackage = expectedPackage',
+            'decision=accept_event_provenance',
+            'event.revision > startEventRevision',
+            'val causalAliasFromEventV50',
+            'CAUSAL_EVENT_V50|source=',
+          ]
+          for token in required_engine:
+              if token not in e: raise SystemExit('050 engine contract missing '+token)
+          required_service=[
+            'hybridUiLastWindowEventV50',
+            'TYPE_WINDOW_STATE_CHANGED ||',
+            'TYPE_WINDOW_CONTENT_CHANGED',
+            'windowId = stableEvent.windowId',
+            'packageName = packageName',
+          ]
+          for token in required_service:
+              if token not in s: raise SystemExit('050 service provenance missing '+token)
+          required_helper=[
+            'age < 0L || age > maxAgeMs',
+            'activeAppWindows.any',
+            'row.packageName',
+            'correlated.size != 1',
+            'it.windowId == e.windowId',
+          ]
+          for token in required_helper:
+              if token not in h: raise SystemExit('050 fail-closed helper missing '+token)
+          if 'ClosePaw-${BuildConfig.VERSION_NAME}-diagnostics.zip' not in d:
+              raise SystemExit('050 dynamic diagnostics filename missing')
+          if 'ClosePaw-036-diagnostics.zip' in d:
+              raise SystemExit('hard-coded 036 diagnostics filename remains')
+          if 'applicationIdSuffix = ".rc11c050"' not in gradle or 'versionNameSuffix = "-rc11-c050"' not in gradle:
+              raise SystemExit('050 identity missing')
+          if 'ClosePaw RC11 050' not in strings:
+              raise SystemExit('050 label missing')
+          if 'take(600)' in e:
+              raise SystemExit('goal truncation reintroduced')
+          with Path('050-verification-report.txt').open('a') as out:
+              out.write('049 receipt snapshot/package continuity preserved: PASS\n')
+              out.write('V50 event package recovery requires same active window id + recency + no package conflict: PASS\n')
+              out.write('V50 causal event title evidence requires post-action event revision and reuses V46 conservative alias rules: PASS\n')
+              out.write('Diagnostics filename is version-dynamic: PASS\n')
+              out.write('Frozen V43/V45/grammar/transaction/restore/transport/platform surfaces unchanged: PASS\n')
+          print('050 ARCHITECTURE CONTRACT AUDIT: PASS')
+          PYAUDIT
+
+      - name: 050 clean Kotlin compile gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./gradlew clean :app:compileDebugKotlin --stacktrace --no-daemon --no-configuration-cache
+          echo '050 clean Kotlin compile: PASS' >> 050-verification-report.txt
+
+      - name: 050 targeted regression tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./gradlew :app:testDebugUnitTest \
+            --tests ai.closepaw.app.AccessibilityEventProvenanceV50Test \
+            --tests ai.closepaw.app.WorkSurfaceV47Test \
+            --tests ai.closepaw.app.ForegroundPackageV46Test \
+            --tests ai.closepaw.app.CausalDestinationV46Test \
+            --tests ai.closepaw.app.BrainExcursionRecoveryV46Test \
+            --tests ai.closepaw.app.GoalAppPrerequisiteV45Test \
+            --tests ai.closepaw.app.V45SequencingContractTest \
+            --tests ai.closepaw.app.DeterministicUiNavigatorV43Test \
+            --tests ai.closepaw.app.PrimaryLocalGrammarV43Test \
+            --tests ai.closepaw.app.GoalPostconditionV41Test \
+            --tests ai.closepaw.app.ConfiguredBrainTargetResolverV40Test \
+            --tests ai.closepaw.app.PrimaryLocalGrammarV37Test \
+            --tests ai.closepaw.app.PrimaryFormatComplianceV33Test \
+            --tests ai.closepaw.app.PrimaryLocalHttpTransportV32Test \
+            --tests ai.closepaw.app.RC11CorrectnessPolicyTest \
+            --tests ai.closepaw.termux.ClosePawBridgeResourceTest \
+            --stacktrace --no-daemon --no-configuration-cache
+          echo '050 targeted regression tests: PASS' >> 050-verification-report.txt
+
+      - name: 050 full unit tests and clean rebuild
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./gradlew :app:testDebugUnitTest :app:assembleDebug --stacktrace --no-daemon --no-configuration-cache
+          echo '050 full tests + assemble: PASS' >> 050-verification-report.txt
+
+      - name: 050 APK identity integrity native-runtime and signature gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          mapfile -t APKS < <(find app/build/outputs/apk/debug -maxdepth 1 -type f -name '*.apk' -print)
+          [ "${#APKS[@]}" -eq 1 ] || { echo 'expected one APK' >&2; exit 1; }
+          APK="${APKS[0]}"
+          unzip -tq "$APK" >/dev/null
+          SIZE="$(stat -c %s "$APK")"
+          [ "$SIZE" -gt 50000000 ] || { echo 'APK too small' >&2; exit 1; }
+          CONTENTS="$(zipinfo -1 "$APK")"
+          for E in AndroidManifest.xml classes.dex lib/arm64-v8a/libllama.so lib/arm64-v8a/libggml.so lib/arm64-v8a/libinference_engine.so lib/arm64-v8a/libinference_engine_jni.so lib/arm64-v8a/libinference_engine_llamacpp_backend.so; do
+            grep -Fxq "$E" <<<"$CONTENTS" || { echo "missing $E" >&2; exit 1; }
+          done
+          AAPT="$(find "$ANDROID_HOME/build-tools" -type f -name aapt -print | sort -V | tail -n1)"
+          APKSIGNER="$(find "$ANDROID_HOME/build-tools" -type f -name apksigner -print | sort -V | tail -n1)"
+          BADGING="$($AAPT dump badging "$APK")"
+          grep -Fq "package: name='ai.closepaw.rc11c050'" <<<"$BADGING"
+          grep -Fq "application-label:'ClosePaw RC11 050'" <<<"$BADGING"
+          grep -Fq "sdkVersion:'31'" <<<"$BADGING"
+          grep -Fq "targetSdkVersion:'36'" <<<"$BADGING"
+          "$APKSIGNER" verify --verbose "$APK" > 050-apksigner-verification.txt
+          echo "050 APK gate PASS sha256=$(sha256sum "$APK" | awk '{print $1}') size=$SIZE" | tee -a 050-verification-report.txt
+
+      - name: Prepare 050 full verified source snapshot
+        if: success()
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf 050-full-source
+          mkdir -p 050-full-source
+          rsync -a --exclude='.git/' --exclude='.github/' --exclude='.gradle/' --exclude='app/build/' --exclude='050-full-source/' ./ 050-full-source/
+          test -f 050-full-source/app/src/main/kotlin/ai/closepaw/app/AccessibilityEventProvenanceV50.kt
+          test -f 050-full-source/050-postpatch-source-manifest.json
+
+      - name: Upload 050 verification proof
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: 050-ClosePaw-RC11-verification-proof
+          if-no-files-found: warn
+          path: |
+            050-verification-report.txt
+            050-isolated.patch
+            050-baseline-source-manifest.json
+            050-postpatch-source-manifest.json
+            050-baseline-critical-hashes.json
+            050-apksigner-verification.txt
+
+      - name: Upload 050 full verified source
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: 050-ClosePaw-RC11-verified-full-source
+          if-no-files-found: error
+          path: 050-full-source/
+
+      - name: Upload 050 APK
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: 050-ClosePaw-RC11-APK
+          if-no-files-found: error
+          path: app/build/outputs/apk/debug/app-debug.apk
+
+      - name: Upload 050 failure sources
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: 050-ClosePaw-RC11-failure-sources
+          if-no-files-found: warn
+          path: |
+            app/src/main/kotlin/ai/closepaw/app/AccessibilityEventProvenanceV50.kt
+            app/src/main/kotlin/ai/closepaw/app/AgentService.kt
+            app/src/main/kotlin/ai/closepaw/app/HybridAgentEngine.kt
+            app/src/main/kotlin/ai/closepaw/ui/settings/PermissionsAdvancedSettingsPage.kt
+            050-verification-report.txt
+            050-isolated.patch
