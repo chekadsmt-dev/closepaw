@@ -822,12 +822,24 @@ jobs:
             'AccessibilityEventProvenanceV50.recover(',
             'expectedPackage = expectedPackage',
             'decision=accept_event_provenance',
-            'event.revision > startEventRevision',
             'val causalAliasFromEventV50',
             'CAUSAL_EVENT_V50|source=',
           ]
           for token in required_engine:
               if token not in e: raise SystemExit('050 engine contract missing '+token)
+
+          # Validate the causal post-action revision gate semantically instead of depending on
+          # the local lambda variable name (the source correctly uses `match.revision`).
+          import re
+          receipt_start=e.find('private suspend fun buildPostActionReceiptV9(')
+          receipt_end=e.find('private suspend fun executeActionTransactionV9(', receipt_start)
+          if receipt_start < 0 or receipt_end < 0:
+              raise SystemExit('050 receipt function missing for revision-gate audit')
+          receipt=e[receipt_start:receipt_end]
+          if 'afterWindowEventV50 = eventPackageMatchV50()?.takeIf' not in receipt:
+              raise SystemExit('050 post-action event provenance capture missing')
+          if not re.search(r'\b[A-Za-z_][A-Za-z0-9_]*\.revision\s*>\s*startEventRevision\b', receipt):
+              raise SystemExit('050 causal event revision gate missing')
           required_service=[
             'hybridUiLastWindowEventV50',
             'TYPE_WINDOW_STATE_CHANGED ||',
