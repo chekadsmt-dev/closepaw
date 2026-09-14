@@ -1,0 +1,311 @@
+name: 055 - ClosePaw RC11 Overlay Stop Routes Hybrid First
+
+'on':
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Setup Java 17
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Restore exact verified 054 Source of Truth
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          ARTIFACT_ID='10344837628'
+          EXPECTED_RUN='34836436419'
+          EXPECTED_DIGEST='sha256:00e6c0241b5ac3a8623eebaf5cd352901b9f43edc073f9b8fa80df8c0b15a7b2'
+          EXPECTED_MANIFEST_SHA='9790dc574c1c7c9ee7fd9276559f3d8e8275ad04080051819252e5c9505c9508'
+          rm -rf /tmp/054-source /tmp/054-artifact.zip /tmp/054-meta.json
+          mkdir -p /tmp/054-source
+          curl -fsSL \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H 'Accept: application/vnd.github+json' \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/${ARTIFACT_ID}" \
+            -o /tmp/054-meta.json
+          python3 - <<'PYMETA'
+          import json
+          d=json.load(open('/tmp/054-meta.json'))
+          if d.get('expired'): raise SystemExit('054 Source of Truth artifact expired')
+          if d.get('name')!='054-ClosePaw-RC11-verified-full-source': raise SystemExit(f"wrong artifact name: {d.get('name')}")
+          if d.get('digest')!='sha256:00e6c0241b5ac3a8623eebaf5cd352901b9f43edc073f9b8fa80df8c0b15a7b2': raise SystemExit(f"wrong artifact digest: {d.get('digest')}")
+          if str((d.get('workflow_run') or {}).get('id'))!='34836436419': raise SystemExit('wrong source run')
+          print('054 artifact identity: PASS')
+          PYMETA
+          curl -fsSL -L \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H 'Accept: application/vnd.github+json' \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/${ARTIFACT_ID}/zip" \
+            -o /tmp/054-artifact.zip
+          unzip -q /tmp/054-artifact.zip -d /tmp/054-source
+          MANIFEST="$(find /tmp/054-source -type f -name '054-postpatch-source-manifest.json' -print -quit)"
+          [ -n "$MANIFEST" ] || { echo '054 manifest missing' >&2; exit 1; }
+          [ "$(sha256sum "$MANIFEST" | awk '{print $1}')" = "$EXPECTED_MANIFEST_SHA" ] || { echo '054 manifest identity mismatch' >&2; exit 1; }
+          ROOT="$(dirname "$MANIFEST")"
+          if [ "$ROOT" != '/tmp/054-source' ]; then
+            rm -rf /tmp/054-normalized && mkdir -p /tmp/054-normalized
+            cp -a "$ROOT"/. /tmp/054-normalized/
+            rm -rf /tmp/054-source
+            mv /tmp/054-normalized /tmp/054-source
+          fi
+          echo 'Exact verified 054 Source of Truth restored: PASS'
+
+      - name: Verify and activate exact 054 Source of Truth
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f /tmp/054-source/app/src/main/kotlin/ai/closepaw/app/HybridAgentEngine.kt
+          test "$(sha256sum /tmp/054-source/054-postpatch-source-manifest.json | awk '{print $1}')" = '9790dc574c1c7c9ee7fd9276559f3d8e8275ad04080051819252e5c9505c9508'
+          find . -mindepth 1 -maxdepth 1 ! -name .git ! -name .github -exec rm -rf {} +
+          cp -a /tmp/054-source/. ./
+          python3 - <<'PYBASE'
+          from pathlib import Path
+          import hashlib,json
+          def sha(p): return hashlib.sha256(Path(p).read_bytes()).hexdigest()
+          expected=json.loads(Path('054-postpatch-source-manifest.json').read_text())
+          current={}
+          for p in sorted(Path('app').rglob('*')):
+              if p.is_file() and not p.as_posix().startswith('app/build/'):
+                  current[p.as_posix()]=sha(p)
+          if current != expected:
+              missing=sorted(set(expected)-set(current)); added=sorted(set(current)-set(expected)); changed=sorted(k for k in set(expected)&set(current) if expected[k]!=current[k])
+              raise SystemExit(f'054 manifest mismatch missing={missing[:8]} added={added[:8]} changed={changed[:8]}')
+          critical={
+            'app/src/main/kotlin/ai/closepaw/app/HybridAgentEngine.kt':'48afff8c0b8f7e58f3dea2e72e8adcffc1fa9d2ad97e8d4db480555f3eb38027',
+            'app/src/main/kotlin/ai/closepaw/ui/chat/ChatViewModel.kt':'0efb57a30d09c10758fe2b97caefac7d3e31d40e1130eb7fae7243e186aec474',
+            'app/src/main/kotlin/ai/closepaw/app/CancellablePrimaryCallV54.kt':'92d463ff0a8214a2bbb598c7db5c5c04279d0404ba99941a802b160f2fa182f3',
+            'app/src/main/kotlin/ai/closepaw/app/DeterministicUiNavigatorV43.kt':'945670dd4f8818b10933245a27298dfe0de4b9da590c54f06a9ba4657e11301f',
+            'app/src/main/kotlin/ai/closepaw/app/GoalAppPrerequisiteV45.kt':'b1be3b8953bc0620a921d6e639e68ee1ae4a61952d20a52943da148a3edbee37',
+            'app/src/main/kotlin/ai/closepaw/app/CausalDestinationV46.kt':'eed7423a080b1d8b8b8a40ac943f88a62db658c5eb12f9a638fc3974cc938e73',
+            'app/src/main/kotlin/ai/closepaw/app/WorkSurfaceV47.kt':'683a9f6d8b5c8a676ba00bb9cda4cf954314470afae4a9b2bf1ab3862f6ea47e',
+            'app/src/main/kotlin/ai/closepaw/app/AccessibilityEventHistoryV51.kt':'a75c7ea133c1100e229debf071e0d4063a1c9cb1c3cee3191d2ca4f37f2a5894',
+            'app/src/main/kotlin/ai/closepaw/app/CausalWindowTitleV52.kt':'31074f2744d71b78277d8fa08e95a460e0d4043c39fcc3a9ce93f1e33620485f',
+            'app/src/main/kotlin/ai/closepaw/app/DeterministicOverflowNavigatorV53.kt':'92fa34059e602da10fabf9fef511ae3f1971efa576346918ef172bdb52751f23',
+            'app/src/main/kotlin/ai/closepaw/memory/MemoryRecaller.kt':'cf71beb7d1e6e0b8d4ab1117e1d4ebb5d3f891f3ee1ac0ae96a4ed66f8e59984',
+            'app/src/main/kotlin/ai/closepaw/memory/MemorySchema.kt':'c05a45adeba8f2bb92054dd8cf9f26d364ece5a158823cb9919cea1e86819311',
+            'app/src/main/kotlin/ai/closepaw/memory/MemoryStore.kt':'471bdb194e9802d9b210a8985ec6d980d1689407be2ac07c9af306939f718d5e',
+            'app/src/main/kotlin/ai/closepaw/tool/impl/RememberExperienceTool.kt':'5bfc8dba5af81342e93f6c31d093c495a01416266ebf68eecd6e472a0e4b8425',
+          }
+          for p,want in critical.items():
+              got=sha(p)
+              if got!=want: raise SystemExit(f'054 critical mismatch {p}: {got} != {want}')
+          Path('055-verification-report.txt').write_text(
+              'ClosePaw RC11 055 verification report\n'
+              'Base: exact verified 054 full-source artifact id=10344837628 run=34836436419.\n'
+              'Runtime evidence: c054 Diagnostics contains no USER_STOP_V54 event after Stop was pressed while Settings was foreground. The system overlay callback still called submitOp(Op.Shutdown), which targets only the legacy AgentSession path.\n'
+              'V55 scope: route the system-overlay Stop callback to stopActiveHybridTaskFromUi() first, preserving the previous legacy Op.Shutdown fallback when no Hybrid task is active.\n'
+              'Frozen: V43-V54 navigation/verification/cancellable Primary behavior, RC8/RC11 correctness, Brain path, AccessibilityPlatform, and all Memory files.\n', encoding='utf-8')
+          print('054 exact baseline: PASS')
+          PYBASE
+
+      - name: Baseline 054 clean compile
+        shell: bash
+        run: |
+          set -euo pipefail
+          chmod +x ./gradlew
+          ./gradlew clean :app:compileDebugKotlin --stacktrace --no-daemon --no-configuration-cache
+          echo 'Baseline 054 clean compile: PASS' >> 055-verification-report.txt
+
+      - name: Apply isolated 055 patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > /tmp/055.patch.b64 <<'PATCH055_B64'
+          ZGlmZiAtLWdpdCBhL2FwcC9idWlsZC5ncmFkbGUua3RzIGIvYXBwL2J1aWxkLmdyYWRsZS5rdHMK
+          aW5kZXggMTg1NTI0Yi4uYjJhYjM4NiAxMDA2NDQKLS0tIGEvYXBwL2J1aWxkLmdyYWRsZS5rdHMK
+          KysrIGIvYXBwL2J1aWxkLmdyYWRsZS5rdHMKQEAgLTQ2LDggKzQ2LDggQEAgYW5kcm9pZCB7CiAK
+          ICAgICBidWlsZFR5cGVzIHsKICAgICAgICAgZGVidWcgewotICAgIGFwcGxpY2F0aW9uSWRTdWZm
+          aXggPSAiLnJjMTFjMDU0IgotICAgIHZlcnNpb25OYW1lU3VmZml4ID0gIi1yYzExLWMwNTQiCisg
+          ICAgYXBwbGljYXRpb25JZFN1ZmZpeCA9ICIucmMxMWMwNTUiCisgICAgdmVyc2lvbk5hbWVTdWZm
+          aXggPSAiLXJjMTEtYzA1NSIKIAogICAgIHZhbCBldmFsU3NsID0gcHJvamVjdC5maW5kUHJvcGVy
+          dHkoImluc2VjdXJlU3NsRm9yRXZhbCIpPy50b1N0cmluZygpPy50b0Jvb2xlYW4oKSA/OiBmYWxz
+          ZQogICAgIGJ1aWxkQ29uZmlnRmllbGQoImJvb2xlYW4iLCAiSU5TRUNVUkVfU1NMX0ZPUl9FVkFM
+          IiwgZXZhbFNzbC50b1N0cmluZygpKQpkaWZmIC0tZ2l0IGEvYXBwL3NyYy9tYWluL2tvdGxpbi9h
+          aS9jbG9zZXBhdy9hcHAvQWdlbnRTZXJ2aWNlLmt0IGIvYXBwL3NyYy9tYWluL2tvdGxpbi9haS9j
+          bG9zZXBhdy9hcHAvQWdlbnRTZXJ2aWNlLmt0CmluZGV4IDE4MDNmOTguLjliMTNlZWMgMTAwNjQ0
+          Ci0tLSBhL2FwcC9zcmMvbWFpbi9rb3RsaW4vYWkvY2xvc2VwYXcvYXBwL0FnZW50U2VydmljZS5r
+          dAorKysgYi9hcHAvc3JjL21haW4va290bGluL2FpL2Nsb3NlcGF3L2FwcC9BZ2VudFNlcnZpY2Uu
+          a3QKQEAgLTI3NCw3ICsyNzQsMTMgQEAgY2xhc3MgQWdlbnRTZXJ2aWNlIDogQWNjZXNzaWJpbGl0
+          eVNlcnZpY2UoKSB7CiAgICAgICAgICAgICAgICAgICAgICAgICBzY29wZSA9IHNlcnZpY2VTY29w
+          ZSwKICAgICAgICAgICAgICAgICAgICAgICAgIGFwcFBhY2thZ2UgPSBPVVJfUEFDS0FHRSwKICAg
+          ICAgICAgICAgICAgICAgICAgICAgIGxvZ1RhZyA9IFRBRywKLSAgICAgICAgICAgICAgICAgICAg
+          ICAgIG9uU3RvcCA9IHsgc3VibWl0T3AoT3AuU2h1dGRvd24pIH0sCisgICAgICAgICAgICAgICAg
+          ICAgICAgICBvblN0b3AgPSB7CisgICAgICAgICAgICAgICAgICAgICAgICAgICAgLy8gVjU1OiBv
+          dmVybGF5IFN0b3AgbXVzdCBjYW5jZWwgdGhlIHNlcnZpY2Utb3duZWQgSHlicmlkIHRhc2sgZmly
+          c3QuCisgICAgICAgICAgICAgICAgICAgICAgICAgICAgLy8gUHJlc2VydmUgdGhlIGxlZ2FjeSBB
+          Z2VudFNlc3Npb24gc2h1dGRvd24gcGF0aCBvbmx5IHdoZW4gbm8gSHlicmlkIHRhc2sgaXMgYWN0
+          aXZlLgorICAgICAgICAgICAgICAgICAgICAgICAgICAgIGlmICghc3RvcEFjdGl2ZUh5YnJpZFRh
+          c2tGcm9tVWkoKSkgeworICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICBzdWJtaXRPcChP
+          cC5TaHV0ZG93bikKKyAgICAgICAgICAgICAgICAgICAgICAgICAgICB9CisgICAgICAgICAgICAg
+          ICAgICAgICAgICB9LAogICAgICAgICAgICAgICAgICAgICAgICAgb25UYWtlb3ZlciA9IHsgc3Vi
+          bWl0T3AoT3AuVGFrZW92ZXIpIH0sCiAgICAgICAgICAgICAgICAgICAgICAgICBvblJlc3VtZSA9
+          IHsgc3VibWl0T3AoT3AuUmVzdW1lKSB9LAogICAgICAgICAgICAgICAgICAgICAgICAgb25TdXBw
+          bGVtZW50ID0geyB0ZXh0IC0+IHN1Ym1pdE9wKE9wLlN1cHBsZW1lbnQodGV4dCkpIH0sCmRpZmYg
+          LS1naXQgYS9hcHAvc3JjL21haW4vcmVzL3ZhbHVlcy9zdHJpbmdzLnhtbCBiL2FwcC9zcmMvbWFp
+          bi9yZXMvdmFsdWVzL3N0cmluZ3MueG1sCmluZGV4IDdmNmQ3M2UuLmI3NWU0ZTEgMTAwNjQ0Ci0t
+          LSBhL2FwcC9zcmMvbWFpbi9yZXMvdmFsdWVzL3N0cmluZ3MueG1sCisrKyBiL2FwcC9zcmMvbWFp
+          bi9yZXMvdmFsdWVzL3N0cmluZ3MueG1sCkBAIC0xLDUgKzEsNSBAQAogPD94bWwgdmVyc2lvbj0i
+          MS4wIiBlbmNvZGluZz0idXRmLTgiPz4KIDxyZXNvdXJjZXM+Ci0gICAgPHN0cmluZyBuYW1lPSJh
+          cHBfbmFtZSI+Q2xvc2VQYXcgUkMxMSAwNTQ8L3N0cmluZz4KKyAgICA8c3RyaW5nIG5hbWU9ImFw
+          cF9uYW1lIj5DbG9zZVBhdyBSQzExIDA1NTwvc3RyaW5nPgogICAgIDxzdHJpbmcgbmFtZT0iYWNj
+          ZXNzaWJpbGl0eV9zZXJ2aWNlX2Rlc2NyaXB0aW9uIj5DbG9zZVBhdyBhY3RzIGFzIGFuIG9uLWRl
+          dmljZSBhdXRvbWF0aW9uIGFnZW50LiBXaXRoIHlvdXIgcGVybWlzc2lvbiwgaXQgcmVhZHMgb24t
+          c2NyZWVuIGVsZW1lbnRzIGFuZCBwZXJmb3JtcyB0YXBzLCBzd2lwZXMsIGFuZCB0ZXh0IGlucHV0
+          IG9ubHkgd2hlbiB5b3Ugc3RhcnQgYSB0YXNrLiBJdCBkb2VzIG5vdCBydW4gaW4gdGhlIGJhY2tn
+          cm91bmQgb3IgbW9uaXRvciBvdGhlciBhcHBzLjwvc3RyaW5nPgogPC9yZXNvdXJjZXM+Cg==
+          PATCH055_B64
+          sed 's/^          //' /tmp/055.patch.b64 | base64 -d > 055-isolated.patch
+          test "$(sha256sum 055-isolated.patch | awk '{print $1}')" = 'a19142d2d59f0c6e7f6891161f6ba0f45403d013e8e539d1319c216cffe49bcb'
+          git apply --check 055-isolated.patch
+          git apply 055-isolated.patch
+          echo '055 isolated patch applied: PASS' >> 055-verification-report.txt
+
+      - name: Verify 055 exact isolation and stop-routing contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PYVERIFY'
+          from pathlib import Path
+          import hashlib,json
+          def sha(p): return hashlib.sha256(Path(p).read_bytes()).hexdigest()
+          base=json.loads(Path('054-postpatch-source-manifest.json').read_text())
+          current={}
+          for p in sorted(Path('app').rglob('*')):
+              if p.is_file() and not p.as_posix().startswith('app/build/'):
+                  current[p.as_posix()]=sha(p)
+          changed={p for p in set(base)|set(current) if base.get(p)!=current.get(p)}
+          expected={
+            'app/build.gradle.kts',
+            'app/src/main/kotlin/ai/closepaw/app/AgentService.kt',
+            'app/src/main/res/values/strings.xml',
+          }
+          if changed!=expected: raise SystemExit(f'055 isolation failure changed={sorted(changed)}')
+          expected_hashes={
+            'app/build.gradle.kts':'212cfa4fca5f1993f23a61ff556fc11754e6500921dc42493a0db50b9f2cc664',
+            'app/src/main/kotlin/ai/closepaw/app/AgentService.kt':'b9259586a723ee244928b48ebe41c801d3a143a32a408c988cebf4785601aa81',
+            'app/src/main/res/values/strings.xml':'160b955bf1d295d7f1d8041154dfbeb469b207c159b62995fc2052c92d5718d8',
+          }
+          for p,want in expected_hashes.items():
+              got=current[p]
+              if got!=want: raise SystemExit(f'055 expected hash mismatch {p}: {got} != {want}')
+
+          service=Path('app/src/main/kotlin/ai/closepaw/app/AgentService.kt').read_text()
+          start=service.index('onStop = {')
+          end=service.index('onTakeover =', start)
+          stop_block=service[start:end]
+          if 'if (!stopActiveHybridTaskFromUi())' not in stop_block: raise SystemExit('Hybrid-first overlay Stop missing')
+          if 'submitOp(Op.Shutdown)' not in stop_block: raise SystemExit('legacy overlay Stop fallback missing')
+          if stop_block.index('stopActiveHybridTaskFromUi()') > stop_block.index('submitOp(Op.Shutdown)'): raise SystemExit('legacy stop occurs before Hybrid stop')
+
+          frozen={
+            'app/src/main/kotlin/ai/closepaw/app/HybridAgentEngine.kt':'48afff8c0b8f7e58f3dea2e72e8adcffc1fa9d2ad97e8d4db480555f3eb38027',
+            'app/src/main/kotlin/ai/closepaw/ui/chat/ChatViewModel.kt':'0efb57a30d09c10758fe2b97caefac7d3e31d40e1130eb7fae7243e186aec474',
+            'app/src/main/kotlin/ai/closepaw/app/CancellablePrimaryCallV54.kt':'92d463ff0a8214a2bbb598c7db5c5c04279d0404ba99941a802b160f2fa182f3',
+            'app/src/main/kotlin/ai/closepaw/app/DeterministicUiNavigatorV43.kt':'945670dd4f8818b10933245a27298dfe0de4b9da590c54f06a9ba4657e11301f',
+            'app/src/main/kotlin/ai/closepaw/app/GoalAppPrerequisiteV45.kt':'b1be3b8953bc0620a921d6e639e68ee1ae4a61952d20a52943da148a3edbee37',
+            'app/src/main/kotlin/ai/closepaw/app/CausalDestinationV46.kt':'eed7423a080b1d8b8b8a40ac943f88a62db658c5eb12f9a638fc3974cc938e73',
+            'app/src/main/kotlin/ai/closepaw/app/WorkSurfaceV47.kt':'683a9f6d8b5c8a676ba00bb9cda4cf954314470afae4a9b2bf1ab3862f6ea47e',
+            'app/src/main/kotlin/ai/closepaw/app/AccessibilityEventHistoryV51.kt':'a75c7ea133c1100e229debf071e0d4063a1c9cb1c3cee3191d2ca4f37f2a5894',
+            'app/src/main/kotlin/ai/closepaw/app/CausalWindowTitleV52.kt':'31074f2744d71b78277d8fa08e95a460e0d4043c39fcc3a9ce93f1e33620485f',
+            'app/src/main/kotlin/ai/closepaw/app/DeterministicOverflowNavigatorV53.kt':'92fa34059e602da10fabf9fef511ae3f1971efa576346918ef172bdb52751f23',
+            'app/src/main/kotlin/ai/closepaw/memory/MemoryRecaller.kt':'cf71beb7d1e6e0b8d4ab1117e1d4ebb5d3f891f3ee1ac0ae96a4ed66f8e59984',
+            'app/src/main/kotlin/ai/closepaw/memory/MemorySchema.kt':'c05a45adeba8f2bb92054dd8cf9f26d364ece5a158823cb9919cea1e86819311',
+            'app/src/main/kotlin/ai/closepaw/memory/MemoryStore.kt':'471bdb194e9802d9b210a8985ec6d980d1689407be2ac07c9af306939f718d5e',
+            'app/src/main/kotlin/ai/closepaw/tool/impl/RememberExperienceTool.kt':'5bfc8dba5af81342e93f6c31d093c495a01416266ebf68eecd6e472a0e4b8425',
+          }
+          for p,want in frozen.items():
+              got=sha(p)
+              if got!=want: raise SystemExit(f'055 frozen surface changed {p}')
+
+          Path('055-postpatch-source-manifest.json').write_text(json.dumps(current,indent=2,sort_keys=True)+'\n')
+          got=hashlib.sha256(Path('055-postpatch-source-manifest.json').read_bytes()).hexdigest()
+          if got!='f4a0a8e180f0e154f490a41692db339738a3bea7438f645fad438f0f599dc75d': raise SystemExit(f'055 manifest digest mismatch {got}')
+          with Path('055-verification-report.txt').open('a') as f:
+              f.write('055 source isolation: PASS\n')
+              f.write('System overlay Stop routes Hybrid first and legacy only as fallback: PASS\n')
+              f.write('V43-V54 + Memory frozen hashes: PASS\n')
+          print('055 exact isolation and overlay stop contract: PASS')
+          PYVERIFY
+
+      - name: 055 clean Kotlin compile gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./gradlew clean :app:compileDebugKotlin --stacktrace --no-daemon --no-configuration-cache
+          echo '055 clean Kotlin compile: PASS' >> 055-verification-report.txt
+
+      - name: 055 full unit tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./gradlew :app:testDebugUnitTest --stacktrace --no-daemon --no-configuration-cache
+          echo '055 full unit tests: PASS' >> 055-verification-report.txt
+
+      - name: 055 clean assemble and APK identity gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./gradlew clean :app:assembleDebug --stacktrace --no-daemon --no-configuration-cache
+          APK="$(find app/build/outputs/apk/debug -type f -name '*.apk' -print -quit)"
+          [ -n "$APK" ] || { echo 'APK missing' >&2; exit 1; }
+          BT="$(find "$ANDROID_HOME/build-tools" -mindepth 1 -maxdepth 1 -type d | sort -V | tail -1)"
+          AAPT="$BT/aapt"
+          [ -x "$AAPT" ] || AAPT="$BT/aapt2"
+          APKSIGNER="$BT/apksigner"
+          "$AAPT" dump badging "$APK" > 055-apk-badging.txt
+          grep -q "package: name='ai.closepaw.rc11c055'" 055-apk-badging.txt
+          grep -q "versionName='0.1.0-rc11-c055'" 055-apk-badging.txt
+          grep -q "application-label:'ClosePaw RC11 055'" 055-apk-badging.txt
+          "$APKSIGNER" verify --verbose --print-certs "$APK" > 055-apksigner-verification.txt
+          sha256sum "$APK" > 055-apk-sha256.txt
+          cp "$APK" ClosePaw-RC11-055.apk
+          echo '055 APK identity/signature: PASS' >> 055-verification-report.txt
+
+      - name: Prepare 055 verified full source
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf /tmp/055-verified-source
+          mkdir -p /tmp/055-verified-source
+          cp -a . /tmp/055-verified-source/root
+          rm -rf /tmp/055-verified-source/root/.git /tmp/055-verified-source/root/.github /tmp/055-verified-source/root/app/build
+          test "$(sha256sum /tmp/055-verified-source/root/055-postpatch-source-manifest.json | awk '{print $1}')" = 'f4a0a8e180f0e154f490a41692db339738a3bea7438f645fad438f0f599dc75d'
+
+      - name: Upload 055 verification proof
+        uses: actions/upload-artifact@v4
+        with:
+          name: 055-ClosePaw-RC11-verification-proof
+          path: |
+            055-verification-report.txt
+            055-isolated.patch
+            055-postpatch-source-manifest.json
+            055-apk-badging.txt
+            055-apksigner-verification.txt
+            055-apk-sha256.txt
+
+      - name: Upload 055 verified full source
+        uses: actions/upload-artifact@v4
+        with:
+          name: 055-ClosePaw-RC11-verified-full-source
+          path: /tmp/055-verified-source/root
+          include-hidden-files: true
+
+      - name: Upload 055 APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: 055-ClosePaw-RC11-APK
+          path: ClosePaw-RC11-055.apk
