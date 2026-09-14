@@ -1,0 +1,452 @@
+name: 054 - ClosePaw RC11 Hybrid Stop Routing and In-Flight Primary Cancellation
+
+'on':
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Setup Java 17
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Restore exact verified 053 Source of Truth
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          ARTIFACT_ID='10339160758'
+          EXPECTED_RUN='34821463838'
+          EXPECTED_DIGEST='sha256:7ac812724971c083818eeb63e4c7ce3c9e75af6a3da389bb479939122305f274'
+          EXPECTED_MANIFEST_SHA='3333a74bdf63517b00f06f88c192e5f49860bf6d9ffe7d5f0a6a723012ead218'
+          rm -rf /tmp/053-source /tmp/053-artifact.zip /tmp/053-meta.json
+          mkdir -p /tmp/053-source
+          curl -fsSL \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H 'Accept: application/vnd.github+json' \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/${ARTIFACT_ID}" \
+            -o /tmp/053-meta.json
+          python3 - <<'PYMETA'
+          import json
+          d=json.load(open('/tmp/053-meta.json'))
+          if d.get('expired'): raise SystemExit('053 Source of Truth artifact expired')
+          if d.get('name')!='053-ClosePaw-RC11-verified-full-source': raise SystemExit(f"wrong artifact name: {d.get('name')}")
+          if d.get('digest')!='sha256:7ac812724971c083818eeb63e4c7ce3c9e75af6a3da389bb479939122305f274': raise SystemExit(f"wrong artifact digest: {d.get('digest')}")
+          if str((d.get('workflow_run') or {}).get('id'))!='34821463838': raise SystemExit('wrong source run')
+          print('053 artifact identity: PASS')
+          PYMETA
+          curl -fsSL -L \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H 'Accept: application/vnd.github+json' \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/${ARTIFACT_ID}/zip" \
+            -o /tmp/053-artifact.zip
+          unzip -q /tmp/053-artifact.zip -d /tmp/053-source
+          MANIFEST="$(find /tmp/053-source -type f -name '053-postpatch-source-manifest.json' -print -quit)"
+          [ -n "$MANIFEST" ] || { echo '053 manifest missing' >&2; exit 1; }
+          [ "$(sha256sum "$MANIFEST" | awk '{print $1}')" = "$EXPECTED_MANIFEST_SHA" ] || { echo '053 manifest identity mismatch' >&2; exit 1; }
+          ROOT="$(dirname "$MANIFEST")"
+          if [ "$ROOT" != '/tmp/053-source' ]; then
+            rm -rf /tmp/053-normalized && mkdir -p /tmp/053-normalized
+            cp -a "$ROOT"/. /tmp/053-normalized/
+            rm -rf /tmp/053-source
+            mv /tmp/053-normalized /tmp/053-source
+          fi
+          echo 'Exact verified 053 Source of Truth restored: PASS'
+
+      - name: Verify and activate exact 053 Source of Truth
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f /tmp/053-source/app/src/main/kotlin/ai/closepaw/app/HybridAgentEngine.kt
+          test "$(sha256sum /tmp/053-source/053-postpatch-source-manifest.json | awk '{print $1}')" = '3333a74bdf63517b00f06f88c192e5f49860bf6d9ffe7d5f0a6a723012ead218'
+          find . -mindepth 1 -maxdepth 1 ! -name .git ! -name .github -exec rm -rf {} +
+          cp -a /tmp/053-source/. ./
+          python3 - <<'PYBASE'
+          from pathlib import Path
+          import hashlib,json
+          def sha(p): return hashlib.sha256(Path(p).read_bytes()).hexdigest()
+          expected=json.loads(Path('053-postpatch-source-manifest.json').read_text())
+          current={}
+          for p in sorted(Path('app').rglob('*')):
+              if p.is_file() and not p.as_posix().startswith('app/build/'):
+                  current[p.as_posix()]=sha(p)
+          if current != expected:
+              missing=sorted(set(expected)-set(current)); added=sorted(set(current)-set(expected)); changed=sorted(k for k in set(expected)&set(current) if expected[k]!=current[k])
+              raise SystemExit(f'053 manifest mismatch missing={missing[:8]} added={added[:8]} changed={changed[:8]}')
+          Path('054-verification-report.txt').write_text(
+              'ClosePaw RC11 054 verification report\n'
+              'Base: exact verified 053 full-source artifact id=10339160758 run=34821463838.\n'
+              'Runtime evidence: the visible Stop control calls ChatViewModel.stopTask(), which only interrupted AgentSession; Hybrid tasks are service-owned and set AgentService.session=null, so Stop was a no-op.\n'
+              'Additional cancellation gap: phone-local Primary used blocking OkHttp Call.execute(), which does not promptly observe coroutine Job cancellation.\n'
+              'V54 scope: route UI Stop to the active Hybrid task first, retain legacy AgentSession interrupt fallback, and make only the Primary HTTP call cooperatively cancellable.\n'
+              'Frozen: V43/V45/V46/V47/V50/V51/V52/V53 navigation and verification, RC8 restore, RC11 transaction safety, V32 timeout configuration, accessibility platform, Brain path, and all Memory files.\n', encoding='utf-8')
+          print('053 exact baseline: PASS')
+          PYBASE
+
+      - name: Baseline 053 clean compile
+        shell: bash
+        run: |
+          set -euo pipefail
+          chmod +x ./gradlew
+          ./gradlew clean :app:compileDebugKotlin --stacktrace --no-daemon --no-configuration-cache
+          echo 'Baseline 053 clean compile: PASS' >> 054-verification-report.txt
+
+      - name: Freeze protected correctness and memory surfaces
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PYFREEZE'
+          from pathlib import Path
+          import hashlib,json
+          def h(b): return hashlib.sha256(b).hexdigest()
+          def sf(p): return h(Path(p).read_bytes())
+          eng=Path('app/src/main/kotlin/ai/closepaw/app/HybridAgentEngine.kt').read_text()
+          def reg(a,b):
+              s=eng.find(a); e=eng.find(b,s)
+              if s<0 or e<0: raise SystemExit(f'protected region missing: {a} -> {b}')
+              return h(eng[s:e].encode())
+          protected={
+            'rc8_restore':reg('// RC8: only strong identity evidence may authorize a restore-side navigation.','private suspend fun restoreSidebarShapeIfNeeded('),
+            'durable_transaction':reg('private suspend fun executeActionTransactionV9(','private fun receiptHistoryLineV9('),
+            'v33_validation':reg('private suspend fun requestPrimaryPlanV9(','private fun buildBrainRequest('),
+            'brain_restore':reg('private suspend fun restoreAfterBrainExcursion(','private fun configuredBrainV9(): ChatBrainSettings'),
+            'brain_send':reg('private suspend fun sendConfiguredBrainMessageV9(','private suspend fun waitForMatchingBrainResponseV9('),
+            'navigator_v43':sf('app/src/main/kotlin/ai/closepaw/app/DeterministicUiNavigatorV43.kt'),
+            'grammar_v43':sf('app/src/main/kotlin/ai/closepaw/app/PrimaryLocalGrammarV43.kt'),
+            'prereq_v45':sf('app/src/main/kotlin/ai/closepaw/app/GoalAppPrerequisiteV45.kt'),
+            'causal_v46':sf('app/src/main/kotlin/ai/closepaw/app/CausalDestinationV46.kt'),
+            'work_surface_v47':sf('app/src/main/kotlin/ai/closepaw/app/WorkSurfaceV47.kt'),
+            'event_v50':sf('app/src/main/kotlin/ai/closepaw/app/AccessibilityEventProvenanceV50.kt'),
+            'event_v51':sf('app/src/main/kotlin/ai/closepaw/app/AccessibilityEventHistoryV51.kt'),
+            'causal_title_v52':sf('app/src/main/kotlin/ai/closepaw/app/CausalWindowTitleV52.kt'),
+            'overflow_v53':sf('app/src/main/kotlin/ai/closepaw/app/DeterministicOverflowNavigatorV53.kt'),
+            'rc11':sf('app/src/main/kotlin/ai/closepaw/app/RC11CorrectnessPolicy.kt'),
+            'transport_v32':sf('app/src/main/kotlin/ai/closepaw/app/PrimaryLocalHttpTransportV32.kt'),
+            'accessibility_platform':sf('app/src/main/kotlin/ai/closepaw/platform/AccessibilityPlatform.kt'),
+            'memory_recaller':sf('app/src/main/kotlin/ai/closepaw/memory/MemoryRecaller.kt'),
+            'memory_schema':sf('app/src/main/kotlin/ai/closepaw/memory/MemorySchema.kt'),
+            'memory_store':sf('app/src/main/kotlin/ai/closepaw/memory/MemoryStore.kt'),
+            'remember_tool':sf('app/src/main/kotlin/ai/closepaw/tool/impl/RememberExperienceTool.kt'),
+          }
+          Path('054-baseline-critical-hashes.json').write_text(json.dumps(protected,indent=2,sort_keys=True)+'\n')
+          print('054 frozen surfaces captured: PASS')
+          PYFREEZE
+
+      - name: Apply isolated 054 patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > /tmp/054.patch.b64 <<'PATCH054_B64'
+          ZGlmZiAtLWdpdCBhL2FwcC9idWlsZC5ncmFkbGUua3RzIGIvYXBwL2J1aWxkLmdyYWRsZS5rdHMK
+          aW5kZXggMmNjMGFmNi4uMTg1NTI0YiAxMDA2NDQKLS0tIGEvYXBwL2J1aWxkLmdyYWRsZS5rdHMK
+          KysrIGIvYXBwL2J1aWxkLmdyYWRsZS5rdHMKQEAgLTQ2LDggKzQ2LDggQEAgYW5kcm9pZCB7CiAK
+          ICAgICBidWlsZFR5cGVzIHsKICAgICAgICAgZGVidWcgewotICAgIGFwcGxpY2F0aW9uSWRTdWZm
+          aXggPSAiLnJjMTFjMDUzIgotICAgIHZlcnNpb25OYW1lU3VmZml4ID0gIi1yYzExLWMwNTMiCisg
+          ICAgYXBwbGljYXRpb25JZFN1ZmZpeCA9ICIucmMxMWMwNTQiCisgICAgdmVyc2lvbk5hbWVTdWZm
+          aXggPSAiLXJjMTEtYzA1NCIKIAogICAgIHZhbCBldmFsU3NsID0gcHJvamVjdC5maW5kUHJvcGVy
+          dHkoImluc2VjdXJlU3NsRm9yRXZhbCIpPy50b1N0cmluZygpPy50b0Jvb2xlYW4oKSA/OiBmYWxz
+          ZQogICAgIGJ1aWxkQ29uZmlnRmllbGQoImJvb2xlYW4iLCAiSU5TRUNVUkVfU1NMX0ZPUl9FVkFM
+          IiwgZXZhbFNzbC50b1N0cmluZygpKQpkaWZmIC0tZ2l0IGEvYXBwL3NyYy9tYWluL2tvdGxpbi9h
+          aS9jbG9zZXBhdy9hcHAvQWdlbnRTZXJ2aWNlLmt0IGIvYXBwL3NyYy9tYWluL2tvdGxpbi9haS9j
+          bG9zZXBhdy9hcHAvQWdlbnRTZXJ2aWNlLmt0CmluZGV4IDYzNTM3NjQuLjE4MDNmOTggMTAwNjQ0
+          Ci0tLSBhL2FwcC9zcmMvbWFpbi9rb3RsaW4vYWkvY2xvc2VwYXcvYXBwL0FnZW50U2VydmljZS5r
+          dAorKysgYi9hcHAvc3JjL21haW4va290bGluL2FpL2Nsb3NlcGF3L2FwcC9BZ2VudFNlcnZpY2Uu
+          a3QKQEAgLTE2MCw2ICsxNjAsOCBAQCBjbGFzcyBBZ2VudFNlcnZpY2UgOiBBY2Nlc3NpYmlsaXR5
+          U2VydmljZSgpIHsKICAgICBwcml2YXRlIHZhbCBzbXRSb3V0ZXIgYnkgbGF6eSB7IFNtdFJvdXRl
+          cih0aGlzKSB9CiAgICAgcHJpdmF0ZSB2YWwgaHlicmlkQWdlbnQgYnkgbGF6eSB7IEh5YnJpZEFn
+          ZW50RW5naW5lKHRoaXMpIH0KIAorICAgIGludGVybmFsIGZ1biBzdG9wQWN0aXZlSHlicmlkVGFz
+          a0Zyb21VaSgpOiBCb29sZWFuID0gaHlicmlkQWdlbnQuc3RvcEFjdGl2ZVRhc2tGcm9tVWkoKQor
+          CiAgICAgaW50ZXJuYWwgZnVuIGhhbmRsZUh5YnJpZElucHV0KHRleHQ6IFN0cmluZyk6IEJvb2xl
+          YW4gewogICAgICAgICBpZiAoIWlzU2VydmljZUFjdGl2ZSkgcmV0dXJuIGZhbHNlCiAgICAgICAg
+          IHZhbCBoYW5kbGVkID0gaHlicmlkQWdlbnQuaGFuZGxlSW5wdXQodGV4dCkKZGlmZiAtLWdpdCBh
+          L2FwcC9zcmMvbWFpbi9rb3RsaW4vYWkvY2xvc2VwYXcvYXBwL0NhbmNlbGxhYmxlUHJpbWFyeUNh
+          bGxWNTQua3QgYi9hcHAvc3JjL21haW4va290bGluL2FpL2Nsb3NlcGF3L2FwcC9DYW5jZWxsYWJs
+          ZVByaW1hcnlDYWxsVjU0Lmt0Cm5ldyBmaWxlIG1vZGUgMTAwNjQ0CmluZGV4IDAwMDAwMDAuLjIz
+          NjQ2YjkKLS0tIC9kZXYvbnVsbAorKysgYi9hcHAvc3JjL21haW4va290bGluL2FpL2Nsb3NlcGF3
+          L2FwcC9DYW5jZWxsYWJsZVByaW1hcnlDYWxsVjU0Lmt0CkBAIC0wLDAgKzEsMzQgQEAKK3BhY2th
+          Z2UgYWkuY2xvc2VwYXcuYXBwCisKK2ltcG9ydCBrb3RsaW54LmNvcm91dGluZXMuc3VzcGVuZENh
+          bmNlbGxhYmxlQ29yb3V0aW5lCitpbXBvcnQgb2todHRwMy5DYWxsCitpbXBvcnQgb2todHRwMy5D
+          YWxsYmFjaworaW1wb3J0IG9raHR0cDMuUmVzcG9uc2UKK2ltcG9ydCBqYXZhLmlvLklPRXhjZXB0
+          aW9uCitpbXBvcnQga290bGluLmNvcm91dGluZXMucmVzdW1lCitpbXBvcnQga290bGluLmNvcm91
+          dGluZXMucmVzdW1lV2l0aEV4Y2VwdGlvbgorCisvKioKKyAqIFY1NCBjYW5jZWxsYXRpb24gYnJp
+          ZGdlIGZvciB0aGUgcGhvbmUtbG9jYWwgUHJpbWFyeSBIVFRQIGNhbGwuCisgKgorICogVGhlIEh5
+          YnJpZCB3b3JrZXIgaXMgYSBjb3JvdXRpbmUsIGJ1dCBPa0h0dHAgQ2FsbC5leGVjdXRlKCkgaXMg
+          YmxvY2tpbmcgYW5kIGRvZXMgbm90CisgKiBvYnNlcnZlIEpvYiBjYW5jZWxsYXRpb24uIFVzZSBP
+          a0h0dHAgYXN5bmMgZXhlY3V0aW9uIHNvIGEgdXNlciBTdG9wIGltbWVkaWF0ZWx5IGNhbmNlbHMK
+          KyAqIHRoZSBpbi1mbGlnaHQgc29ja2V0IHdoaWxlIHByZXNlcnZpbmcgVjMyJ3MgY2xpZW50IHRp
+          bWVvdXQgY29uZmlndXJhdGlvbiB1bmNoYW5nZWQuCisgKi8KK2ludGVybmFsIHN1c3BlbmQgZnVu
+          IENhbGwuYXdhaXRSZXNwb25zZUNhbmNlbGxhYmxlVjU0KCk6IFJlc3BvbnNlID0KKyAgICBzdXNw
+          ZW5kQ2FuY2VsbGFibGVDb3JvdXRpbmUgeyBjb250aW51YXRpb24gLT4KKyAgICAgICAgY29udGlu
+          dWF0aW9uLmludm9rZU9uQ2FuY2VsbGF0aW9uIHsgY2FuY2VsKCkgfQorICAgICAgICBlbnF1ZXVl
+          KG9iamVjdCA6IENhbGxiYWNrIHsKKyAgICAgICAgICAgIG92ZXJyaWRlIGZ1biBvbkZhaWx1cmUo
+          Y2FsbDogQ2FsbCwgZTogSU9FeGNlcHRpb24pIHsKKyAgICAgICAgICAgICAgICBpZiAoY29udGlu
+          dWF0aW9uLmlzQWN0aXZlKSBjb250aW51YXRpb24ucmVzdW1lV2l0aEV4Y2VwdGlvbihlKQorICAg
+          ICAgICAgICAgfQorCisgICAgICAgICAgICBvdmVycmlkZSBmdW4gb25SZXNwb25zZShjYWxsOiBD
+          YWxsLCByZXNwb25zZTogUmVzcG9uc2UpIHsKKyAgICAgICAgICAgICAgICBpZiAoY29udGludWF0
+          aW9uLmlzQWN0aXZlKSB7CisgICAgICAgICAgICAgICAgICAgIGNvbnRpbnVhdGlvbi5yZXN1bWUo
+          cmVzcG9uc2UpCisgICAgICAgICAgICAgICAgfSBlbHNlIHsKKyAgICAgICAgICAgICAgICAgICAg
+          cmVzcG9uc2UuY2xvc2UoKQorICAgICAgICAgICAgICAgIH0KKyAgICAgICAgICAgIH0KKyAgICAg
+          ICAgfSkKKyAgICB9CmRpZmYgLS1naXQgYS9hcHAvc3JjL21haW4va290bGluL2FpL2Nsb3NlcGF3
+          L2FwcC9IeWJyaWRBZ2VudEVuZ2luZS5rdCBiL2FwcC9zcmMvbWFpbi9rb3RsaW4vYWkvY2xvc2Vw
+          YXcvYXBwL0h5YnJpZEFnZW50RW5naW5lLmt0CmluZGV4IGMyYmRiODMuLjhjNTBjMDggMTAwNjQ0
+          Ci0tLSBhL2FwcC9zcmMvbWFpbi9rb3RsaW4vYWkvY2xvc2VwYXcvYXBwL0h5YnJpZEFnZW50RW5n
+          aW5lLmt0CisrKyBiL2FwcC9zcmMvbWFpbi9rb3RsaW4vYWkvY2xvc2VwYXcvYXBwL0h5YnJpZEFn
+          ZW50RW5naW5lLmt0CkBAIC0zODEsNiArMzgxLDE2IEBAIGludGVybmFsIGNsYXNzIEh5YnJpZEFn
+          ZW50RW5naW5lKHByaXZhdGUgdmFsIHNlcnZpY2U6IEFnZW50U2VydmljZSkgewogICAgICAgICB9
+          CiAgICAgfQogCisgICAgLyoqIFY1NDogcm91dGUgdGhlIHZpc2libGUgU3RvcCBjb250cm9sIHRv
+          IHRoZSBzZXJ2aWNlLW93bmVkIEh5YnJpZCB0YXNrLiAqLworICAgIGZ1biBzdG9wQWN0aXZlVGFz
+          a0Zyb21VaSgpOiBCb29sZWFuIHsKKyAgICAgICAgdmFsIHRhc2sgPSBhY3RpdmVUYXNrID86IHJl
+          dHVybiBmYWxzZQorICAgICAgICBhcHBlbmRQcmltYXJ5RGlhZ25vc3RpY1YzMigiVVNFUl9TVE9Q
+          X1Y1NHx0YXNrSWQ9JHt0YXNrLmlkfXxzb3VyY2U9bWFpbl91aXxwaGFzZT1yZXF1ZXN0ZWQiKQor
+          ICAgICAgICBzdG9wKGNsZWFyUXVldWUgPSB0cnVlKQorICAgICAgICBpZiAoZW5hYmxlZCkgZW5z
+          dXJlV29ya2VyKCkKKyAgICAgICAgcmVwb3J0KCLwn5uRINqp2KfYsSDYrNin2LHbjCDZhNi62Ygg
+          2LTYryIsIHVyZ2VudCA9IHRydWUpCisgICAgICAgIHJldHVybiB0cnVlCisgICAgfQorCiAgICAg
+          cHJpdmF0ZSBmdW4gc2V0RW5hYmxlZCh2YWx1ZTogQm9vbGVhbikgewogICAgICAgICBwcmVmcy5l
+          ZGl0KCkucHV0Qm9vbGVhbihLRVlfRU5BQkxFRCwgdmFsdWUpLmFwcGx5KCkKICAgICB9CkBAIC0z
+          MDI3LDcgKzMwMzcsNyBAQCBpbnRlcm5hbCBjbGFzcyBIeWJyaWRBZ2VudEVuZ2luZShwcml2YXRl
+          IHZhbCBzZXJ2aWNlOiBBZ2VudFNlcnZpY2UpIHsKICAgICAgICAgKQogCiAgICAgICAgIHRyeSB7
+          Ci0gICAgICAgICAgICBodHRwLm5ld0NhbGwocmVxdWVzdEJ1aWxkZXIuYnVpbGQoKSkuZXhlY3V0
+          ZSgpLnVzZSB7IHJlc3BvbnNlIC0+CisgICAgICAgICAgICBodHRwLm5ld0NhbGwocmVxdWVzdEJ1
+          aWxkZXIuYnVpbGQoKSkuYXdhaXRSZXNwb25zZUNhbmNlbGxhYmxlVjU0KCkudXNlIHsgcmVzcG9u
+          c2UgLT4KICAgICAgICAgICAgICAgICB2YWwgaGVhZGVyc01zID0gYW5kcm9pZC5vcy5TeXN0ZW1D
+          bG9jay5lbGFwc2VkUmVhbHRpbWUoKSAtIHN0YXJ0ZWQKICAgICAgICAgICAgICAgICBhcHBlbmRQ
+          cmltYXJ5RGlhZ25vc3RpY1YzMigKICAgICAgICAgICAgICAgICAgICAgIlJFU1BPTlNFX0hFQURF
+          UlN8Y29kZT0ke3Jlc3BvbnNlLmNvZGV9fGhlYWRlcnNNcz0kaGVhZGVyc01zfHByb3RvY29sPSR7
+          cmVzcG9uc2UucHJvdG9jb2x9fGNvbnRlbnRUeXBlPSR7cmVzcG9uc2UuYm9keT8uY29udGVudFR5
+          cGUoKX18Y29udGVudExlbmd0aD0ke3Jlc3BvbnNlLmJvZHk/LmNvbnRlbnRMZW5ndGgoKX18dHJh
+          bnNmZXJFbmNvZGluZz0ke3Jlc3BvbnNlLmhlYWRlcigiVHJhbnNmZXItRW5jb2RpbmciKS5vckVt
+          cHR5KCl9fGNvbm5lY3Rpb249JHtyZXNwb25zZS5oZWFkZXIoIkNvbm5lY3Rpb24iKS5vckVtcHR5
+          KCl9IgpkaWZmIC0tZ2l0IGEvYXBwL3NyYy9tYWluL2tvdGxpbi9haS9jbG9zZXBhdy91aS9jaGF0
+          L0NoYXRWaWV3TW9kZWwua3QgYi9hcHAvc3JjL21haW4va290bGluL2FpL2Nsb3NlcGF3L3VpL2No
+          YXQvQ2hhdFZpZXdNb2RlbC5rdAppbmRleCAyZWNmZTI3Li45MzQ5OTAyIDEwMDY0NAotLS0gYS9h
+          cHAvc3JjL21haW4va290bGluL2FpL2Nsb3NlcGF3L3VpL2NoYXQvQ2hhdFZpZXdNb2RlbC5rdAor
+          KysgYi9hcHAvc3JjL21haW4va290bGluL2FpL2Nsb3NlcGF3L3VpL2NoYXQvQ2hhdFZpZXdNb2Rl
+          bC5rdApAQCAtMzc4LDggKzM3OCwxMSBAQCBjbGFzcyBDaGF0Vmlld01vZGVsKAogICAgICAgICB9
+          CiAgICAgfQogCi0gICAgLyoqIFN0b3AgdGhlIGN1cnJlbnQgdGFzay4gKi8KKyAgICAvKiogU3Rv
+          cCB0aGUgY3VycmVudCB0YXNrLiBIeWJyaWQgdGFza3MgYXJlIHNlcnZpY2Utb3duZWQgYW5kIGhh
+          dmUgbm8gQWdlbnRTZXNzaW9uLiAqLwogICAgIGZ1biBzdG9wVGFzaygpIHsKKyAgICAgICAgdmFs
+          IHNlcnZpY2UgPSBBZ2VudFNlcnZpY2UuaW5zdGFuY2UKKyAgICAgICAgaWYgKHNlcnZpY2U/LnN0
+          b3BBY3RpdmVIeWJyaWRUYXNrRnJvbVVpKCkgPT0gdHJ1ZSkgcmV0dXJuCisKICAgICAgICAgdmFs
+          IHNlc3Npb24gPSBzZXNzaW9uUHJvdmlkZXIoKQogICAgICAgICBpZiAoc2Vzc2lvbiAhPSBudWxs
+          KSB7CiAgICAgICAgICAgICB2aWV3TW9kZWxTY29wZS5sYXVuY2ggeyBzZXNzaW9uLnN1Ym1pdChP
+          cC5JbnRlcnJ1cHQpIH0KZGlmZiAtLWdpdCBhL2FwcC9zcmMvbWFpbi9yZXMvdmFsdWVzL3N0cmlu
+          Z3MueG1sIGIvYXBwL3NyYy9tYWluL3Jlcy92YWx1ZXMvc3RyaW5ncy54bWwKaW5kZXggODA0YjU2
+          MS4uN2Y2ZDczZSAxMDA2NDQKLS0tIGEvYXBwL3NyYy9tYWluL3Jlcy92YWx1ZXMvc3RyaW5ncy54
+          bWwKKysrIGIvYXBwL3NyYy9tYWluL3Jlcy92YWx1ZXMvc3RyaW5ncy54bWwKQEAgLTEsNSArMSw1
+          IEBACiA8P3htbCB2ZXJzaW9uPSIxLjAiIGVuY29kaW5nPSJ1dGYtOCI/PgogPHJlc291cmNlcz4K
+          LSAgICA8c3RyaW5nIG5hbWU9ImFwcF9uYW1lIj5DbG9zZVBhdyBSQzExIDA1Mzwvc3RyaW5nPgor
+          ICAgIDxzdHJpbmcgbmFtZT0iYXBwX25hbWUiPkNsb3NlUGF3IFJDMTEgMDU0PC9zdHJpbmc+CiAg
+          ICAgPHN0cmluZyBuYW1lPSJhY2Nlc3NpYmlsaXR5X3NlcnZpY2VfZGVzY3JpcHRpb24iPkNsb3Nl
+          UGF3IGFjdHMgYXMgYW4gb24tZGV2aWNlIGF1dG9tYXRpb24gYWdlbnQuIFdpdGggeW91ciBwZXJt
+          aXNzaW9uLCBpdCByZWFkcyBvbi1zY3JlZW4gZWxlbWVudHMgYW5kIHBlcmZvcm1zIHRhcHMsIHN3
+          aXBlcywgYW5kIHRleHQgaW5wdXQgb25seSB3aGVuIHlvdSBzdGFydCBhIHRhc2suIEl0IGRvZXMg
+          bm90IHJ1biBpbiB0aGUgYmFja2dyb3VuZCBvciBtb25pdG9yIG90aGVyIGFwcHMuPC9zdHJpbmc+
+          CiA8L3Jlc291cmNlcz4K
+          PATCH054_B64
+          base64 -d /tmp/054.patch.b64 > 054-isolated.patch
+          test "$(sha256sum 054-isolated.patch | awk '{print $1}')" = 'ba722c36563be4d1ddc102ff92c0722870a0e43e29e9687b4e3aed2d0341b92d'
+          git apply --check 054-isolated.patch
+          git apply 054-isolated.patch
+          echo '054 isolated patch applied: PASS' >> 054-verification-report.txt
+
+      - name: Verify 054 exact isolation and frozen regions
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PYVERIFY'
+          from pathlib import Path
+          import hashlib,json
+          def sha(p): return hashlib.sha256(Path(p).read_bytes()).hexdigest()
+          base=json.loads(Path('053-postpatch-source-manifest.json').read_text())
+          current={}
+          for p in sorted(Path('app').rglob('*')):
+              if p.is_file() and not p.as_posix().startswith('app/build/'):
+                  current[p.as_posix()]=sha(p)
+          changed={p for p in set(base)|set(current) if base.get(p)!=current.get(p)}
+          expected={
+            'app/build.gradle.kts',
+            'app/src/main/kotlin/ai/closepaw/app/AgentService.kt',
+            'app/src/main/kotlin/ai/closepaw/app/CancellablePrimaryCallV54.kt',
+            'app/src/main/kotlin/ai/closepaw/app/HybridAgentEngine.kt',
+            'app/src/main/kotlin/ai/closepaw/ui/chat/ChatViewModel.kt',
+            'app/src/main/res/values/strings.xml',
+          }
+          if changed!=expected: raise SystemExit(f'054 isolation failure changed={sorted(changed)}')
+          expected_hashes={
+            'app/build.gradle.kts':'78d7d1b2c8f664846ca2e39045003bb5896eec57907eeb90890b7110e5732d8c',
+            'app/src/main/kotlin/ai/closepaw/app/AgentService.kt':'68e5225ef8bfe795c8caea22173104d41b841e9736d75d3bb6403eb4b444f854',
+            'app/src/main/kotlin/ai/closepaw/app/CancellablePrimaryCallV54.kt':'92d463ff0a8214a2bbb598c7db5c5c04279d0404ba99941a802b160f2fa182f3',
+            'app/src/main/kotlin/ai/closepaw/app/HybridAgentEngine.kt':'48afff8c0b8f7e58f3dea2e72e8adcffc1fa9d2ad97e8d4db480555f3eb38027',
+            'app/src/main/kotlin/ai/closepaw/ui/chat/ChatViewModel.kt':'0efb57a30d09c10758fe2b97caefac7d3e31d40e1130eb7fae7243e186aec474',
+            'app/src/main/res/values/strings.xml':'fc2563f6174968bdf2e82d85c9dc7e40d4f93887b42c1bf38acf72c4521ac3cd',
+          }
+          for p,want in expected_hashes.items():
+              got=current.get(p)
+              if got!=want: raise SystemExit(f'054 expected hash mismatch {p}: {got} != {want}')
+          before=json.loads(Path('054-baseline-critical-hashes.json').read_text())
+          eng=Path('app/src/main/kotlin/ai/closepaw/app/HybridAgentEngine.kt').read_text()
+          def h(b): return hashlib.sha256(b).hexdigest()
+          def reg(a,b):
+              s=eng.find(a); e=eng.find(b,s)
+              if s<0 or e<0: raise SystemExit(f'protected region missing after patch: {a} -> {b}')
+              return h(eng[s:e].encode())
+          after={
+            'rc8_restore':reg('// RC8: only strong identity evidence may authorize a restore-side navigation.','private suspend fun restoreSidebarShapeIfNeeded('),
+            'durable_transaction':reg('private suspend fun executeActionTransactionV9(','private fun receiptHistoryLineV9('),
+            'v33_validation':reg('private suspend fun requestPrimaryPlanV9(','private fun buildBrainRequest('),
+            'brain_restore':reg('private suspend fun restoreAfterBrainExcursion(','private fun configuredBrainV9(): ChatBrainSettings'),
+            'brain_send':reg('private suspend fun sendConfiguredBrainMessageV9(','private suspend fun waitForMatchingBrainResponseV9('),
+          }
+          file_map={
+            'navigator_v43':'app/src/main/kotlin/ai/closepaw/app/DeterministicUiNavigatorV43.kt',
+            'grammar_v43':'app/src/main/kotlin/ai/closepaw/app/PrimaryLocalGrammarV43.kt',
+            'prereq_v45':'app/src/main/kotlin/ai/closepaw/app/GoalAppPrerequisiteV45.kt',
+            'causal_v46':'app/src/main/kotlin/ai/closepaw/app/CausalDestinationV46.kt',
+            'work_surface_v47':'app/src/main/kotlin/ai/closepaw/app/WorkSurfaceV47.kt',
+            'event_v50':'app/src/main/kotlin/ai/closepaw/app/AccessibilityEventProvenanceV50.kt',
+            'event_v51':'app/src/main/kotlin/ai/closepaw/app/AccessibilityEventHistoryV51.kt',
+            'causal_title_v52':'app/src/main/kotlin/ai/closepaw/app/CausalWindowTitleV52.kt',
+            'overflow_v53':'app/src/main/kotlin/ai/closepaw/app/DeterministicOverflowNavigatorV53.kt',
+            'rc11':'app/src/main/kotlin/ai/closepaw/app/RC11CorrectnessPolicy.kt',
+            'transport_v32':'app/src/main/kotlin/ai/closepaw/app/PrimaryLocalHttpTransportV32.kt',
+            'accessibility_platform':'app/src/main/kotlin/ai/closepaw/platform/AccessibilityPlatform.kt',
+            'memory_recaller':'app/src/main/kotlin/ai/closepaw/memory/MemoryRecaller.kt',
+            'memory_schema':'app/src/main/kotlin/ai/closepaw/memory/MemorySchema.kt',
+            'memory_store':'app/src/main/kotlin/ai/closepaw/memory/MemoryStore.kt',
+            'remember_tool':'app/src/main/kotlin/ai/closepaw/tool/impl/RememberExperienceTool.kt',
+          }
+          for k,p in file_map.items(): after[k]=sha(p)
+          bad=[k for k,v in before.items() if after.get(k)!=v]
+          if bad: raise SystemExit(f'054 frozen surface changed: {bad}')
+          Path('054-postpatch-source-manifest.json').write_text(json.dumps(current,indent=2,sort_keys=True)+'\n')
+          got=sha('054-postpatch-source-manifest.json')
+          if got!='9790dc574c1c7c9ee7fd9276559f3d8e8275ad04080051819252e5c9505c9508': raise SystemExit(f'054 final manifest digest mismatch: {got}')
+          with Path('054-verification-report.txt').open('a') as f: f.write('054 exact isolation + frozen correctness/memory surfaces: PASS\n')
+          print('054 source isolation/freeze: PASS')
+          PYVERIFY
+
+      - name: Audit 054 stop and cancellation contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PYAUDIT'
+          from pathlib import Path
+          vm=Path('app/src/main/kotlin/ai/closepaw/ui/chat/ChatViewModel.kt').read_text()
+          svc=Path('app/src/main/kotlin/ai/closepaw/app/AgentService.kt').read_text()
+          eng=Path('app/src/main/kotlin/ai/closepaw/app/HybridAgentEngine.kt').read_text()
+          call=Path('app/src/main/kotlin/ai/closepaw/app/CancellablePrimaryCallV54.kt').read_text()
+          checks={
+            'UI Stop routes Hybrid before AgentSession fallback': vm.find('stopActiveHybridTaskFromUi()') < vm.find('val session = sessionProvider()', vm.find('fun stopTask()')),
+            'service bridge exists': 'stopActiveHybridTaskFromUi(): Boolean = hybridAgent.stopActiveTaskFromUi()' in svc,
+            'Hybrid stop requires active task': 'val task = activeTask ?: return false' in eng,
+            'Hybrid stop clears queue': 'stop(clearQueue = true)' in eng[eng.find('fun stopActiveTaskFromUi()'):eng.find('private fun setEnabled',eng.find('fun stopActiveTaskFromUi()'))],
+            'Hybrid stop restarts idle worker only': 'if (enabled) ensureWorker()' in eng[eng.find('fun stopActiveTaskFromUi()'):eng.find('private fun setEnabled',eng.find('fun stopActiveTaskFromUi()'))],
+            'stop diagnostic exists': 'USER_STOP_V54' in eng,
+            'Primary uses cancellable bridge': '.awaitResponseCancellableV54().use' in eng and '.execute().use' not in eng[eng.find('private suspend fun callCustomPrimaryChatV9'):eng.find('private suspend fun',eng.find('private suspend fun callCustomPrimaryChatV9')+20)],
+            'OkHttp call cancelled on coroutine cancellation': 'invokeOnCancellation { cancel() }' in call,
+            'OkHttp async response path': 'enqueue(object : Callback' in call,
+            'V32 timeout builder untouched': Path('app/src/main/kotlin/ai/closepaw/app/PrimaryLocalHttpTransportV32.kt').read_text().count('readTimeout(callTimeoutMs')==1,
+          }
+          failed=[k for k,v in checks.items() if not v]
+          if failed: raise SystemExit('054 architecture audit failed: '+', '.join(failed))
+          with Path('054-verification-report.txt').open('a') as f:
+              for k in checks: f.write(k+': PASS\n')
+          print('054 stop/cancellation audit: PASS')
+          PYAUDIT
+
+      - name: 054 clean Kotlin compile gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./gradlew clean :app:compileDebugKotlin --stacktrace --no-daemon --no-configuration-cache
+          echo '054 clean Kotlin compile: PASS' >> 054-verification-report.txt
+
+      - name: 054 targeted regression tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./gradlew :app:testDebugUnitTest \
+            --tests 'ai.closepaw.app.DeterministicOverflowNavigatorV53Test' \
+            --tests 'ai.closepaw.app.CausalWindowTitleV52Test' \
+            --tests 'ai.closepaw.app.AccessibilityEventHistoryV51Test' \
+            --stacktrace --no-daemon --no-configuration-cache
+          echo '054 targeted frozen-core regressions: PASS' >> 054-verification-report.txt
+
+      - name: 054 full unit tests and clean rebuild
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./gradlew clean :app:testDebugUnitTest :app:assembleDebug --stacktrace --no-daemon --no-configuration-cache
+          echo '054 full unit tests + clean assemble: PASS' >> 054-verification-report.txt
+
+      - name: 054 APK identity integrity and signature gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          APK="$(find app/build/outputs/apk/debug -type f -name '*.apk' -print -quit)"
+          [ -n "$APK" ] || { echo '054 APK missing' >&2; exit 1; }
+          BUILD_TOOLS="$(find "$ANDROID_HOME/build-tools" -mindepth 1 -maxdepth 1 -type d | sort -V | tail -1)"
+          "$BUILD_TOOLS/aapt" dump badging "$APK" > 054-apk-badging.txt
+          grep -q "package: name='ai.closepaw.rc11c054'" 054-apk-badging.txt
+          grep -q "application-label:'ClosePaw RC11 054'" 054-apk-badging.txt
+          "$BUILD_TOOLS/apksigner" verify --verbose --print-certs "$APK" > 054-apksigner.txt
+          sha256sum "$APK" > 054-apk-sha256.txt
+          echo "APK=$APK" >> "$GITHUB_ENV"
+          echo '054 APK identity/signature: PASS' >> 054-verification-report.txt
+
+      - name: Prepare 054 full verified source snapshot
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PYSNAP'
+          from pathlib import Path
+          import hashlib,json
+          def sha(p): return hashlib.sha256(Path(p).read_bytes()).hexdigest()
+          expected=json.loads(Path('054-postpatch-source-manifest.json').read_text())
+          current={}
+          for p in sorted(Path('app').rglob('*')):
+              if p.is_file() and not p.as_posix().startswith('app/build/'):
+                  current[p.as_posix()]=sha(p)
+          if current!=expected: raise SystemExit('054 source changed after verification gates')
+          PYSNAP
+          rm -rf /tmp/054-verified-source
+          mkdir -p /tmp/054-verified-source
+          rsync -a --exclude='.git' --exclude='.github' --exclude='app/build' ./ /tmp/054-verified-source/
+          test "$(sha256sum /tmp/054-verified-source/054-postpatch-source-manifest.json | awk '{print $1}')" = '9790dc574c1c7c9ee7fd9276559f3d8e8275ad04080051819252e5c9505c9508'
+          echo '054 verified source snapshot: PASS' >> 054-verification-report.txt
+
+      - name: Upload 054 verification proof
+        uses: actions/upload-artifact@v4
+        with:
+          name: 054-ClosePaw-RC11-verification-proof
+          path: |
+            054-verification-report.txt
+            054-isolated.patch
+            054-baseline-critical-hashes.json
+            054-postpatch-source-manifest.json
+            054-apk-badging.txt
+            054-apksigner.txt
+            054-apk-sha256.txt
+
+      - name: Upload 054 full verified source
+        uses: actions/upload-artifact@v4
+        with:
+          name: 054-ClosePaw-RC11-verified-full-source
+          path: /tmp/054-verified-source
+
+      - name: Upload 054 APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: 054-ClosePaw-RC11-APK
+          path: app/build/outputs/apk/debug/*.apk
