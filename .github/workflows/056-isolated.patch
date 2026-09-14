@@ -1,0 +1,297 @@
+diff --git a/app/build.gradle.kts b/app/build.gradle.kts
+index 185524b..10bd8de 100644
+--- a/app/build.gradle.kts
++++ b/app/build.gradle.kts
+@@ -46,8 +46,8 @@ android {
+ 
+     buildTypes {
+         debug {
+-    applicationIdSuffix = ".rc11c054"
+-    versionNameSuffix = "-rc11-c054"
++    applicationIdSuffix = ".rc11c056"
++    versionNameSuffix = "-rc11-c056"
+ 
+     val evalSsl = project.findProperty("insecureSslForEval")?.toString()?.toBoolean() ?: false
+     buildConfigField("boolean", "INSECURE_SSL_FOR_EVAL", evalSsl.toString())
+diff --git a/app/src/main/kotlin/ai/closepaw/app/AgentService.kt b/app/src/main/kotlin/ai/closepaw/app/AgentService.kt
+index 1803f98..9947a5e 100644
+--- a/app/src/main/kotlin/ai/closepaw/app/AgentService.kt
++++ b/app/src/main/kotlin/ai/closepaw/app/AgentService.kt
+@@ -160,7 +160,7 @@ class AgentService : AccessibilityService() {
+     private val smtRouter by lazy { SmtRouter(this) }
+     private val hybridAgent by lazy { HybridAgentEngine(this) }
+ 
+-    internal fun stopActiveHybridTaskFromUi(): Boolean = hybridAgent.stopActiveTaskFromUi()
++    internal fun stopActiveHybridTaskFromUi(source: String): Boolean = hybridAgent.stopActiveTaskFromUi(source)
+ 
+     internal fun handleHybridInput(text: String): Boolean {
+         if (!isServiceActive) return false
+@@ -274,7 +274,8 @@ class AgentService : AccessibilityService() {
+                         scope = serviceScope,
+                         appPackage = OUR_PACKAGE,
+                         logTag = TAG,
+-                        onStop = { submitOp(Op.Shutdown) },
++                        onStop = { if (!stopActiveHybridTaskFromUi("overlay_stop")) submitOp(Op.Shutdown) },
++                        onHybridStop = { source -> stopActiveHybridTaskFromUi(source) },
+                         onTakeover = { submitOp(Op.Takeover) },
+                         onResume = { submitOp(Op.Resume) },
+                         onSupplement = { text -> submitOp(Op.Supplement(text)) },
+diff --git a/app/src/main/kotlin/ai/closepaw/app/HybridAgentEngine.kt b/app/src/main/kotlin/ai/closepaw/app/HybridAgentEngine.kt
+index 8c50c08..281fe89 100644
+--- a/app/src/main/kotlin/ai/closepaw/app/HybridAgentEngine.kt
++++ b/app/src/main/kotlin/ai/closepaw/app/HybridAgentEngine.kt
+@@ -286,6 +286,9 @@ internal class HybridAgentEngine(private val service: AgentService) {
+         SessionRecordingService(SessionStorage(service), service.serviceScope)
+     }
+     @Volatile private var activeTask: HybridTask? = null
++    @Volatile private var processingTaskIdV56: String? = null
++    @Volatile private var userStopTaskIdV56: String? = null
++    @Volatile private var userStopSourceV56: String? = null
+     private val recentSemanticAnchors = mutableListOf<String>()
+     private var taskKnownWorkChatTitle: String? = null
+     private var cachedPrimaryRuntime: PrimaryRuntime? = null
+@@ -336,9 +339,11 @@ internal class HybridAgentEngine(private val service: AgentService) {
+                 return true
+             }
+             "agent cancel", "لغو کار", "توقف کار" -> {
+-                stop(clearQueue = true)
+-                if (enabled) ensureWorker()
+-                report("🛑 کار جاری لغو شد", urgent = true)
++                if (!stopActiveTaskFromUi("control_command")) {
++                    stop(clearQueue = true)
++                    if (enabled) ensureWorker()
++                    report("🛑 کار جاری لغو شد", urgent = true)
++                }
+                 return true
+             }
+             "cancel confirmation", "لغو تایید" -> {
+@@ -381,12 +386,86 @@ internal class HybridAgentEngine(private val service: AgentService) {
+         }
+     }
+ 
+-    /** V54: route the visible Stop control to the service-owned Hybrid task. */
+-    fun stopActiveTaskFromUi(): Boolean {
+-        val task = activeTask ?: return false
+-        appendPrimaryDiagnosticV32("USER_STOP_V54|taskId=${task.id}|source=main_ui|phase=requested")
+-        stop(clearQueue = true)
+-        if (enabled) ensureWorker()
++    /**
++     * V56 authoritative user-stop path.
++     *
++     * UI state is not authoritative for cancellation.  Once an active Hybrid task exists,
++     * synchronously invalidate its execution epoch, drain queued work, and cancel the single
++     * worker owner.  Crucially, keep the cancelling Job installed until its NonCancellable
++     * task cleanup has finished; [ensureWorker] treats a cancelling Job as an owner barrier.
++     */
++    fun stopActiveTaskFromUi(source: String): Boolean {
++        val task = activeTask
++        if (task == null) {
++            appendPrimaryDiagnosticV32(
++                "USER_STOP_V56|taskId=none|source=$source|phase=no_active_task"
++            )
++            return false
++        }
++
++        if (userStopTaskIdV56 == task.id) {
++            appendPrimaryDiagnosticV32(
++                "USER_STOP_V56|taskId=${task.id}|source=$source|phase=duplicate"
++            )
++            return true
++        }
++
++        userStopTaskIdV56 = task.id
++        userStopSourceV56 = source
++        val requestedAt = android.os.SystemClock.uptimeMillis()
++        executionEpochV11.incrementAndGet()
++        pendingConfirmation = null
++        var drained = 0
++        while (tasks.tryReceive().isSuccess) drained += 1
++        appendPrimaryDiagnosticV32(
++            "USER_STOP_V56|taskId=${task.id}|source=$source|phase=requested|queuedDrained=$drained"
++        )
++
++        // A task suspended for confirmation has already returned from processTask(), so there
++        // is no in-flight child to throw CancellationException and record USER_STOPPED for us.
++        if (processingTaskIdV56 != task.id) {
++            completeTaskLifecycle(task, TaskOutcome.USER_STOPPED, "Task stopped by user")
++            activeTask = null
++            userStopTaskIdV56 = null
++            userStopSourceV56 = null
++            currentPlatformMode = null
++            service.publishHybridPlatformMode(null)
++            appendPrimaryDiagnosticV32(
++                "USER_STOP_V56|taskId=${task.id}|source=$source|phase=suspended_task_completed|latencyMs=${android.os.SystemClock.uptimeMillis() - requestedAt}"
++            )
++            report("🛑 کار جاری لغو شد", urgent = true)
++            return true
++        }
++
++        val owner = workerJob
++        if (owner == null || owner.isCompleted) {
++            // processingTaskId says this task owns execution, so missing owner is an invariant
++            // breach.  Fail closed: do not fall through into the unrelated legacy AgentSession.
++            appendPrimaryDiagnosticV32(
++                "USER_STOP_V56|taskId=${task.id}|source=$source|phase=owner_missing"
++            )
++            completeTaskLifecycle(task, TaskOutcome.USER_STOPPED, "Task stopped by user")
++            activeTask = null
++            processingTaskIdV56 = null
++            userStopTaskIdV56 = null
++            userStopSourceV56 = null
++            currentPlatformMode = null
++            service.publishHybridPlatformMode(null)
++            report("🛑 کار جاری لغو شد", urgent = true)
++            return true
++        }
++
++        owner.invokeOnCompletion {
++            // Completion handlers may run on any thread.  Serialize restart/logging back onto
++            // the service Main scope after processTask's NonCancellable cleanup is complete.
++            service.serviceScope.launch {
++                appendPrimaryDiagnosticV32(
++                    "USER_STOP_V56|taskId=${task.id}|source=$source|phase=worker_completed|latencyMs=${android.os.SystemClock.uptimeMillis() - requestedAt}"
++                )
++                if (workerJob === owner && enabled) ensureWorker()
++            }
++        }
++        owner.cancel(CancellationException("USER_STOP_V56:$source:${task.id}"))
+         report("🛑 کار جاری لغو شد", urgent = true)
+         return true
+     }
+@@ -396,7 +475,10 @@ internal class HybridAgentEngine(private val service: AgentService) {
+     }
+ 
+     private fun ensureWorker() {
+-        if (workerJob?.isActive == true) return
++        // V56 owner barrier: a cancelled Job remains the execution owner until its finally
++        // block completes.  Never overlap a replacement worker with that cleanup.
++        val existing = workerJob
++        if (existing != null && !existing.isCompleted) return
+         workerJob = service.serviceScope.launch {
+             for (task in tasks) {
+                 if (!isActive) break
+@@ -442,6 +524,7 @@ internal class HybridAgentEngine(private val service: AgentService) {
+         var terminalRecorded = false
+         var suspendedForConfirmation = false
+         activeTask = task
++        processingTaskIdV56 = task.id
+         beginTaskLifecycle(task)
+ 
+         try {
+@@ -1332,6 +1415,11 @@ internal class HybridAgentEngine(private val service: AgentService) {
+ 
+             finishFailure("Bounded recovery stopped after $V7_MAX_BRAIN_CALLS Brain calls")
+         } catch (e: CancellationException) {
++            if (userStopTaskIdV56 == task.id) {
++                appendPrimaryDiagnosticV32(
++                    "USER_STOP_V56|taskId=${task.id}|source=${userStopSourceV56 ?: "unknown"}|phase=task_cancelled"
++                )
++            }
+             if (!terminalRecorded && !suspendedForConfirmation) {
+                 completeTaskLifecycle(
+                     task,
+@@ -1358,7 +1446,12 @@ internal class HybridAgentEngine(private val service: AgentService) {
+                     .onFailure { Log.w(TAG, "Trace close failed", it) }
+                 currentPlatformMode = null
+                 service.publishHybridPlatformMode(null)
++                if (processingTaskIdV56 == task.id) processingTaskIdV56 = null
+                 if (!suspendedForConfirmation) activeTask = null
++                if (userStopTaskIdV56 == task.id) {
++                    userStopTaskIdV56 = null
++                    userStopSourceV56 = null
++                }
+                 if (wakeLock?.isHeld == true) runCatching { wakeLock.release() }
+             }
+         }
+diff --git a/app/src/main/kotlin/ai/closepaw/app/ServiceOverlayController.kt b/app/src/main/kotlin/ai/closepaw/app/ServiceOverlayController.kt
+index ae2d4f2..fe1aec8 100644
+--- a/app/src/main/kotlin/ai/closepaw/app/ServiceOverlayController.kt
++++ b/app/src/main/kotlin/ai/closepaw/app/ServiceOverlayController.kt
+@@ -45,6 +45,7 @@ class ServiceOverlayController(
+     private val appPackage: String,
+     private val logTag: String,
+     private val onStop: () -> Unit,
++    private val onHybridStop: (String) -> Boolean = { false },
+     private val onTakeover: () -> Unit,
+     private val onResume: () -> Unit,
+     private val onSupplement: (String) -> Unit,
+@@ -83,9 +84,9 @@ class ServiceOverlayController(
+         savedStateRegistryOwner = savedStateRegistryOwner,
+     ).apply {
+         this.onStop = {
+-            if (stateHolder.onStopRequested()) {
+-                this@ServiceOverlayController.onStop()
+-            }
++            // V56: visual pending state is feedback only; it must never gate cancellation.
++            stateHolder.onStopRequested()
++            this@ServiceOverlayController.onStop()
+         }
+         this.onTakeover = {
+             stateHolder.onTakeoverRequested()   // immediate visual feedback
+@@ -107,7 +108,11 @@ class ServiceOverlayController(
+             }
+         }
+         this.onOpenApp = { openMainAppAndHideOverlays() }
+-        this.onDismissError = { dismissError() }
++        this.onDismissError = {
++            // Error-mode renders a red "Close" control instead of Stop.  If a Hybrid task is
++            // still active behind stale/error chrome, Close is an emergency-stop surface.
++            if (!this@ServiceOverlayController.onHybridStop("overlay_error_close")) dismissError()
++        }
+         // Navigation callbacks
+         this.onMinimize = {
+             showPreference = ShowPreference.ISLAND
+diff --git a/app/src/main/kotlin/ai/closepaw/ui/chat/ChatScreen.kt b/app/src/main/kotlin/ai/closepaw/ui/chat/ChatScreen.kt
+index c450b3c..45ade72 100644
+--- a/app/src/main/kotlin/ai/closepaw/ui/chat/ChatScreen.kt
++++ b/app/src/main/kotlin/ai/closepaw/ui/chat/ChatScreen.kt
+@@ -264,9 +264,9 @@ fun ChatScreen(
+                                 onResume = viewModel::requestResume,
+                                 onSupplementAndResume = viewModel::sendSupplementAndResume,
+                                 onStop = {
+-                                    if (capsuleBinding.onStopRequested()) {
+-                                        viewModel.stopTask()
+-                                    }
++                                    // V56: pending UI state is feedback only; always route the stop request.
++                                    capsuleBinding.onStopRequested()
++                                    viewModel.stopTask()
+                                 },
+                                 onUserResponse = { callId, response ->
+                                     forwardUserResponse(capsuleBinding, viewModel::sendUserResponse, callId, response)
+diff --git a/app/src/main/kotlin/ai/closepaw/ui/chat/ChatViewModel.kt b/app/src/main/kotlin/ai/closepaw/ui/chat/ChatViewModel.kt
+index 9349902..7cb371b 100644
+--- a/app/src/main/kotlin/ai/closepaw/ui/chat/ChatViewModel.kt
++++ b/app/src/main/kotlin/ai/closepaw/ui/chat/ChatViewModel.kt
+@@ -381,7 +381,7 @@ class ChatViewModel(
+     /** Stop the current task. Hybrid tasks are service-owned and have no AgentSession. */
+     fun stopTask() {
+         val service = AgentService.instance
+-        if (service?.stopActiveHybridTaskFromUi() == true) return
++        if (service?.stopActiveHybridTaskFromUi("main_ui_stop") == true) return
+ 
+         val session = sessionProvider()
+         if (session != null) {
+@@ -438,7 +438,11 @@ class ChatViewModel(
+     }
+ 
+     fun dismissError() {
+-        AgentService.instance?.dismissError()
++        val service = AgentService.instance ?: return
++        // V56: Error mode labels the red action "Close".  If Hybrid work is still
++        // active, Close must stop that work instead of merely hiding stale chrome.
++        if (service.stopActiveHybridTaskFromUi("main_ui_error_close")) return
++        service.dismissError()
+     }
+ 
+     /**
+diff --git a/app/src/main/res/values/strings.xml b/app/src/main/res/values/strings.xml
+index 7f6d73e..562f640 100644
+--- a/app/src/main/res/values/strings.xml
++++ b/app/src/main/res/values/strings.xml
+@@ -1,5 +1,5 @@
+ <?xml version="1.0" encoding="utf-8"?>
+ <resources>
+-    <string name="app_name">ClosePaw RC11 054</string>
++    <string name="app_name">ClosePaw RC11 056</string>
+     <string name="accessibility_service_description">ClosePaw acts as an on-device automation agent. With your permission, it reads on-screen elements and performs taps, swipes, and text input only when you start a task. It does not run in the background or monitor other apps.</string>
+ </resources>
