@@ -1,0 +1,834 @@
+diff --git a/app/build.gradle.kts b/app/build.gradle.kts
+index 10bd8de..8b496bb 100644
+--- a/app/build.gradle.kts
++++ b/app/build.gradle.kts
+@@ -46,8 +46,8 @@ android {
+ 
+     buildTypes {
+         debug {
+-    applicationIdSuffix = ".rc11c056"
+-    versionNameSuffix = "-rc11-c056"
++    applicationIdSuffix = ".rc11c057a"
++    versionNameSuffix = "-rc11-c057a"
+ 
+     val evalSsl = project.findProperty("insecureSslForEval")?.toString()?.toBoolean() ?: false
+     buildConfigField("boolean", "INSECURE_SSL_FOR_EVAL", evalSsl.toString())
+diff --git a/app/src/main/kotlin/ai/closepaw/app/ActionLifecycleV57.kt b/app/src/main/kotlin/ai/closepaw/app/ActionLifecycleV57.kt
+new file mode 100644
+index 0000000..7b35033
+--- /dev/null
++++ b/app/src/main/kotlin/ai/closepaw/app/ActionLifecycleV57.kt
+@@ -0,0 +1,72 @@
++package ai.closepaw.app
++
++import kotlinx.coroutines.CancellationException
++import kotlinx.coroutines.currentCoroutineContext
++import kotlinx.coroutines.ensureActive
++
++/**
++ * RC11 lifecycle helpers for 057a.
++ *
++ * Cancellation is control flow only when the *current owner coroutine* is cancelled. A child
++ * operation is allowed to fail with CancellationException/TimeoutCancellationException while the
++ * owner remains active; that is an operation failure, not a user stop. This follows kotlinx.coroutines
++ * structured-concurrency guidance and prevents runCatching-style cancellation swallowing.
++ */
++internal suspend fun rethrowOwnerCancellationV57(@Suppress("UNUSED_PARAMETER") error: Throwable) {
++    // Owner cancellation is authoritative even when a lower-level library translates the
++    // cancellation into IOException/provider/transport failure. If the owner is still active,
++    // ensureActive() is a no-op and the original error (including a child CancellationException)
++    // remains available to the caller as an operation failure.
++    currentCoroutineContext().ensureActive()
++}
++
++internal suspend fun <T> runSuspendCatchingV57(block: suspend () -> T): Result<T> =
++    try {
++        Result.success(block())
++    } catch (error: Throwable) {
++        rethrowOwnerCancellationV57(error)
++        Result.failure(error)
++    }
++
++internal enum class ActionStageV57(val attemptedOrLater: Boolean) {
++    STARTED(false),
++    BEFORE_CAPTURED(false),
++    TARGET_REVALIDATED(false),
++    PREPARED(false),
++    DISPATCH_REVALIDATED(false),
++    ATTEMPTED(true),
++    DISPATCH_RETURNED(true),
++    POST_OBSERVED(true),
++    RECEIPT_COMMITTED(true),
++}
++
++internal object ActionLifecycleV57 {
++    // Existing model/network transport may legitimately take 180s. UI action execution must not.
++    // Current protocol bounds WAIT to <=10s and post-action stabilization to <=3s; 45s keeps ample
++    // OEM headroom while preventing multi-minute silent action hangs.
++    const val ACTION_HARD_DEADLINE_MS: Long = 45_000L
++    const val MAX_SAFE_PRE_DISPATCH_REPLANS: Int = 2
++
++    fun exactPreparedPending(raw: String?, taskId: String, sequence: Long?): Boolean {
++        if (raw.isNullOrBlank() || sequence == null) return false
++        val parts = raw.split("|")
++        if (parts.size < 6) return false
++        return parts[0] == taskId &&
++            parts[1] == sequence.toString() &&
++            parts[2] == "PREPARED"
++    }
++}
++
++internal class PreparedActionStaleV57Exception(
++    val stage: ActionStageV57,
++    message: String,
++) : IllegalStateException(message)
++
++internal class ActionStageTimeoutV57Exception(
++    val stage: ActionStageV57,
++    val timeoutMs: Long,
++    cause: Throwable? = null,
++) : IllegalStateException(
++    "ACTION_STAGE_TIMEOUT_V57: stage=${stage.name} attempted=${stage.attemptedOrLater} timeoutMs=$timeoutMs",
++    cause,
++)
+diff --git a/app/src/main/kotlin/ai/closepaw/app/HybridAgentEngine.kt b/app/src/main/kotlin/ai/closepaw/app/HybridAgentEngine.kt
+index 281fe89..f234012 100644
+--- a/app/src/main/kotlin/ai/closepaw/app/HybridAgentEngine.kt
++++ b/app/src/main/kotlin/ai/closepaw/app/HybridAgentEngine.kt
+@@ -45,11 +45,13 @@ import kotlinx.coroutines.CancellationException
+ import kotlinx.coroutines.Dispatchers
+ import kotlinx.coroutines.Job
+ import kotlinx.coroutines.NonCancellable
++import kotlinx.coroutines.TimeoutCancellationException
+ import kotlinx.coroutines.channels.Channel
+ import kotlinx.coroutines.delay
+ import kotlinx.coroutines.isActive
+ import kotlinx.coroutines.launch
+ import kotlinx.coroutines.withContext
++import kotlinx.coroutines.withTimeout
+ import okhttp3.MediaType.Companion.toMediaType
+ import okhttp3.Request
+ import okhttp3.RequestBody.Companion.toRequestBody
+@@ -546,7 +548,8 @@ internal class HybridAgentEngine(private val service: AgentService) {
+             // attempt is allowed only after V43 has exhausted its bounded scan for that target.
+             val deterministicOverflowAttemptsV53 = mutableSetOf<String>()
+             val verifiedPageAliasesV46 = mutableListOf<CausalDestinationV46.Alias>()
+-            val installedAppsForTaskV45 = runCatching { platform.getInstalledApps() }.getOrDefault(emptyList())
++            val installedAppsForTaskV45 = runSuspendCatchingV57 { platform.getInstalledApps() }
++                .getOrDefault(emptyList())
+             val appPrerequisiteV45 = GoalAppPrerequisiteV45.resolve(task.goal, installedAppsForTaskV45)
+             var deterministicActionCountV43 = 0
+             var pendingDeterministicDecisionV43: DeterministicUiNavigatorV43.Decision? = null
+@@ -559,6 +562,7 @@ internal class HybridAgentEngine(private val service: AgentService) {
+             var lastFailedPlanSignature = ""
+             var identicalFailedPlanCount = 0
+             var evidenceRevision = prefs.getLong("v9_evidence_revision_${task.id}", 0L)
++            var safePreDispatchReplansV57 = 0
+ 
+             fun finishSuccess(message: String) {
+                 HybridTraceEventsV37.emit(traceRecorder, task.id, "hybrid_task_success", message)
+@@ -578,6 +582,18 @@ internal class HybridAgentEngine(private val service: AgentService) {
+                 terminalRecorded = true
+             }
+ 
++            fun recordSafePreDispatchReplanV57(kind: String, detail: String): Boolean {
++                safePreDispatchReplansV57 += 1
++                val compact = detail.replace('|', '/').replace('\n', ' ').take(220)
++                history += "SAFE_PRE_DISPATCH_REPLAN_V57|kind=$kind|count=$safePreDispatchReplansV57|$compact"
++                appendPrimaryDiagnosticV32(
++                    "SAFE_PRE_DISPATCH_REPLAN_V57|taskId=${task.id}|kind=$kind|" +
++                        "count=$safePreDispatchReplansV57|detail=$compact"
++                )
++                lastError = detail
++                return safePreDispatchReplansV57 <= ActionLifecycleV57.MAX_SAFE_PRE_DISPATCH_REPLANS
++            }
++
+             HybridDirectCommandParser.parse(task.goal)?.let { direct ->
+                 val directRisk = riskForAction(direct)
+                 if (directRisk != null) {
+@@ -593,30 +609,50 @@ internal class HybridAgentEngine(private val service: AgentService) {
+ 
+                 val directSignature = actionSignature(direct)
+                 service.notifyHybridExecuting(directSignature)
+-                val directBefore = platform.captureScreen()
+-                val directBeforePackage = observedPackage(platform)
+                 ensureExecutionEpochV11(runEpochV11)
+-                val execution = executeActionTransactionV9(
+-                    task = task,
+-                    platform = platform,
+-                    action = direct,
+-                    before = directBefore,
+-                    beforePackage = directBeforePackage,
+-                    evidenceRevision = evidenceRevision,
+-                )
+-                val outcome = execution.first
+-                val receipt = execution.second
+-                evidenceRevision = maxOf(evidenceRevision, receipt.evidenceRevisionAfter)
+-                history += "DIRECT|${direct.javaClass.simpleName}|${outcome.success}|${outcome}"
+-                history += receiptHistoryLineV9(receipt)
+-
+-                if (receipt.accepted) {
+-                    finishSuccess(
+-                        "Action completed with ${receipt.verificationResult}: $directSignature"
++                val execution = try {
++                    executeActionTransactionV9(
++                        task = task,
++                        platform = platform,
++                        action = direct,
++                        evidenceRevision = evidenceRevision,
+                     )
+-                    return
++                } catch (stale: PreparedActionStaleV57Exception) {
++                    if (!recordSafePreDispatchReplanV57("prepared_stale", stale.message.orEmpty())) {
++                        finishFailure("Bounded recovery stopped after repeated PREPARED staleness")
++                        return
++                    }
++                    null
++                } catch (timeout: ActionStageTimeoutV57Exception) {
++                    if (timeout.stage.attemptedOrLater) {
++                        finishFailure(
++                            "Action transaction timed out after ATTEMPTED at ${timeout.stage.name}; " +
++                                "durable RC11 replay/recovery policy remains authoritative"
++                        )
++                        return
++                    }
++                    if (!recordSafePreDispatchReplanV57("pre_dispatch_timeout", timeout.message.orEmpty())) {
++                        finishFailure("Bounded recovery stopped after repeated pre-dispatch timeouts")
++                        return
++                    }
++                    null
++                }
++                if (execution != null) {
++                    safePreDispatchReplansV57 = 0
++                    val outcome = execution.first
++                    val receipt = execution.second
++                    evidenceRevision = maxOf(evidenceRevision, receipt.evidenceRevisionAfter)
++                    history += "DIRECT|${direct.javaClass.simpleName}|${outcome.success}|${outcome}"
++                    history += receiptHistoryLineV9(receipt)
++
++                    if (receipt.accepted) {
++                        finishSuccess(
++                            "Action completed with ${receipt.verificationResult}: $directSignature"
++                        )
++                        return
++                    }
++                    lastError = outcome.detail
+                 }
+-                lastError = outcome.detail
+             }
+ 
+             val targetChat = inferTargetChatV7(task.goal)
+@@ -646,6 +682,7 @@ internal class HybridAgentEngine(private val service: AgentService) {
+                         requestId,
+                     )
+                 } catch (e: Throwable) {
++                    rethrowOwnerCancellationV57(e)
+                     finishFailure("Brain unavailable during roundtrip: ${e.message}")
+                     return
+                 }
+@@ -935,7 +972,7 @@ internal class HybridAgentEngine(private val service: AgentService) {
+                                 )
+ 
+                                 service.notifyHybridPlanning("Primary Model turn $primaryCalls")
+-                                val primaryDecision = runCatching {
++                                val primaryDecision = runSuspendCatchingV57 {
+                                     requestPrimaryPlanV9(task.id, primaryRequestId, primaryRequest)
+                                 }.getOrElse { error ->
+                                     Log.w(TAG, "Primary Model unavailable; escalating", error)
+@@ -1008,6 +1045,7 @@ internal class HybridAgentEngine(private val service: AgentService) {
+                                     workStateKey,
+                                 )
+                             } catch (error: Throwable) {
++                                rethrowOwnerCancellationV57(error)
+                                 finishFailure("External Chat Brain unavailable after Primary escalation: ${error.message}")
+                                 return
+                             }
+@@ -1162,17 +1200,49 @@ internal class HybridAgentEngine(private val service: AgentService) {
+                             )
+                             service.notifyHybridExecuting(actionDescription)
+ 
+-                            val beforeAction = platform.captureScreen()
+-                            val beforeActionPackage = observedPackage(platform)
+                             ensureExecutionEpochV11(runEpochV11)
+-                            val execution = executeActionTransactionV9(
+-                                task = task,
+-                                platform = platform,
+-                                action = action,
+-                                before = beforeAction,
+-                                beforePackage = beforeActionPackage,
+-                                evidenceRevision = evidenceRevision,
+-                            )
++                            val execution = try {
++                                executeActionTransactionV9(
++                                    task = task,
++                                    platform = platform,
++                                    action = action,
++                                    evidenceRevision = evidenceRevision,
++                                )
++                            } catch (stale: PreparedActionStaleV57Exception) {
++                                recordingService.updateActionState(
++                                    actionId,
++                                    "failed",
++                                    "PREPARED stale before ATTEMPTED; safe fresh replan",
++                                )
++                                if (!recordSafePreDispatchReplanV57("prepared_stale", stale.message.orEmpty())) {
++                                    finishFailure("Bounded recovery stopped after repeated PREPARED staleness")
++                                    return
++                                }
++                                null
++                            } catch (timeout: ActionStageTimeoutV57Exception) {
++                                recordingService.updateActionState(
++                                    actionId,
++                                    "failed",
++                                    timeout.message.orEmpty(),
++                                )
++                                if (timeout.stage.attemptedOrLater) {
++                                    finishFailure(
++                                        "Action transaction timed out after ATTEMPTED at ${timeout.stage.name}; " +
++                                            "durable RC11 replay/recovery policy remains authoritative"
++                                    )
++                                    return
++                                }
++                                if (!recordSafePreDispatchReplanV57("pre_dispatch_timeout", timeout.message.orEmpty())) {
++                                    finishFailure("Bounded recovery stopped after repeated pre-dispatch timeouts")
++                                    return
++                                }
++                                null
++                            }
++                            if (execution == null) {
++                                planQueue.clear()
++                                break
++                            }
++                            safePreDispatchReplansV57 = 0
+                             val outcome = execution.first
+                             val receipt = execution.second
+                             evidenceRevision = maxOf(evidenceRevision, receipt.evidenceRevisionAfter)
+@@ -1845,76 +1915,251 @@ internal class HybridAgentEngine(private val service: AgentService) {
+         )
+     }
+ 
++    private fun actionTimelineV57(
++        taskId: String,
++        sequence: Long?,
++        action: HybridAction,
++        stage: ActionStageV57,
++        startedAtUptimeMs: Long,
++        event: String = "stage",
++        detail: String = "",
++    ) {
++        val safeDetail = detail.replace('|', '/').replace('\n', ' ').take(220)
++        appendPrimaryDiagnosticV32(
++            "ACTION_TIMELINE_V57|taskId=$taskId|seq=${sequence ?: 0}|" +
++                "event=$event|stage=${stage.name}|attempted=${stage.attemptedOrLater}|" +
++                "elapsedMs=${android.os.SystemClock.uptimeMillis() - startedAtUptimeMs}|" +
++                "action=${action.javaClass.simpleName}|detail=$safeDetail"
++        )
++    }
++
++    private suspend fun <T> withinActionDeadlineV57(
++        deadlineUptimeMs: Long,
++        stage: ActionStageV57,
++        block: suspend () -> T,
++    ): T {
++        val remaining = deadlineUptimeMs - android.os.SystemClock.uptimeMillis()
++        if (remaining <= 0L) {
++            throw ActionStageTimeoutV57Exception(
++                stage = stage,
++                timeoutMs = ActionLifecycleV57.ACTION_HARD_DEADLINE_MS,
++            )
++        }
++        return try {
++            withTimeout(remaining) { block() }
++        } catch (timeout: TimeoutCancellationException) {
++            // withTimeout uses CancellationException internally. If our owning task was also
++            // cancelled (for example by the user's Stop), owner cancellation wins and must not
++            // be mislabeled as a stage timeout.
++            rethrowOwnerCancellationV57(timeout)
++            throw ActionStageTimeoutV57Exception(
++                stage = stage,
++                timeoutMs = ActionLifecycleV57.ACTION_HARD_DEADLINE_MS,
++                cause = timeout,
++            )
++        }
++    }
++
++    private fun clearExactPreparedPendingV57(
++        taskId: String,
++        sequence: Long,
++        reason: String,
++    ) {
++        val raw = prefs.getString("v9_pending_action", null)
++        if (!ActionLifecycleV57.exactPreparedPending(raw, taskId, sequence)) {
++            error(
++                "RECOVERY_REQUIRED: expected exact PREPARED PendingAction before safe abandon " +
++                    "(task=$taskId sequence=$sequence reason=$reason)"
++            )
++        }
++        if (!prefs.edit().remove("v9_pending_action").commit()) {
++            error("RECOVERY_REQUIRED: could not clear exact PREPARED PendingAction")
++        }
++    }
++
+     private suspend fun executeActionTransactionV9(
+         task: HybridTask,
+         platform: AndroidPlatform,
+         action: HybridAction,
+-        before: ScreenSnapshot,
+-        beforePackage: String?,
+         evidenceRevision: Long,
+     ): Pair<ActionOutcome, V9ActionReceipt> {
+-        // Node indices are snapshot-local semantic indices, never list offsets. Revalidate the
+-        // exact semantic node against a fresh snapshot immediately before the durable side-effect boundary.
+-        val validated = freshNodeRevalidationV9(platform, action, before, beforePackage)
+-        val validatedBefore = validated.first
+-        val validatedBeforePackage = validated.second
+-        val beforeKey = workStateKeyV9(
+-            validatedBefore, validatedBeforePackage, inferScopeKeyV9(task.goal), action.javaClass.simpleName
+-        )
+-        // Reconcile any PendingAction left by a crash/restart BEFORE writing a new one.
+-        reconcileStalePendingActionV9(task.id, beforeKey)
+-        val sequence = nextActionSequenceV9(task.id)
+-        val risk = riskClassV9(action)
+-        // PREPARED is durable, then the work UI is re-read once more before ATTEMPTED.
+-        persistPendingV9(task.id, sequence, action, V9DispatchState.PREPARED, risk, beforeKey)
+-        val dispatchBefore = platform.captureScreen()
+-        val dispatchBeforePackage = observedPackage(platform)
+-        if (dispatchBeforePackage != validatedBeforePackage) {
+-            error("STALE_ACTION_REVALIDATION_FAILED: foreground package changed after PREPARED")
+-        }
+-        val dispatchKey = workStateKeyV9(
+-            dispatchBefore, dispatchBeforePackage, inferScopeKeyV9(task.goal), action.javaClass.simpleName
+-        )
+-        if (dispatchKey != beforeKey) error("STALE_ACTION_REVALIDATION_FAILED: work state changed after PREPARED")
+-        if (!validateActionTargetV11(action, dispatchBefore)) {
+-            error("STALE_ACTION_REVALIDATION_FAILED: target is missing or ambiguous after PREPARED")
+-        }
+-        // ATTEMPTED is immediately adjacent to dispatch.
+-        persistPendingV9(task.id, sequence, action, V9DispatchState.ATTEMPTED, risk, beforeKey)
+-        val eventRevision = AgentService.hybridUiEventRevision
+-        val outcome = executeAction(platform, action)
+-        val receipt = buildPostActionReceiptV9(
+-            task, sequence, platform, dispatchBefore, dispatchBeforePackage, action,
+-            outcome.success, outcome.toString(), evidenceRevision, eventRevision,
+-        )
+-        val compact = buildString {
+-            append(task.id).append('|').append(sequence).append('|')
+-            append(actionSignature(action).replace("\\n", " ").take(180))
+-            append("|accepted=").append(receipt.accepted)
+-            append("|transition=").append(receipt.transitionClass.name)
+-            append("|proof=").append(receipt.verificationResult)
+-            append("|state=").append(receipt.afterWorkStateKey.take(16))
+-            append("|rev=").append(receipt.evidenceRevisionAfter)
+-        }
+-        val journalKey = "v9_task_journal_${task.id}"
+-        val previousJournal = prefs.getString(journalKey, "").orEmpty()
+-        val nextJournal = if (previousJournal.isBlank()) compact else previousJournal + "\n" + compact
+-        // Receipt + journal append + pending clear + post-state are one SharedPreferences transaction.
+-        val ok = prefs.edit()
+-            .putInt("v9_task_journal_schema", 1)
+-            .putString(journalKey, nextJournal)
+-            .putString("v9_last_receipt_${task.id}", compact)
+-            .putLong("v9_evidence_revision_${task.id}", receipt.evidenceRevisionAfter)
+-            .putString("v9_last_work_state_${task.id}", receipt.afterWorkStateKey)
+-            .remove("v9_pending_action")
+-            .commit()
+-        if (!ok) error("Could not atomically commit receipt / journal / clear pending action")
+-        if (prefs.getString("v9_excursion_state", null) == V9ExcursionState.BRAIN_RETURNING.name &&
+-            prefs.getString("v9_excursion_task", null) == task.id
+-        ) {
+-            clearBrainExcursionV9()
++        val startedAtV57 = android.os.SystemClock.uptimeMillis()
++        val deadlineV57 = startedAtV57 + ActionLifecycleV57.ACTION_HARD_DEADLINE_MS
++        var stageV57 = ActionStageV57.STARTED
++        var sequenceV57: Long? = null
++        actionTimelineV57(task.id, sequenceV57, action, stageV57, startedAtV57)
++
++        try {
++            // Start the hard action deadline BEFORE the first pre-dispatch capture. The c056
++            // diagnostics showed that a task can otherwise disappear for minutes between an
++            // accepted plan and transaction entry if this capture stalls.
++            val initialBefore = withinActionDeadlineV57(deadlineV57, stageV57) {
++                platform.captureScreen()
++            }
++            val initialBeforePackage = observedPackage(platform)
++            stageV57 = ActionStageV57.BEFORE_CAPTURED
++            actionTimelineV57(task.id, sequenceV57, action, stageV57, startedAtV57)
++
++            // Node indices are snapshot-local semantic indices, never list offsets. Revalidate the
++            // exact semantic node against another fresh snapshot immediately before the durable
++            // side-effect boundary.
++            val validated = withinActionDeadlineV57(deadlineV57, stageV57) {
++                freshNodeRevalidationV9(platform, action, initialBefore, initialBeforePackage)
++            }
++            val validatedBefore = validated.first
++            val validatedBeforePackage = validated.second
++            stageV57 = ActionStageV57.TARGET_REVALIDATED
++            actionTimelineV57(task.id, sequenceV57, action, stageV57, startedAtV57)
++
++            val beforeKey = workStateKeyV9(
++                validatedBefore, validatedBeforePackage, inferScopeKeyV9(task.goal), action.javaClass.simpleName
++            )
++            // Reconcile any PendingAction left by a crash/restart BEFORE writing a new one.
++            reconcileStalePendingActionV9(task.id, beforeKey)
++            val sequence = nextActionSequenceV9(task.id)
++            sequenceV57 = sequence
++            val risk = riskClassV9(action)
++
++            // PREPARED is durable, then the work UI is re-read once more before ATTEMPTED.
++            persistPendingV9(task.id, sequence, action, V9DispatchState.PREPARED, risk, beforeKey)
++            stageV57 = ActionStageV57.PREPARED
++            actionTimelineV57(task.id, sequenceV57, action, stageV57, startedAtV57)
++
++            val dispatchBefore = withinActionDeadlineV57(deadlineV57, stageV57) {
++                platform.captureScreen()
++            }
++            val dispatchBeforePackage = observedPackage(platform)
++
++            fun preparedStale(reason: String): Nothing {
++                clearExactPreparedPendingV57(task.id, sequence, reason)
++                actionTimelineV57(
++                    task.id,
++                    sequence,
++                    action,
++                    ActionStageV57.PREPARED,
++                    startedAtV57,
++                    event = "safe_abandon",
++                    detail = reason,
++                )
++                throw PreparedActionStaleV57Exception(ActionStageV57.PREPARED, reason)
++            }
++
++            if (dispatchBeforePackage != validatedBeforePackage) {
++                preparedStale("foreground package changed after PREPARED")
++            }
++            val dispatchKey = workStateKeyV9(
++                dispatchBefore, dispatchBeforePackage, inferScopeKeyV9(task.goal), action.javaClass.simpleName
++            )
++            if (dispatchKey != beforeKey) preparedStale("work state changed after PREPARED")
++            if (!validateActionTargetV11(action, dispatchBefore)) {
++                preparedStale("target is missing or ambiguous after PREPARED")
++            }
++
++            stageV57 = ActionStageV57.DISPATCH_REVALIDATED
++            actionTimelineV57(task.id, sequenceV57, action, stageV57, startedAtV57)
++
++            // ATTEMPTED is immediately adjacent to dispatch. From this point onward, timeout or
++            // cancellation must never trigger blind replay; the existing RC11 risk/recovery policy
++            // remains authoritative for any durable ATTEMPTED record.
++            persistPendingV9(task.id, sequence, action, V9DispatchState.ATTEMPTED, risk, beforeKey)
++            stageV57 = ActionStageV57.ATTEMPTED
++            actionTimelineV57(task.id, sequenceV57, action, stageV57, startedAtV57)
++
++            val eventRevision = AgentService.hybridUiEventRevision
++            val outcome = withinActionDeadlineV57(deadlineV57, stageV57) {
++                executeAction(platform, action)
++            }
++            stageV57 = ActionStageV57.DISPATCH_RETURNED
++            actionTimelineV57(task.id, sequenceV57, action, stageV57, startedAtV57)
++
++            val receipt = withinActionDeadlineV57(deadlineV57, stageV57) {
++                buildPostActionReceiptV9(
++                    task, sequence, platform, dispatchBefore, dispatchBeforePackage, action,
++                    outcome.success, outcome.toString(), evidenceRevision, eventRevision,
++                )
++            }
++            stageV57 = ActionStageV57.POST_OBSERVED
++            actionTimelineV57(task.id, sequenceV57, action, stageV57, startedAtV57)
++
++            val compact = buildString {
++                append(task.id).append('|').append(sequence).append('|')
++                append(actionSignature(action).replace("\\n", " ").take(180))
++                append("|accepted=").append(receipt.accepted)
++                append("|transition=").append(receipt.transitionClass.name)
++                append("|proof=").append(receipt.verificationResult)
++                append("|state=").append(receipt.afterWorkStateKey.take(16))
++                append("|rev=").append(receipt.evidenceRevisionAfter)
++            }
++            val journalKey = "v9_task_journal_${task.id}"
++            val previousJournal = prefs.getString(journalKey, "").orEmpty()
++            val nextJournal = if (previousJournal.isBlank()) compact else previousJournal + "\n" + compact
++            // Receipt + journal append + pending clear + post-state are one SharedPreferences transaction.
++            val ok = prefs.edit()
++                .putInt("v9_task_journal_schema", 1)
++                .putString(journalKey, nextJournal)
++                .putString("v9_last_receipt_${task.id}", compact)
++                .putLong("v9_evidence_revision_${task.id}", receipt.evidenceRevisionAfter)
++                .putString("v9_last_work_state_${task.id}", receipt.afterWorkStateKey)
++                .remove("v9_pending_action")
++                .commit()
++            if (!ok) error("Could not atomically commit receipt / journal / clear pending action")
++            stageV57 = ActionStageV57.RECEIPT_COMMITTED
++            actionTimelineV57(task.id, sequenceV57, action, stageV57, startedAtV57)
++
++            if (prefs.getString("v9_excursion_state", null) == V9ExcursionState.BRAIN_RETURNING.name &&
++                prefs.getString("v9_excursion_task", null) == task.id
++            ) {
++                clearBrainExcursionV9()
++            }
++            return outcome to receipt
++        } catch (cancel: CancellationException) {
++            // User/owner cancellation is distinct from timeout. Before ATTEMPTED, an exact
++            // PREPARED record is safe to abandon because dispatch provably never started. After
++            // ATTEMPTED, preserve the durable record and let RC11 recovery remain authoritative.
++            val sequence = sequenceV57
++            if (!stageV57.attemptedOrLater && sequence != null) {
++                val raw = prefs.getString("v9_pending_action", null)
++                if (ActionLifecycleV57.exactPreparedPending(raw, task.id, sequence)) {
++                    clearExactPreparedPendingV57(task.id, sequence, "owner cancellation before ATTEMPTED")
++                }
++            }
++            actionTimelineV57(
++                task.id,
++                sequenceV57,
++                action,
++                stageV57,
++                startedAtV57,
++                event = "cancelled",
++                detail = if (stageV57.attemptedOrLater) "ATTEMPTED preserved" else "pre-dispatch PREPARED abandoned if exact",
++            )
++            // If this CancellationException came from a child while the owner is still active,
++            // it is an execution failure rather than a user stop. Owner cancellation propagates.
++            rethrowOwnerCancellationV57(cancel)
++            throw IllegalStateException(
++                "Action stage ${stageV57.name} was cancelled while task owner remained active",
++                cancel,
++            )
++        } catch (timeout: ActionStageTimeoutV57Exception) {
++            // Only PREPARED is safe to abandon automatically. If ATTEMPTED was reached, preserve
++            // the durable pending record so existing RC11 replay/recovery policy decides later.
++            val sequence = sequenceV57
++            if (!timeout.stage.attemptedOrLater && sequence != null) {
++                val raw = prefs.getString("v9_pending_action", null)
++                if (ActionLifecycleV57.exactPreparedPending(raw, task.id, sequence)) {
++                    clearExactPreparedPendingV57(task.id, sequence, "pre-dispatch timeout")
++                }
++            }
++            actionTimelineV57(
++                task.id,
++                sequenceV57,
++                action,
++                timeout.stage,
++                startedAtV57,
++                event = "timeout",
++                detail = "hardDeadlineMs=${timeout.timeoutMs}",
++            )
++            throw timeout
+         }
+-        return outcome to receipt
+     }
+ 
+     private fun receiptHistoryLineV9(receipt: V9ActionReceipt): String = buildString {
+@@ -2992,7 +3237,7 @@ internal class HybridAgentEngine(private val service: AgentService) {
+             val previous = cachedPrimaryRuntime
+             cachedPrimaryRuntime = next
+             if (previous != null && previous.client !== next.client) {
+-                runCatching { previous.client.cleanup() }
++                runSuspendCatchingV57 { previous.client.cleanup() }
+                     .onFailure { Log.w(TAG, "Primary Model cleanup failed", it) }
+             }
+             return next
+@@ -3034,7 +3279,7 @@ internal class HybridAgentEngine(private val service: AgentService) {
+         val previous = cachedPrimaryRuntime
+         cachedPrimaryRuntime = next
+         if (previous != null && previous.client !== next.client) {
+-            runCatching { previous.client.cleanup() }
++            runSuspendCatchingV57 { previous.client.cleanup() }
+                 .onFailure { Log.w(TAG, "Primary Model cleanup failed", it) }
+         }
+         return next
+@@ -3267,7 +3512,7 @@ internal class HybridAgentEngine(private val service: AgentService) {
+             appendLine("ACTIONS: OPEN_APP, CLICK_TEXT, CLICK_DESC, CLICK_NODE, SET_TEXT_NODE, SCROLL_NODE, SCROLL, WAIT, BACK, HOME, RECENTS, VERIFY_TEXT, DONE")
+             appendLine("No prose, no markdown, no BRAIN_PLAN wrapper. Do not change or omit the REQ lease.")
+         }
+-        val repaired = runCatching { callPrimaryModelRawV9(repair) }
++        val repaired = runSuspendCatchingV57 { callPrimaryModelRawV9(repair) }
+             .getOrElse { return PrimaryPlanDecision(null, "Primary format repair failed: ${it.message}") }
+         appendPrimaryDiagnosticV32(
+             "PLAN_RAW_V33|requestId=$repairRequestId|stage=repair|chars=${repaired.length}|text=${primaryDiagnosticTextV33(repaired)}"
+@@ -3398,7 +3643,7 @@ internal class HybridAgentEngine(private val service: AgentService) {
+         val error = first.exceptionOrNull()?.message.orEmpty()
+         Log.w(TAG, "Brain plan syntax parse failed; one syntax-only repair is permitted: $error")
+         val repairRequestId = newBrainRequestIdV9(taskId, 99)
+-        val repaired = runCatching {
++        val repaired = runSuspendCatchingV57 {
+             consultBrain(
+                 platform,
+                 buildRepairRequest(taskId, repairRequestId, rawPlan, error),
+@@ -3450,10 +3695,11 @@ internal class HybridAgentEngine(private val service: AgentService) {
+                 frame,
+             )
+         } catch (t: Throwable) {
++            rethrowOwnerCancellationV57(t)
+             primaryFailure = t
+         }
+ 
+-        val restoreFailure = runCatching {
++        val restoreFailure = runSuspendCatchingV57 {
+             if (!restoreAfterBrainExcursion(platform, frame)) {
+                 error(
+                     "automatic Brain return failed; originChat=${frame.originChatTitle ?: "unknown"}; " +
+@@ -3505,7 +3751,7 @@ internal class HybridAgentEngine(private val service: AgentService) {
+         }
+ 
+         if (isChatGptPackage(originPackage) && !originWasBrain) {
+-            runCatching {
++            runSuspendCatchingV57 {
+                 if (openSidebarSafely(platform)) {
+                     delay(300)
+                     val sidebar = platform.captureScreen()
+@@ -3625,7 +3871,7 @@ internal class HybridAgentEngine(private val service: AgentService) {
+         platform: AndroidPlatform,
+         frame: BrainExcursionFrame,
+     ) {
+-        val nowSidebar = runCatching { isSidebarVisible(platform) }.getOrDefault(false)
++        val nowSidebar = runSuspendCatchingV57 { isSidebarVisible(platform) }.getOrDefault(false)
+         if (frame.originSidebarVisible && !nowSidebar) {
+             openSidebarSafely(platform)
+             delay(250)
+@@ -4251,7 +4497,7 @@ internal class HybridAgentEngine(private val service: AgentService) {
+         timeoutMs: Long,
+     ): Boolean {
+     repeat(10) {
+-        runCatching {
++        runSuspendCatchingV57 {
+             verifyChatGptForeground(platform, "verifying dedicated Brain")
+         }.getOrElse {
+             return@repeat
+@@ -4311,7 +4557,7 @@ internal class HybridAgentEngine(private val service: AgentService) {
+     private suspend fun resolveChatGptPackage(platform: AndroidPlatform): String {
+         resolvedChatGptPackage?.let { return it }
+ 
+-        val apps = runCatching { platform.getInstalledApps() }.getOrDefault(emptyList())
++        val apps = runSuspendCatchingV57 { platform.getInstalledApps() }.getOrDefault(emptyList())
+         val exact = apps.firstOrNull { it.packageName == CHATGPT_PACKAGE }
+         val byLabel = apps.firstOrNull { app ->
+             val n = normalizeForMatch(app.label).replace(" ", "")
+@@ -5426,7 +5672,7 @@ internal class HybridAgentEngine(private val service: AgentService) {
+         // V41: explicit stop clauses are typed deterministic postconditions. A visible row is
+         // not equivalent to reaching that row's destination page; no model output is authority.
+         val snapshot = platform.captureScreen()
+-        val apps = runCatching { platform.getInstalledApps() }
++        val apps = runSuspendCatchingV57 { platform.getInstalledApps() }
+             .getOrDefault(emptyList())
+             .map { GoalPostconditionV41.AppIdentity(it.packageName, it.label) }
+         val spec = GoalPostconditionV41.parse(goal, apps)
+diff --git a/app/src/main/res/values/strings.xml b/app/src/main/res/values/strings.xml
+index 562f640..fad9de2 100644
+--- a/app/src/main/res/values/strings.xml
++++ b/app/src/main/res/values/strings.xml
+@@ -1,5 +1,5 @@
+ <?xml version="1.0" encoding="utf-8"?>
+ <resources>
+-    <string name="app_name">ClosePaw RC11 056</string>
++    <string name="app_name">ClosePaw RC11 057a</string>
+     <string name="accessibility_service_description">ClosePaw acts as an on-device automation agent. With your permission, it reads on-screen elements and performs taps, swipes, and text input only when you start a task. It does not run in the background or monitor other apps.</string>
+ </resources>
+diff --git a/app/src/test/kotlin/ai/closepaw/app/ActionLifecycleV57Test.kt b/app/src/test/kotlin/ai/closepaw/app/ActionLifecycleV57Test.kt
+new file mode 100644
+index 0000000..c6b16b1
+--- /dev/null
++++ b/app/src/test/kotlin/ai/closepaw/app/ActionLifecycleV57Test.kt
+@@ -0,0 +1,103 @@
++package ai.closepaw.app
++
++import kotlinx.coroutines.CancellationException
++import kotlinx.coroutines.async
++import kotlinx.coroutines.awaitCancellation
++import kotlinx.coroutines.CompletableDeferred
++import kotlinx.coroutines.delay
++import kotlinx.coroutines.test.runTest
++import kotlinx.coroutines.withTimeout
++import org.junit.Assert.assertEquals
++import org.junit.Assert.assertFalse
++import org.junit.Assert.assertTrue
++import org.junit.Test
++
++class ActionLifecycleV57Test {
++
++    @Test
++    fun ownerCancellationIsNeverConvertedToResultFailure() = runTest {
++        val entered = CompletableDeferred<Unit>()
++        val deferred = async {
++            runSuspendCatchingV57 {
++                entered.complete(Unit)
++                awaitCancellation()
++            }
++        }
++        entered.await()
++        deferred.cancel(CancellationException("user stop"))
++        try {
++            deferred.await()
++            throw AssertionError("owner cancellation must propagate")
++        } catch (_: CancellationException) {
++            // expected
++        }
++    }
++
++    @Test
++    fun ownerCancellationWinsEvenWhenLowerLayerWrapsCancellationAsFailure() = runTest {
++        val entered = CompletableDeferred<Unit>()
++        val deferred = async {
++            runSuspendCatchingV57<String> {
++                entered.complete(Unit)
++                try {
++                    awaitCancellation()
++                } catch (cancel: CancellationException) {
++                    throw IllegalStateException("transport wrapped cancellation", cancel)
++                }
++            }
++        }
++        entered.await()
++        deferred.cancel(CancellationException("user stop"))
++        try {
++            deferred.await()
++            throw AssertionError("owner cancellation must outrank translated transport failure")
++        } catch (_: CancellationException) {
++            // expected
++        }
++    }
++
++    @Test
++    fun childTimeoutWhileOwnerActiveRemainsOperationFailure() = runTest {
++        val result = runSuspendCatchingV57 {
++            withTimeout(1) {
++                delay(100)
++                "never"
++            }
++        }
++        assertTrue(result.isFailure)
++        assertTrue(result.exceptionOrNull() is CancellationException)
++    }
++
++    @Test
++    fun childCancellationWhileOwnerActiveRemainsOperationFailure() = runTest {
++        val childCancellation = CancellationException("child operation cancelled")
++        val result = runSuspendCatchingV57<String> { throw childCancellation }
++        assertTrue(result.isFailure)
++        assertTrue(result.exceptionOrNull() === childCancellation)
++    }
++
++    @Test
++    fun ordinaryFailureRemainsFailure() = runTest {
++        val result = runSuspendCatchingV57<String> { error("boom") }
++        assertTrue(result.isFailure)
++        assertEquals("boom", result.exceptionOrNull()?.message)
++    }
++
++    @Test
++    fun exactPreparedPendingRejectsAttemptedOrForeignRecords() {
++        val prepared = "task-1|7|PREPARED|SAFE_TO_RETRY|OPEN_APP:Settings|abc"
++        val attempted = "task-1|7|ATTEMPTED|SAFE_TO_RETRY|OPEN_APP:Settings|abc"
++        assertTrue(ActionLifecycleV57.exactPreparedPending(prepared, "task-1", 7L))
++        assertFalse(ActionLifecycleV57.exactPreparedPending(attempted, "task-1", 7L))
++        assertFalse(ActionLifecycleV57.exactPreparedPending(prepared, "task-2", 7L))
++        assertFalse(ActionLifecycleV57.exactPreparedPending(prepared, "task-1", 8L))
++    }
++
++    @Test
++    fun attemptedBoundaryIsExplicit() {
++        assertFalse(ActionStageV57.BEFORE_CAPTURED.attemptedOrLater)
++        assertFalse(ActionStageV57.DISPATCH_REVALIDATED.attemptedOrLater)
++        assertTrue(ActionStageV57.ATTEMPTED.attemptedOrLater)
++        assertTrue(ActionStageV57.POST_OBSERVED.attemptedOrLater)
++    }
++}

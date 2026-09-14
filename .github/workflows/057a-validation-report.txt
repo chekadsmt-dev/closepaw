@@ -1,0 +1,64 @@
+ClosePaw RC11 057a — Lifecycle Reliability
+Validation report — 2026-09-14
+
+BASELINE
+- Exact verified 054 full-source artifact: id 10344837628, run 34836436419
+- Artifact digest: sha256:00e6c0241b5ac3a8623eebaf5cd352901b9f43edc073f9b8fa80df8c0b15a7b2
+- 054 manifest SHA-256: 9790dc574c1c7c9ee7fd9276559f3d8e8275ad04080051819252e5c9505c9508
+- Exact audited 056 patch SHA-256: 63c02dbecbab844090e5b01668593289c36d4a97e025bea403dd4fc512de11b4
+- Exact reconstructed 056 app manifest SHA-256: aef554eeba8eaee91c4062b7fe521a5a0a9f42f49b179a56ab6028abec61a655
+
+057a SCOPE
+1. Cancellation propagation audit across Primary, format repair, Brain, Brain repair/restore and selected suspend cleanup/query paths.
+2. Owner cancellation is authoritative via currentCoroutineContext().ensureActive(), even if a lower layer translates it to IOException/provider failure; child CancellationException remains an operation failure when the owner is active.
+3. Action transaction hard deadline with explicit stages and diagnostics.
+4. Timeout is distinct from user cancellation; TimeoutCancellationException cannot mask owner cancellation.
+5. First pre-dispatch capture moved inside the single action deadline, closing the observed PLAN_ACCEPT -> silent capture gap.
+6. PREPARED stale/timeout/cancel before ATTEMPTED may clear only the exact task+sequence PREPARED record and trigger bounded fresh replan.
+7. ATTEMPTED or later is never auto-cleared/replayed by 057a; existing RC11 recovery remains authoritative.
+8. 056 Stop/Close routing and V54 cancellable OkHttp bridge preserved.
+9. Intent parsing, Samsung TransitionWaiter, screenshot-window fix, and implicit semantic admissibility intentionally excluded from 057a.
+
+EXTERNAL CROSS-CHECKS
+- kotlinx.coroutines official source/docs: CancellationException semantics; ensureActive to distinguish owner cancellation from child cancellation; TimeoutCancellationException is cancellation-based; prompt cancellation behavior.
+- Kotlin kotlinx.coroutines issue #1814: stdlib runCatching may swallow CancellationException.
+- Android Accessibility official docs: accessibility nodes/windows can become stale; TYPE_WINDOWS_CHANGED is system-sourced and should be correlated by windowId/getWindows.
+- AndroidX UiAutomator 2.4: bounded waitForStableInActiveWindow validates later 057b stabilization design but is not mixed into 057a.
+- AndroidClaw: active Job cancellation with dedicated CancellationException path and rethrow.
+- react-native-device-agent/Deft: observe -> act -> settle -> fresh observe; bounded wait_for_node / wait_for_change.
+- dsh-mobile-gui-agent: explicit observing/executing/verifying phases, per-action timeout, fresh post-action observation, authoritative stop, stale-element revalidation.
+- Zero-Permission Manipulation / Action Rebinding: reinforces preserving fresh pre-dispatch revalidation.
+- VeriSafe / V-Droid: supports later semantic action verification/admissibility, deliberately deferred to 058.
+
+LOCAL VALIDATION PERFORMED
+- 057a patch generated as an isolated diff from exact reconstructed 056.
+- Patch includes exactly 5 app source/test files.
+- git diff --check PASS.
+- Simulated exact apply: verified 054 -> exact 056 -> isolated 057a PASS.
+- Resulting app source manifest byte-for-byte matches expected 057a manifest.
+- Static lifecycle/cancellation/transaction audit PASS.
+- 056 authoritative Stop contract static audit PASS after 057a.
+- Workflow YAML parse PASS.
+- All workflow run blocks bash -n PASS after GitHub-expression substitution.
+- Embedded 056 and 057a patch payloads decode byte-for-byte to their source patch files.
+
+LOCAL LIMITATION
+- Android Gradle compile could not be executed in the local container because the Gradle wrapper distribution is not cached and shell network access to services.gradle.org is unavailable (UnknownHostException).
+- Therefore compile/unit/APK PASS is NOT claimed. The supplied GitHub Actions workflow contains clean compile, permanent 057a tests, V54 real-socket cancellation integration, frozen-core regressions, full unit test, clean assemble, package/label/signature checks, and verified-full-source artifact generation.
+
+FINAL HASHES
+- 057a isolated patch SHA-256: 1c692ef173d0fe03e3520982eca59888c0cd7d1c4c91f51ef5e5876011d77a27
+- 057a postpatch source manifest SHA-256: ca82f407f33f9954a6f6ce69fa61c9efbec68305a892b4751b6df4b3bb1d5f69
+- 057a workflow SHA-256: 41d626ddfe587122181be1cfec1c292d7f5b901e2dcf4e4976470c7295ec89ba
+
+EXPECTED 057a CHANGED FILE HASHES
+- app/build.gradle.kts
+  54a7c155dd847a0a41772ff17cad6e8aaed445793c3adfeaafc6107d02069ffd
+- app/src/main/kotlin/ai/closepaw/app/ActionLifecycleV57.kt
+  4373e23721e54a0cd25063e63347eecf6c00f1ee7d744e4a8593bfc72e882750
+- app/src/main/kotlin/ai/closepaw/app/HybridAgentEngine.kt
+  3fae51971a630b795eb61ef3d64d07c7b385bbe139492453853ffb60878e1b8d
+- app/src/main/res/values/strings.xml
+  c8c13eed77e40bfb571a954304fa4e868a2d3e88471af1239f19164d23f3ef92
+- app/src/test/kotlin/ai/closepaw/app/ActionLifecycleV57Test.kt
+  5c61535defaa5d8fa0b4db717a1238e8dd4129eeb1fa67494a7b52e12852f90a
