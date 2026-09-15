@@ -1,0 +1,203 @@
+diff --git a/app/src/main/kotlin/ai/closepaw/app/ChatGptProjectAdapterV58.kt b/app/src/main/kotlin/ai/closepaw/app/ChatGptProjectAdapterV58.kt
+index a670190..550922f 100644
+--- a/app/src/main/kotlin/ai/closepaw/app/ChatGptProjectAdapterV58.kt
++++ b/app/src/main/kotlin/ai/closepaw/app/ChatGptProjectAdapterV58.kt
+@@ -45,6 +45,12 @@ internal data class AssistantResponseScanV58(
+     val historyLimitReached: Boolean,
+ )
+ 
++internal data class ManagerBaselineProbeV60(
++    val latestExactResponse: String?,
++    val historyStartProven: Boolean,
++    val historyLimitReached: Boolean,
++)
++
+ /**
+  * V58 ChatGPT Android adapter.
+  *
+@@ -56,6 +62,11 @@ internal data class AssistantResponseScanV58(
+  * - every operation resolves fresh AccessibilityNodeInfo objects.
+  */
+ internal class ChatGptProjectAdapterV58(private val service: AgentService) {
++    // Router owns the physical UI while active. Cache only a conversation this adapter itself
++    // positively opened; a real app relaunch invalidates the lease.
++    private var leasedConversationConfiguredTitle: String? = null
++    private var leasedConversationResolvedTitle: String? = null
++
+     companion object {
+         private const val CHATGPT_PACKAGE = "com.openai.chatgpt"
+         private const val SETTLE_MS = 550L
+@@ -72,6 +83,8 @@ internal class ChatGptProjectAdapterV58(private val service: AgentService) {
+ 
+     suspend fun launch() {
+         if (focusedRootOrNull() != null) return
++        leasedConversationConfiguredTitle = null
++        leasedConversationResolvedTitle = null
+         val intent = service.packageManager.getLaunchIntentForPackage(CHATGPT_PACKAGE)
+             ?: error("ChatGPT app is not installed")
+         intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+@@ -87,6 +100,19 @@ internal class ChatGptProjectAdapterV58(private val service: AgentService) {
+         require(exactTitle.isNotBlank())
+         launch()
+ 
++        val leasedResolved = leasedConversationResolvedTitle
++        if (leasedConversationConfiguredTitle == exactTitle && leasedResolved != null && uniqueEditable(EditRole.COMPOSER) != null) {
++            return ConversationOpenReceiptV59(
++                configuredTitle = exactTitle,
++                resolvedTitle = leasedResolved,
++                usedSearch = false,
++                searchLabelCount = collectExactLabelNodes(SEARCH_LABELS).size,
++                setTextCandidateCount = collectSetTextCandidates().size,
++                resultCandidateCount = 1,
++                conversationVerified = true,
++            )
++        }
++
+         val openedNavigation = clickUniqueExactLabel(NAV_LABELS)
+         if (openedNavigation) delay(SETTLE_MS)
+ 
+@@ -106,6 +132,8 @@ internal class ChatGptProjectAdapterV58(private val service: AgentService) {
+             require(clickNodeOrParent(target.node)) { "Resolved conversation target was not clickable: ${target.visibleTitle}" }
+             delay(SETTLE_MS)
+             requireUniqueComposer()
++            leasedConversationConfiguredTitle = exactTitle
++            leasedConversationResolvedTitle = target.visibleTitle
+             return ConversationOpenReceiptV59(
+                 configuredTitle = exactTitle,
+                 resolvedTitle = target.visibleTitle,
+@@ -161,6 +189,8 @@ internal class ChatGptProjectAdapterV58(private val service: AgentService) {
+         require(clickNodeOrParent(resolved.node)) { "Conversation search result was not clickable: ${resolved.visibleTitle}" }
+         delay(SETTLE_MS)
+         requireUniqueComposer()
++        leasedConversationConfiguredTitle = exactTitle
++        leasedConversationResolvedTitle = resolved.visibleTitle
+         return ConversationOpenReceiptV59(
+             configuredTitle = exactTitle,
+             resolvedTitle = resolved.visibleTitle,
+@@ -188,6 +218,52 @@ internal class ChatGptProjectAdapterV58(private val service: AgentService) {
+ 
+     suspend fun latestAssistantResponse(): String? = copyVisibleAssistantResponseFromBottom(0)
+ 
++    /**
++     * Establish activation baseline without treating "no Copy control at the bottom" as proof that
++     * a long manager chat is empty. Walk backward only until the newest assistant response is
++     * copied exactly, or until the actual history start is positively reached.
++     */
++    suspend fun probeManagerBaseline(maxBackwardScrolls: Int = 8): ManagerBaselineProbeV60 {
++        var scrolls = 0
++        try {
++            while (true) {
++                val visibleCount = collectExactLabelNodes(COPY_RESPONSE_LABELS).size
++                for (indexFromBottom in 0 until visibleCount) {
++                    val response = copyVisibleAssistantResponseFromBottom(indexFromBottom)
++                        ?.trim()
++                        ?.takeIf { it.isNotBlank() }
++                    if (response != null) {
++                        return ManagerBaselineProbeV60(
++                            latestExactResponse = response,
++                            historyStartProven = false,
++                            historyLimitReached = false,
++                        )
++                    }
++                }
++
++                val movedBackward = scrollConversation(forward = false)
++                if (!movedBackward) {
++                    return ManagerBaselineProbeV60(
++                        latestExactResponse = null,
++                        historyStartProven = true,
++                        historyLimitReached = false,
++                    )
++                }
++                scrolls++
++                if (scrolls > maxBackwardScrolls) {
++                    return ManagerBaselineProbeV60(
++                        latestExactResponse = null,
++                        historyStartProven = false,
++                        historyLimitReached = true,
++                    )
++                }
++                delay(250)
++            }
++        } finally {
++            scrollToBottom(maxBackwardScrolls + 3)
++        }
++    }
++
+     /**
+      * Copy the exact assistant response whose accessibility-local message container
+      * contains [marker]. The accessibility association is only candidate selection;
+diff --git a/app/src/main/kotlin/ai/closepaw/app/ProjectOrchestratorV58.kt b/app/src/main/kotlin/ai/closepaw/app/ProjectOrchestratorV58.kt
+index f81c1a0..6c5d789 100644
+--- a/app/src/main/kotlin/ai/closepaw/app/ProjectOrchestratorV58.kt
++++ b/app/src/main/kotlin/ai/closepaw/app/ProjectOrchestratorV58.kt
+@@ -238,7 +238,6 @@ internal class ProjectOrchestratorV58(private val service: AgentService) {
+         try {
+                 trace("MANAGER_SCAN_START", "project=${project.projectId} chat=${manager.chatTitle}")
+                 val navigationReceipt = ui.openConversation(manager.chatTitle)
+-                managerFailureByProject.remove(project.projectId)
+                 trace("MANAGER_NAV_OK", "project=${project.projectId}|${navigationReceipt.compact()}")
+                 // Accessibility fingerprints are only a cheap change detector. Exact command
+                 // authority always comes from a positive ChatGPT Copy-response receipt.
+@@ -249,19 +248,21 @@ internal class ProjectOrchestratorV58(private val service: AgentService) {
+                 // PROJECT_UPDATE content that predates activation. An empty baseline is recorded
+                 // explicitly so the first future assistant response is not skipped.
+                 if (!store.isManagerCursorInitialized(project.projectId)) {
+-                    val responseControls = ui.assistantResponseControlCount()
+-                    val baseline = ui.latestAssistantResponse()?.trim()?.takeIf { it.isNotBlank() }
+-                    if (responseControls > 0 && baseline == null) {
+-                        // A response exists but Copy did not produce a positive receipt. Do not
+-                        // misclassify this as an empty history and later execute stale commands.
+-                        trace("MANAGER_BASELINE_COPY_UNAVAILABLE", "project=${project.projectId}|controls=$responseControls")
+-                        return
++                    val baselineProbe = ui.probeManagerBaseline()
++                    val baseline = baselineProbe.latestExactResponse?.trim()?.takeIf { it.isNotBlank() }
++                    if (baseline == null && !baselineProbe.historyStartProven) {
++                        trace(
++                            "MANAGER_BASELINE_DEFERRED",
++                            "project=${project.projectId}|limit=${baselineProbe.historyLimitReached}",
++                        )
++                        error("Manager baseline exact cursor unavailable within bounded history")
+                     }
+                     val exactHash = baseline?.let(ProjectOrchestratorProtocolV58::sha256)
+                     store.primeManagerCursor(project.projectId, exactHash, surfaceHash)
++                    managerFailureByProject.remove(project.projectId)
+                     trace(
+                         "MANAGER_BASELINE_PRIMED",
+-                        "project=${project.projectId}|assistant=${if (exactHash == null) "empty" else exactHash.take(16)}",
++                        "project=${project.projectId}|assistant=${if (exactHash == null) "empty-history-proven" else exactHash.take(16)}",
+                     )
+                     return
+                 }
+@@ -272,18 +273,19 @@ internal class ProjectOrchestratorV58(private val service: AgentService) {
+                 val cursor = store.managerResponseCursor(project.projectId)
+                 val scan = ui.copyAssistantResponsesAfter(cursorHash = cursor)
+                 if (!scan.boundaryFound) {
+-                    // Never jump over an unknown manager-history gap.  A restart may leave several
+-                    // assistant turns pending; scan them oldest->newest only when the prior exact
+-                    // Copy-response cursor can be proven. Otherwise fail closed and retry later.
++                    // A cursor gap is a real scan failure. Authority cannot advance across an
++                    // unproven history boundary, and repeated gaps must hit the same bounded
++                    // fail-closed policy as navigation/copy failures.
+                     trace(
+                         "MANAGER_CURSOR_GAP",
+                         "project=${project.projectId}|cursor=${cursor?.take(16) ?: "empty"}|limit=${scan.historyLimitReached}",
+                     )
+-                    return
++                    error("Manager exact response cursor boundary unavailable")
+                 }
+ 
+                 if (scan.responsesOldestFirst.isEmpty()) {
+                     if (surfaceHash != null) store.setManagerSurfaceCursor(project.projectId, surfaceHash)
++                    managerFailureByProject.remove(project.projectId)
+                     trace("MANAGER_SCAN_UNCHANGED", "project=${project.projectId}|exact=true")
+                     return
+                 }
+@@ -368,6 +370,7 @@ internal class ProjectOrchestratorV58(private val service: AgentService) {
+                 }
+ 
+                 if (surfaceHash != null) store.setManagerSurfaceCursor(project.projectId, surfaceHash)
++                managerFailureByProject.remove(project.projectId)
+                 trace("MANAGER_SCAN_DONE", "project=${project.projectId}|responses=${scan.responsesOldestFirst.size}")
+         } catch (cancel: CancellationException) {
+             throw cancel
