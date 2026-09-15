@@ -1,0 +1,33 @@
+ClosePaw RC11 058a-r1 Workflow Repair Validation
+
+Scope: CI/workflow-only repair. App source and 058a patch are unchanged.
+
+Observed GitHub failure:
+- Step: Verify exact scope and source manifest
+- Old gate used: git diff --name-only
+- Workflow intentionally preserves the checkout host .git while replacing the working tree with the verified 057a artifact.
+- Therefore Git index/HEAD describes the host repository, not the restored 057a Source of Truth.
+- New files introduced by the 058a patch are untracked relative to that foreign HEAD and are omitted by git diff --name-only.
+- Result: false isolation failure with expected V58/V58A files listed as missing.
+
+Repair:
+- Replace Git-index-based isolation with Source-of-Truth manifest comparison:
+  changed = union(057a_manifest, postpatch_manifest) where hashes differ/add/delete.
+- Require changed set to equal the 16-file explicit allowlist.
+- Keep exact postpatch manifest SHA gate unchanged:
+  f38392efe0aa90a09add12b07c9d97ba74b834e3c312aea6cfd59ab4fcf5d20d
+
+Local validation:
+- YAML parse: PASS
+- Every workflow run block bash -n: PASS
+- Embedded patch byte-for-byte equals standalone 058a patch: PASS
+- Embedded/standalone patch SHA256: 84402a7a5021aa19024b263d4243e2f530b72ca87940339452adce81de97c85f
+- Fresh apply against exact verified 057a artifact: PASS
+- git diff --check after apply: PASS
+- Manifest-diff changed set = exact 16-file allowlist: PASS
+- Postpatch manifest SHA = expected: PASS
+- Foreign-.git simulation reproduces old failure and passes new gate: PASS
+
+Important:
+- This repair does not change APK/application source.
+- Android Gradle compile/test/APK gates still must run in GitHub.
