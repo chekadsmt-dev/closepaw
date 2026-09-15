@@ -1,0 +1,50 @@
+ClosePaw RC11 058a — local validation report
+Date: 2026-09-15
+
+Purpose
+- Preserve the installed 058 Generic Runtime Project Orchestrator.
+- Fix the real-device regression where a one-line "Stop when ... is visible" clause was not parsed.
+- Prevent model-selected actions after a locally proven terminal goal.
+- Bound the PLAN_ACCEPT -> RC11 transaction gap so pre-dispatch work cannot silently suspend indefinitely.
+
+Baseline / isolation
+- Exact 057a verified full-source used as reconstruction baseline.
+- Combined 058a patch fresh-applies with `git apply --check`: PASS.
+- `git diff --check`: PASS.
+- Fresh-applied source equals 058a postpatch source manifest byte-for-byte: PASS.
+- 058 generic orchestrator implementation files intended to remain unchanged are byte-identical to the prior 058 manifest: PASS (7/7 checked).
+- All 057a files outside the explicit 058/058a allowlist remain byte-identical by manifest audit: PASS.
+
+Targeted correctness
+- One-line goal `Open Settings. Go to Apps. Do not change any setting. Stop when Apps settings page is visible.` parses as PAGE_REACHED: PASS.
+- Apps header proves that typed page postcondition while clickable child rows do not substitute for the page proof: PASS.
+- Negative `Do not stop when ...` is not promoted into a terminal condition: PASS.
+- Standalone GoalPostcondition harness: V58A_GOAL_HARNESS_PASS.
+- Post-plan timeout is typed as attempted=false while owner cancellation remains CancellationException control flow: PASS.
+- Standalone post-plan guard harness: V58A_POST_PLAN_HARNESS_PASS.
+
+Lifecycle / semantic guard
+- Existing 057a RC11 PREPARED -> ATTEMPTED transaction code remains present.
+- Existing V54 cancellable HTTP bridge remains present.
+- Post-plan completion + lease refresh is wrapped by PostPlanGuardV58A with 15s hard deadline.
+- Timeout before ATTEMPTED feeds the existing bounded safe-pre-dispatch replan budget; no blind replay.
+- A fresh local terminal check runs immediately before every model-selected nonterminal side effect.
+- If the user's stop goal is already ACHIEVED, the model action is blocked and task completes locally.
+- New diagnostics: POST_PLAN_GATE_V58A and MODEL_ACTION_TERMINAL_GUARD_V58A.
+
+Packaging
+- applicationIdSuffix intentionally remains `.rc11c058` to allow in-place upgrade over installed 058 and preserve Android permission/settings continuity.
+- versionNameSuffix becomes `-rc11-c058a`.
+- label becomes `ClosePaw RC11 058a`.
+
+Workflow validation
+- YAML parse: PASS.
+- All bash `run` blocks `bash -n`: PASS.
+- Embedded combined patch is byte-identical to standalone patch: PASS.
+- Workflow patch simulation on exact 057a + manifest comparison: PASS.
+- Multidimensional frozen-invariant/orchestration/058a static audit: PASS.
+
+Not claimed locally
+- Android Gradle compile/test/assemble cannot run in this container because Gradle 8.11.1 distribution is not cached and network access to services.gradle.org is unavailable.
+- The provided GitHub workflow gates baseline compile, targeted tests, frozen navigation/lifecycle regressions, full unit suite, assemble, source identity, package/version/label, and APK signature.
+- Real-device runtime acceptance remains required after the GitHub workflow is green.
