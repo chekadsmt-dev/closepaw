@@ -1,0 +1,42 @@
+ClosePaw RC11 058b-r3 local validation report
+
+Observed GitHub failure:
+- Run: 34973128516
+- Workflow: 058b-r2 - ClosePaw RC11 Compact ChatGPT Protocol + Router Diagnostics
+- Failing task: :app:compileDebugKotlin
+- Exact compiler error: ProjectOrchestratorV58.kt:646:50 Unresolved reference 'BuildConfig'
+- Baseline 057a clean compile had already PASSed in the same workflow before applying 058b.
+- 058b patch application, exact isolation/source manifest, and pre-compile audits had PASSed.
+
+Root cause:
+- Android namespace is ai.closepaw.
+- ProjectOrchestratorV58.kt is in package ai.closepaw.app.
+- BuildConfig is therefore generated as ai.closepaw.BuildConfig and is not visible unqualified from ai.closepaw.app.
+
+Fix:
+- Added import ai.closepaw.BuildConfig to ProjectOrchestratorV58.kt.
+- No behavioral routing, lifecycle, transaction, memory, or registry logic changed for this compile fix.
+
+058b-r3 local gates:
+- YAML parse: PASS
+- Every bash run block bash -n: PASS
+- Exact 057a -> 058b-r3 patch git apply --check: PASS
+- git diff --check: PASS
+- Exact 16-file manifest-diff isolation: PASS
+- Postpatch manifest byte-exact reproduction: PASS
+- Multidimensional frozen/safety/protocol/diagnostics audit: PASS
+- Flattened ROUTE_TASK strict whole-response harness: PASS
+- Surrounding-prose / quoted / duplicate-field fail-closed harness: PASS
+- Dynamic manifest 00..20 harness: PASS
+- Embedded patch byte-exact vs standalone patch: PASS
+
+Not claimed locally:
+- Android Gradle compile PASS for 058b-r3 (local environment cannot download Gradle distribution).
+- Full Android unit-test suite PASS.
+- APK build/signature/runtime PASS.
+These are mandatory CI gates in the workflow.
+
+SHA-256:
+workflow 2a0513b017d5ca492599b947124b0ba9a64a7beef2947e4e623efde86999c08d
+patch    cb0849224c47d67054e84db8cf010e7d3cebd27a81da5b38517aede4ec6fc6b2
+manifest 4b28bf0b632d89a86386b1f13c38ddccb1a7f66693cf2c3f89f59b79d2b8c7d7
