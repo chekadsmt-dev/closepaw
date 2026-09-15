@@ -1,0 +1,85 @@
+ClosePaw RC11 058b-r2 — Compact ChatGPT Protocol + Router Diagnostics
+Date: 2026-09-15
+
+DEVICE EVIDENCE REVIEWED
+- ClosePaw-0.1.0-rc11-c058a-diagnostics.zip
+- Samsung SM-S908E, Android SDK 36
+- package ai.closepaw.rc11c058
+- version 0.1.0-rc11-c058a
+
+RUNTIME FINDINGS FROM 058a
+1. Apps terminal regression: PASS
+   - Task HA-1789468089106-4665.
+   - CAUSAL_EVENT_V51: source=Apps, package=com.android.settings, header=Apps.
+   - Terminal trace: hybrid_task_success, data="Goal verified locally after grounded navigation".
+   - No accepted post-terminal Choose default apps action is evidenced.
+2. User Stop cancellation: PASS
+   - Task HA-1789468200616-82eb.
+   - USER_STOP requested at 1789468204452.
+   - HTTP CancellationException at 1789468204455 (+3 ms).
+   - task_cancelled at 1789468204475 (+23 ms).
+3. Project-router takeover hook was invoked with no active Hybrid owner.
+4. 058a diagnostics did not persist ORCH_V58 router-internal events, so exact manager parse/route-state decisions were not observable.
+
+OBSERVED ROUTER INTEROPERABILITY DEFECT
+- ChatGPT Android rendered/copied the manager response as one flattened paragraph:
+  ROUTE_TASK PROJECT_ID: SMT ROUTE_ID: SMT-TEST-058A-001 FROM: 00 TARGET: 04 ... RETURN_TO: 00 END_ROUTE_TASK
+- 058a accepted only sentinels occupying independent lines.
+- Therefore the manager response was semantically valid but transport-incompatible with the 058a parser.
+
+058b-r2 FIX
+- Preserve exact multiline protocol support.
+- Add strict compact whole-response parsing for ROUTE_TASK, PROJECT_UPDATE, PROJECT_MANIFEST.
+- Multiple compact ROUTE_TASK blocks remain supported.
+- No fuzzy extraction: compact control is accepted only when the entire copied assistant payload is protocol block(s), with strict sentinel order and scalar cardinality.
+- During final multidimensional review, exact multiline protocol was additionally hardened: code-fenced examples, explanatory prose around a block, and duplicated authority-bearing scalar fields now fail closed.
+- Exact multiline result envelope + route behavior remains supported after router-owned result envelope removal.
+- Dynamic Project/Agent Registry remains data-driven; no fixed SMT/01..12 target table was reintroduced.
+- 058a goal-terminal/watchdog fixes remain frozen.
+- 057a cancellation/lifecycle invariants remain frozen.
+- PREPARED/ATTEMPTED and no-blind-replay route/return semantics remain frozen.
+- Exact ChatGPT title/composer/send grounding remains frozen.
+- Single physical Android UI owner remains frozen.
+- Router ORCH_V58 diagnostics are persisted to getExternalFilesDir("closepaw-diagnostics")/project-router-v58.log so the existing diagnostics export includes routing decisions.
+
+LOCAL VERIFICATION
+- Exact verified 057a baseline source manifest SHA-256:
+  ca82f407f33f9954a6f6ce69fa61c9efbec68305a892b4751b6df4b3bb1d5f69
+- 058b-r2 combined patch git apply --check on fresh exact 057a: PASS.
+- Fresh apply + git diff --check: PASS.
+- Patched app byte-identical to authored 058b-r2 tree: PASS (741 app files).
+- Incremental change from 058a is exactly five files: PASS:
+  app/build.gradle.kts
+  ProjectOrchestratorProtocolV58.kt
+  ProjectOrchestratorV58.kt
+  strings.xml
+  ProjectOrchestratorProtocolV58Test.kt
+- Combined patch SHA-256:
+  f881312e6a74ac4ef80c61904ff1b51ce74dd85d50c5c5e989611e13162d0ba7
+- Postpatch source manifest SHA-256:
+  3b0a680fb6f1bbb204c2ebd52e41913f1eacecf9bd3cec091b1499fd0fbce3aa
+- Workflow SHA-256:
+  2ac90744ecd561c8f461442423decb9896fc2a1167cb497bed329f54c329b55f
+- Workflow YAML parse: PASS.
+- All 10 workflow shell run blocks bash -n: PASS.
+- Embedded workflow patch byte-identical to standalone patch: PASS.
+- Workflow exact scope/source-manifest gate simulation: PASS.
+- Workflow multidimensional frozen/safety/dynamic-protocol audit simulation: PASS.
+- Kotlin compact-protocol harness: V58B_COMPACT_PROTOCOL_HARNESS_PASS.
+- Additional protocol hardening harness: PASS:
+  observed flattened route parses;
+  multiline prose rejected;
+  multiline code fence rejected;
+  duplicated multiline target rejected;
+  multiple pure multiline route blocks parse;
+  exact result-envelope followed by route parses.
+
+PACKAGING
+- applicationId remains ai.closepaw.rc11c058 for in-place upgrade/settings continuity.
+- versionName advances to 0.1.0-rc11-c058b.
+- application label: ClosePaw RC11 058b.
+
+NOT CLAIMED LOCALLY
+- Android Gradle compile/unit/assemble has not run in this container because the Android/Gradle distribution is not locally available.
+- The GitHub workflow is the authoritative compile/test/APK gate.
+- Runtime 00 -> 04 -> 00 is not claimed PASS until a green GitHub 058b build is installed and the device acceptance test completes.
