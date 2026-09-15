@@ -1,0 +1,372 @@
+--- a/app/src/main/kotlin/ai/closepaw/app/ChatGptProjectAdapterV58.kt
++++ b/app/src/main/kotlin/ai/closepaw/app/ChatGptProjectAdapterV58.kt
+@@ -12,6 +12,33 @@
+ import kotlinx.coroutines.delay
+ 
+ 
++internal fun configuredConversationTitleMatchesV59(actualRaw: String, configuredRaw: String): Boolean {
++    fun normalized(value: String): String = value
++        .replace('\u00a0', ' ')
++        .replace(Regex("\\s+"), " ")
++        .trim()
++
++    val actual = normalized(actualRaw)
++    val configured = normalized(configuredRaw)
++    if (configured.isBlank()) return false
++    return actual == configured || actual.startsWith("$configured | ")
++}
++
++internal data class ConversationOpenReceiptV59(
++    val configuredTitle: String,
++    val resolvedTitle: String,
++    val usedSearch: Boolean,
++    val searchLabelCount: Int,
++    val setTextCandidateCount: Int,
++    val resultCandidateCount: Int,
++    val conversationVerified: Boolean,
++) {
++    fun compact(): String =
++        "configured=${configuredTitle.replace('|', '/')};resolved=${resolvedTitle.replace('|', '/')};" +
++            "usedSearch=$usedSearch;searchLabels=$searchLabelCount;setText=$setTextCandidateCount;" +
++            "results=$resultCandidateCount;verified=$conversationVerified"
++}
++
+ internal data class AssistantResponseScanV58(
+     val responsesOldestFirst: List<String>,
+     val boundaryFound: Boolean,
+@@ -23,7 +50,7 @@
+  *
+  * Safety properties:
+  * - application-window/package binding is exact;
+- * - chat titles are exact, never substring/fuzzy matched;
++ * - chat identity is exact or one deterministic "configured | descriptor" alias; never arbitrary substring/fuzzy matched;
+  * - Search and message composer are different semantic roles;
+  * - Send is resolved near the unique composer; no coordinate fallback;
+  * - every operation resolves fresh AccessibilityNodeInfo objects.
+@@ -56,38 +83,93 @@
+         error("ChatGPT did not become the focused application surface")
+     }
+ 
+-    suspend fun openConversation(exactTitle: String) {
++    suspend fun openConversation(exactTitle: String): ConversationOpenReceiptV59 {
+         require(exactTitle.isNotBlank())
+         launch()
+ 
+         val openedNavigation = clickUniqueExactLabel(NAV_LABELS)
+         if (openedNavigation) delay(SETTLE_MS)
+ 
+-        // Never infer that the sidebar is open merely because the navigation button is absent.
+-        // Require positive navigation-surface evidence before resolving an exact chat title.
+-        val navigationSurfaceProven = openedNavigation || collectExactLabelNodes(SEARCH_LABELS).isNotEmpty()
++        // V59 navigation rule:
++        // 1) configured chat identity remains deterministic; exact title wins;
++        // 2) a unique visible title of the form "<configured> | <descriptor>" is an allowed
++        //    canonical alias, not a fuzzy/contains match;
++        // 3) Search may expose a Compose ACTION_SET_TEXT node without EditText/search semantics.
++        //    The single-node fallback is allowed only after the Search surface is positively proven.
++        val navigationSearchLabels = collectExactLabelNodes(SEARCH_LABELS)
++        val navigationSurfaceProven = openedNavigation || navigationSearchLabels.isNotEmpty()
+         if (!navigationSurfaceProven) {
+-            error("ChatGPT navigation surface could not be proven")
++            error("ChatGPT navigation surface could not be proven; searchLabels=${navigationSearchLabels.size}")
+         }
+ 
+-        if (clickUniqueExactText(exactTitle)) {
++        resolveUniqueConversationTarget(exactTitle)?.let { target ->
++            require(clickNodeOrParent(target.node)) { "Resolved conversation target was not clickable: ${target.visibleTitle}" }
+             delay(SETTLE_MS)
+             requireUniqueComposer()
+-            return
++            return ConversationOpenReceiptV59(
++                configuredTitle = exactTitle,
++                resolvedTitle = target.visibleTitle,
++                usedSearch = false,
++                searchLabelCount = navigationSearchLabels.size,
++                setTextCandidateCount = 0,
++                resultCandidateCount = 1,
++                conversationVerified = true,
++            )
++        }
++
++        var usedSearch = false
++        var searchLabels = collectExactLabelNodes(SEARCH_LABELS)
++        var setTextCandidates = collectSetTextCandidates()
++        var searchInput = uniqueEditable(EditRole.SEARCH, allowSingleSearchFallback = searchLabels.isNotEmpty())
++
++        // If Search is already open, do not click Search again. This is critical after a failed scan:
++        // re-entering the same Search surface must be idempotent rather than creating a UI loop.
++        if (searchInput == null) {
++            if (!clickUniqueExactLabel(SEARCH_LABELS)) {
++                error(
++                    "Conversation '$exactTitle' not visible and Search chats is not uniquely grounded; " +
++                        "searchLabels=${searchLabels.size};setTextCandidates=${setTextCandidates.size};" +
++                        "semantics=${setTextCandidateSemantics(setTextCandidates)}"
++                )
++            }
++            usedSearch = true
++            delay(350)
++            searchLabels = collectExactLabelNodes(SEARCH_LABELS)
++            setTextCandidates = collectSetTextCandidates()
++            searchInput = uniqueEditable(EditRole.SEARCH, allowSingleSearchFallback = true)
++        } else {
++            usedSearch = true
+         }
+ 
+-        if (!clickUniqueExactLabel(SEARCH_LABELS)) {
+-            error("Conversation '$exactTitle' not visible and Search chats is not uniquely grounded")
+-        }
+-        delay(300)
+-        setTextInRole(EditRole.SEARCH, exactTitle)
+-        delay(700)
++        val input = searchInput ?: error(
++            "ChatGPT search field is missing or ambiguous; " +
++                "searchLabels=${searchLabels.size};setTextCandidates=${setTextCandidates.size};" +
++                "semantics=${setTextCandidateSemantics(setTextCandidates)}"
++        )
++        setTextOnNode(input, exactTitle, roleName = "search")
++        delay(750)
+ 
+-        if (!clickUniqueExactText(exactTitle)) {
+-            error("Conversation not found by exact title: $exactTitle")
++        val resultTargets = resolveConversationTargets(exactTitle)
++        if (resultTargets.size != 1) {
++            error(
++                "Conversation result is missing or ambiguous for '$exactTitle'; " +
++                    "searchLabels=${searchLabels.size};setTextCandidates=${setTextCandidates.size};results=${resultTargets.size};" +
++                    "titles=${resultTargets.joinToString(";") { it.visibleTitle.take(120) }}"
++            )
+         }
++        val resolved = resultTargets.single()
++        require(clickNodeOrParent(resolved.node)) { "Conversation search result was not clickable: ${resolved.visibleTitle}" }
+         delay(SETTLE_MS)
+         requireUniqueComposer()
++        return ConversationOpenReceiptV59(
++            configuredTitle = exactTitle,
++            resolvedTitle = resolved.visibleTitle,
++            usedSearch = usedSearch,
++            searchLabelCount = searchLabels.size,
++            setTextCandidateCount = setTextCandidates.size,
++            resultCandidateCount = resultTargets.size,
++            conversationVerified = true,
++        )
+     }
+ 
+     fun assistantResponseControlCount(): Int = collectExactLabelNodes(COPY_RESPONSE_LABELS).size
+@@ -288,22 +370,45 @@
+ 
+     private fun setTextInRole(role: EditRole, text: String) {
+         val target = uniqueEditable(role) ?: error("ChatGPT ${role.name.lowercase()} field is missing or ambiguous")
++        setTextOnNode(target, text, role.name.lowercase())
++    }
++
++    private fun setTextOnNode(target: AccessibilityNodeInfo, text: String, roleName: String) {
+         val args = Bundle().apply {
+             putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, text)
+         }
+         require(target.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, args)) {
+-            "ACTION_SET_TEXT failed for ${role.name.lowercase()}"
++            "ACTION_SET_TEXT failed for $roleName"
+         }
+     }
+ 
+-    private fun uniqueEditable(role: EditRole): AccessibilityNodeInfo? {
+-        val root = focusedRootOrNull() ?: return null
++    private fun collectSetTextCandidates(): List<AccessibilityNodeInfo> {
++        val root = focusedRootOrNull() ?: return emptyList()
+         val all = mutableListOf<AccessibilityNodeInfo>()
+         walk(root) { node ->
+             if (node.packageName?.toString() == CHATGPT_PACKAGE && node.isVisibleToUser && node.isEnabled &&
+-                (node.isEditable || node.className?.toString()?.contains("EditText") == true)
+-            ) all += node
++                isTextInputNode(node)
++            ) {
++                if (all.none { nodeSignature(it) == nodeSignature(node) }) all += node
++            }
++        }
++        return all
++    }
++
++    private fun setTextCandidateSemantics(nodes: List<AccessibilityNodeInfo>): String = nodes
++        .take(4)
++        .joinToString(";") { node ->
++            val semantic = listOfNotNull(node.hintText, node.contentDescription, node.text)
++                .joinToString(" ") { it.toString().replace('|', '/') }
++                .take(100)
++            "${node.className}:$semantic"
+         }
++
++    private fun uniqueEditable(
++        role: EditRole,
++        allowSingleSearchFallback: Boolean = false,
++    ): AccessibilityNodeInfo? {
++        val all = collectSetTextCandidates()
+         val roleMatches = all.filter { node ->
+             val semantic = listOfNotNull(node.hintText, node.contentDescription, node.text)
+                 .joinToString(" ") { it.toString() }
+@@ -318,7 +423,11 @@
+             }
+         }
+         if (roleMatches.size == 1) return roleMatches.single()
+-        // Conservative role fallback: only when the surface has exactly one editable and it cannot be Search.
++        if (role == EditRole.SEARCH && allowSingleSearchFallback && all.size == 1) {
++            return all.single()
++        }
++        // Conservative composer fallback: only when the surface has exactly one SET_TEXT target
++        // and it cannot be semantically identified as Search.
+         if (role == EditRole.COMPOSER && all.size == 1) {
+             val semantic = listOfNotNull(all.single().hintText, all.single().contentDescription, all.single().text)
+                 .joinToString(" ") { it.toString() }
+@@ -351,18 +460,33 @@
+         return null
+     }
+ 
+-    private fun clickUniqueExactText(text: String): Boolean {
+-        val root = focusedRootOrNull() ?: return false
+-        val clickTargets = mutableListOf<AccessibilityNodeInfo>()
++    private data class ConversationTargetV59(
++        val node: AccessibilityNodeInfo,
++        val visibleTitle: String,
++    )
++
++    private fun resolveUniqueConversationTarget(configuredTitle: String): ConversationTargetV59? =
++        resolveConversationTargets(configuredTitle).singleOrNull()
++
++    private fun resolveConversationTargets(configuredTitle: String): List<ConversationTargetV59> {
++        val root = focusedRootOrNull() ?: return emptyList()
++        val byTarget = linkedMapOf<String, ConversationTargetV59>()
+         walk(root) { node ->
+-            val exact = node.text?.toString()?.trim() == text || node.contentDescription?.toString()?.trim() == text
+-            if (exact && node.isVisibleToUser && node.isEnabled && !node.isEditable && !hasEditableAncestor(node)) {
+-                nearestClickable(node)?.let { target ->
+-                    if (clickTargets.none { it == target }) clickTargets += target
++            if (!node.isVisibleToUser || !node.isEnabled || isTextInputNode(node) || hasEditableAncestor(node)) return@walk
++            val values = listOfNotNull(node.text?.toString(), node.contentDescription?.toString())
++                .map { it.trim() }
++                .filter { it.isNotBlank() && configuredConversationTitleMatchesV59(it, configuredTitle) }
++            if (values.isEmpty()) return@walk
++            nearestClickable(node)?.let { target ->
++                val key = nodeSignature(target)
++                val best = values.minByOrNull { it.length } ?: return@let
++                val existing = byTarget[key]
++                if (existing == null || best.length > existing.visibleTitle.length) {
++                    byTarget[key] = ConversationTargetV59(target, best)
+                 }
+             }
+         }
+-        return clickTargets.singleOrNull()?.let(::clickNodeOrParent) == true
++        return byTarget.values.toList()
+     }
+ 
+     private fun clickUniqueExactLabel(labels: Set<String>): Boolean {
+@@ -409,11 +533,16 @@
+         return found
+     }
+ 
++    private fun isTextInputNode(node: AccessibilityNodeInfo): Boolean =
++        node.isEditable ||
++            node.className?.toString()?.contains("EditText") == true ||
++            node.actionList.any { it.id == AccessibilityNodeInfo.ACTION_SET_TEXT }
++
+     private fun hasEditableAncestor(node: AccessibilityNodeInfo): Boolean {
+         var current = node.parent
+-        repeat(4) {
++        repeat(6) {
+             val n = current ?: return false
+-            if (n.isEditable) return true
++            if (isTextInputNode(n)) return true
+             current = n.parent
+         }
+         return false
+--- a/app/src/main/kotlin/ai/closepaw/app/ProjectOrchestratorV58.kt
++++ b/app/src/main/kotlin/ai/closepaw/app/ProjectOrchestratorV58.kt
+@@ -29,6 +29,7 @@
+         private const val RESPONSE_POLL_MS = 850L
+         private const val UI_CLICK_VERIFY_MS = 800L
+         private const val WORKER_RESTART_BACKOFF_MS = 5_000L
++        private const val MAX_CONSECUTIVE_MANAGER_SCAN_FAILURES = 3
+         private const val CONTROL_PLANE_MARKER = "CONTROL_PLANE: CLOSEPAW_V58"
+ 
+         fun isControlCommand(text: String): Boolean = ProjectOrchestratorProtocolV58.isControlInput(text)
+@@ -40,6 +41,7 @@
+     private val directControlMutex = Mutex()
+     @Volatile private var workerJob: Job? = null
+     private val managerScanAtByProject = mutableMapOf<String, Long>()
++    private val managerFailureByProject = mutableMapOf<String, Pair<String, Int>>()
+ 
+     val isRunning: Boolean
+         get() = workerJob != null
+@@ -205,6 +207,7 @@
+             // and prevents N projects from monopolizing the one physical Android UI before
+             // an already-durable route gets a chance to advance.
+             scanOneDueManager()
++            if (!store.isRouterEnabled()) return
+ 
+             var progressed = false
+             for (route in store.runnableRoutes(limit = 12)) {
+@@ -234,7 +237,9 @@
+         }
+         try {
+                 trace("MANAGER_SCAN_START", "project=${project.projectId} chat=${manager.chatTitle}")
+-                ui.openConversation(manager.chatTitle)
++                val navigationReceipt = ui.openConversation(manager.chatTitle)
++                managerFailureByProject.remove(project.projectId)
++                trace("MANAGER_NAV_OK", "project=${project.projectId}|${navigationReceipt.compact()}")
+                 // Accessibility fingerprints are only a cheap change detector. Exact command
+                 // authority always comes from a positive ChatGPT Copy-response receipt.
+                 val surfaceHash = ui.assistantMessageFingerprints().lastOrNull()
+@@ -368,7 +373,24 @@
+             throw cancel
+         } catch (t: Throwable) {
+             currentCoroutineContext().ensureActive()
+-            trace("MANAGER_SCAN_ERROR", "project=${project.projectId} error=${t.message}")
++            val fingerprint = "${t::class.java.name}:${t.message.orEmpty()}"
++            val previous = managerFailureByProject[project.projectId]
++            val count = (previous?.second ?: 0) + 1
++            managerFailureByProject[project.projectId] = fingerprint to count
++            trace(
++                "MANAGER_SCAN_ERROR",
++                "project=${project.projectId}|count=$count|error=${t.message}",
++            )
++            if (count >= MAX_CONSECUTIVE_MANAGER_SCAN_FAILURES) {
++                store.setRouterEnabled(false)
++                trace(
++                    "MANAGER_SCAN_FAIL_CLOSED",
++                    "project=${project.projectId}|count=$count|fingerprint=${ProjectOrchestratorProtocolV58.sha256(fingerprint).take(16)}",
++                )
++                service.publishHybridStatus(
++                    "Project Router V58 stopped after $count consecutive manager scan failures: ${t.message}"
++                )
++            }
+         }
+     }
+ 
+diff --git a/app/src/test/kotlin/ai/closepaw/app/ChatGptProjectAdapterV59Test.kt b/app/src/test/kotlin/ai/closepaw/app/ChatGptProjectAdapterV59Test.kt
+new file mode 100644
+--- /dev/null
++++ b/app/src/test/kotlin/ai/closepaw/app/ChatGptProjectAdapterV59Test.kt
+@@ -0,0 +1,25 @@
++package ai.closepaw.app
++
++import org.junit.Assert.assertFalse
++import org.junit.Assert.assertTrue
++import org.junit.Test
++
++class ChatGptProjectAdapterV59Test {
++    @Test
++    fun configuredTitleAcceptsExactIdentity() {
++        assertTrue(configuredConversationTitleMatchesV59("00 — SMT HQ", "00 — SMT HQ"))
++    }
++
++    @Test
++    fun configuredTitleAcceptsUniqueDescriptorSuffixShape() {
++        assertTrue(configuredConversationTitleMatchesV59("00 — SMT HQ | مدیر کل هلدینگ", "00 — SMT HQ"))
++    }
++
++    @Test
++    fun configuredTitleNormalizesWhitespaceButRejectsFuzzyMatches() {
++        assertTrue(configuredConversationTitleMatchesV59("00 — SMT HQ\u00a0| مدیر", "00 — SMT HQ"))
++        assertFalse(configuredConversationTitleMatchesV59("prefix 00 — SMT HQ | مدیر", "00 — SMT HQ"))
++        assertFalse(configuredConversationTitleMatchesV59("00 — SMT HQ backup", "00 — SMT HQ"))
++        assertFalse(configuredConversationTitleMatchesV59("00 — SMT HQ|مدیر", "00 — SMT HQ"))
++    }
++}
