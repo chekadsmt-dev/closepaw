@@ -1,0 +1,272 @@
+name: 063 - ClosePaw RC11 Grounded Assistant Response Capture
+'on':
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout workflow host repository
+        uses: actions/checkout@v5
+
+      - name: Setup Java 17
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Restore exact verified 062 Source of Truth
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          ARTIFACT_NAME='062-ClosePaw-RC11-verified-full-source'
+          rm -rf /tmp/062-source /tmp/062-normalized /tmp/062-artifact.zip /tmp/062-list.json
+          mkdir -p /tmp/062-source
+          curl -fsSL -H "Authorization: Bearer $GH_TOKEN" -H 'Accept: application/vnd.github+json' \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts?name=${ARTIFACT_NAME}&per_page=100" \
+            -o /tmp/062-list.json
+          python3 - <<'PYMETA'
+          import json
+          d=json.load(open('/tmp/062-list.json'))
+          name='062-ClosePaw-RC11-verified-full-source'
+          matches=[a for a in d.get('artifacts',[]) if a.get('name')==name and not a.get('expired')]
+          if not matches:
+              raise SystemExit('verified 062 full-source artifact not found')
+          matches.sort(key=lambda a:a.get('created_at',''), reverse=True)
+          chosen=matches[0]
+          open('/tmp/062-artifact-id','w').write(str(chosen['id']))
+          open('/tmp/062-artifact-meta.txt','w').write(json.dumps(chosen,indent=2,sort_keys=True)+'\n')
+          print('062 artifact',chosen['id'],chosen.get('digest'))
+          PYMETA
+          ARTIFACT_ID="$(cat /tmp/062-artifact-id)"
+          curl -fsSL -L -H "Authorization: Bearer $GH_TOKEN" -H 'Accept: application/vnd.github+json' \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/${ARTIFACT_ID}/zip" \
+            -o /tmp/062-artifact.zip
+          unzip -q /tmp/062-artifact.zip -d /tmp/062-source
+          MANIFEST="$(find /tmp/062-source -type f -name '062-postpatch-source-manifest.json' -print -quit)"
+          [ -n "$MANIFEST" ] || { echo '062 source manifest missing' >&2; exit 1; }
+          ROOT="$(dirname "$MANIFEST")"
+          if [ "$ROOT" != '/tmp/062-source' ]; then
+            mkdir -p /tmp/062-normalized
+            cp -a "$ROOT"/. /tmp/062-normalized/
+            rm -rf /tmp/062-source
+            mv /tmp/062-normalized /tmp/062-source
+          fi
+          python3 - <<'PYBASE'
+          from pathlib import Path
+          import hashlib,json
+          root=Path('/tmp/062-source')
+          manifest=json.loads((root/'062-postpatch-source-manifest.json').read_text())
+          current={}
+          for p in sorted((root/'app').rglob('*')):
+              if p.is_file() and '/build/' not in p.as_posix():
+                  current[p.relative_to(root).as_posix()]=hashlib.sha256(p.read_bytes()).hexdigest()
+          if current != manifest:
+              missing=sorted(set(manifest)-set(current)); added=sorted(set(current)-set(manifest)); changed=sorted(k for k in set(manifest)&set(current) if manifest[k]!=current[k])
+              raise SystemExit(f'062 source manifest mismatch missing={missing[:10]} added={added[:10]} changed={changed[:10]}')
+          build=(root/'app/build.gradle.kts').read_text(); strings=(root/'app/src/main/res/values/strings.xml').read_text()
+          assert 'versionNameSuffix = "-rc11-c062"' in build
+          assert 'ClosePaw RC11 062' in strings
+          print('verified 062 source identity: PASS')
+          PYBASE
+          find . -mindepth 1 -maxdepth 1 ! -name '.git' ! -name '.github' -exec rm -rf {} +
+          rsync -a --exclude='.git' --exclude='.github' /tmp/062-source/ ./
+          cp 062-postpatch-source-manifest.json 063-baseline-source-manifest.json
+          cat > 063-verification-report.txt <<'REPORT'
+          ClosePaw RC11 063 verification report
+          Baseline: verified 062 full-source artifact.
+          c062 device evidence: manager navigation PASS; generic assistant Copy controls detected (generic=2 accepted=2); clipboard exact-copy receipt remained unavailable, causing bounded baseline deferral and then false empty-history prime.
+          063 scope: preserve clipboard-first authority, add structurally grounded assistant-response accessibility fallback when clipboard receipt is unavailable, and expose capture-source diagnostics.
+          REPORT
+          cat /tmp/062-artifact-meta.txt >> 063-verification-report.txt
+
+      - name: Baseline 062 clean compile gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          chmod +x ./gradlew
+          ./gradlew clean :app:compileDebugKotlin --stacktrace --no-daemon --no-configuration-cache
+          echo 'Baseline 062 clean compile: PASS' >> 063-verification-report.txt
+
+      - name: Apply isolated 063 grounded-capture patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PYPATCH'
+          from pathlib import Path
+          a=Path('app/src/main/kotlin/ai/closepaw/app/ChatGptProjectAdapterV58.kt')
+          s=a.read_text()
+
+          old='''    private var leasedConversationConfiguredTitle: String? = null\n    private var leasedConversationResolvedTitle: String? = null\n'''
+          new='''    private var leasedConversationConfiguredTitle: String? = null\n    private var leasedConversationResolvedTitle: String? = null\n    private var lastAssistantCaptureSourceV63: String = "none"\n'''
+          if s.count(old)!=1: raise SystemExit(f'lease anchor mismatch count={s.count(old)}')
+          s=s.replace(old,new,1)
+
+          old='''    fun responseCopyDiagnosticsV61(): String {\n        val explicit = collectExactLabelNodes(COPY_RESPONSE_LABELS).size\n        val generic = collectExactLabelNodes(GENERIC_COPY_LABELS).size\n        val accepted = collectResponseCopyControls().size\n        return "explicit=$explicit;generic=$generic;accepted=$accepted"\n    }\n'''
+          new='''    fun responseCopyDiagnosticsV61(): String {\n        val explicit = collectExactLabelNodes(COPY_RESPONSE_LABELS).size\n        val generic = collectExactLabelNodes(GENERIC_COPY_LABELS).size\n        val accepted = collectResponseCopyControls().size\n        return "explicit=$explicit;generic=$generic;accepted=$accepted"\n    }\n\n    fun responseCaptureDiagnosticsV63(): String =\n        "${responseCopyDiagnosticsV61()};capture=$lastAssistantCaptureSourceV63"\n'''
+          if s.count(old)!=1: raise SystemExit(f'diagnostics anchor mismatch count={s.count(old)}')
+          s=s.replace(old,new,1)
+
+          old='''                    val copied = copyResponseControl(control)?.trim()\n                    if (!copied.isNullOrBlank() && copied.contains(marker)) return copied\n'''
+          new='''                    val copied = copyResponseControl(control)?.trim()\n                    if (!copied.isNullOrBlank() && copied.contains(marker)) {\n                        lastAssistantCaptureSourceV63 = "clipboard"\n                        return copied\n                    }\n                    // Android 16 / current ChatGPT builds may execute Copy while denying the\n                    // background accessibility service a readable clipboard receipt.  The control\n                    // is already structurally proven to be the assistant-turn Copy (not code-block\n                    // Copy), and candidate is scoped to that exact assistant response container.\n                    // Whole-response protocol parsing remains fail-closed downstream.\n                    lastAssistantCaptureSourceV63 = "accessibility-grounded"\n                    return candidate\n'''
+          if s.count(old)!=1: raise SystemExit(f'marker-copy anchor mismatch count={s.count(old)}')
+          s=s.replace(old,new,1)
+
+          old='''    private suspend fun copyVisibleAssistantResponseFromBottom(indexFromBottom: Int): String? {\n        if (indexFromBottom < 0) return null\n        // Re-resolve on every copy. Copy actions and Android toasts can invalidate old nodes.\n        val controls = collectResponseCopyControls().sortedBy(::nodeTop)\n        val index = controls.lastIndex - indexFromBottom\n        if (index !in controls.indices) return null\n        return copyResponseControl(controls[index])\n    }\n'''
+          new='''    private suspend fun copyVisibleAssistantResponseFromBottom(indexFromBottom: Int): String? {\n        if (indexFromBottom < 0) return null\n        // Re-resolve on every capture. Copy actions and Android toasts can invalidate old nodes.\n        val controls = collectResponseCopyControls().sortedBy(::nodeTop)\n        val index = controls.lastIndex - indexFromBottom\n        if (index !in controls.indices) return null\n        val control = controls[index]\n        val copied = copyResponseControl(control)?.trim()?.takeIf { it.isNotBlank() }\n        if (copied != null) {\n            lastAssistantCaptureSourceV63 = "clipboard"\n            return copied\n        }\n        // Clipboard receipt can be unavailable while ChatGPT owns foreground on Android 16.\n        // Fall back only to text from the exact structurally-grounded assistant response container.\n        val grounded = messageTextForCopyControl(control)?.trim()?.takeIf { it.isNotBlank() }\n        if (grounded != null) {\n            lastAssistantCaptureSourceV63 = "accessibility-grounded"\n            return grounded\n        }\n        lastAssistantCaptureSourceV63 = "none"\n        return null\n    }\n'''
+          if s.count(old)!=1: raise SystemExit(f'visible-copy anchor mismatch count={s.count(old)}')
+          s=s.replace(old,new,1)
+          a.write_text(s)
+
+          o=Path('app/src/main/kotlin/ai/closepaw/app/ProjectOrchestratorV58.kt')
+          t=o.read_text()
+          old='copy=${ui.responseCopyDiagnosticsV61()}'
+          if t.count(old)<2: raise SystemExit(f'router copy diagnostic anchors too few: {t.count(old)}')
+          t=t.replace(old,'copy=${ui.responseCaptureDiagnosticsV63()}')
+          o.write_text(t)
+
+          build=Path('app/build.gradle.kts'); b=build.read_text()
+          old='versionNameSuffix = "-rc11-c062"'; new='versionNameSuffix = "-rc11-c063"'
+          if b.count(old)!=1: raise SystemExit(f'version anchor mismatch count={b.count(old)}')
+          build.write_text(b.replace(old,new,1))
+
+          strings=Path('app/src/main/res/values/strings.xml'); x=strings.read_text()
+          old='ClosePaw RC11 062'; new='ClosePaw RC11 063'
+          if x.count(old)!=1: raise SystemExit(f'label anchor mismatch count={x.count(old)}')
+          strings.write_text(x.replace(old,new,1))
+          print('063 grounded capture patch: PASS')
+          PYPATCH
+          git diff --check || true
+          echo '063 isolated grounded-capture patch applied: PASS' >> 063-verification-report.txt
+
+      - name: Verify 063 scope and invariants
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PYSCOPE'
+          from pathlib import Path
+          import hashlib,json,re
+          base=json.loads(Path('063-baseline-source-manifest.json').read_text())
+          current={}
+          for p in sorted(Path('app').rglob('*')):
+              if p.is_file() and not p.as_posix().startswith('app/build/'):
+                  current[p.as_posix()]=hashlib.sha256(p.read_bytes()).hexdigest()
+          allowed={
+              'app/build.gradle.kts',
+              'app/src/main/kotlin/ai/closepaw/app/ChatGptProjectAdapterV58.kt',
+              'app/src/main/kotlin/ai/closepaw/app/ProjectOrchestratorV58.kt',
+              'app/src/main/res/values/strings.xml',
+          }
+          changed={k for k in set(base)|set(current) if base.get(k)!=current.get(k)}
+          if changed != allowed:
+              raise SystemExit(f'063 isolation mismatch unexpected={sorted(changed-allowed)} missing={sorted(allowed-changed)}')
+          Path('063-postpatch-source-manifest.json').write_text(json.dumps(current,indent=2,sort_keys=True)+'\n')
+          sha=hashlib.sha256(Path('063-postpatch-source-manifest.json').read_bytes()).hexdigest()
+          Path('063-postpatch-manifest-sha256.txt').write_text(sha+'  063-postpatch-source-manifest.json\n')
+
+          a=Path('app/src/main/kotlin/ai/closepaw/app/ChatGptProjectAdapterV58.kt').read_text()
+          o=Path('app/src/main/kotlin/ai/closepaw/app/ProjectOrchestratorV58.kt').read_text()
+          checks={
+              'clipboard remains preferred': 'lastAssistantCaptureSourceV63 = "clipboard"' in a,
+              'grounded fallback exists': 'lastAssistantCaptureSourceV63 = "accessibility-grounded"' in a,
+              'fallback scoped by assistant control': 'messageTextForCopyControl(control)' in a and 'collectResponseCopyControls()' in a,
+              'generic copy structural discriminator retained': 'isResponseCopyControl' in a and 'RESPONSE_CHROME_EVIDENCE_LABELS' in a,
+              'whole route parser remains external/frozen': 'ProjectOrchestratorProtocolV58.routes' in o,
+              'capture diagnostics emitted': 'responseCaptureDiagnosticsV63()' in o,
+              'bounded manager failure retained': 'MAX_CONSECUTIVE_MANAGER_SCAN_FAILURES = 3' in o and 'MANAGER_SCAN_FAIL_CLOSED' in o,
+              'version 063': 'versionNameSuffix = "-rc11-c063"' in Path('app/build.gradle.kts').read_text(),
+              'label 063': 'ClosePaw RC11 063' in Path('app/src/main/res/values/strings.xml').read_text(),
+          }
+          bad=[k for k,v in checks.items() if not v]
+          if bad: raise SystemExit(f'063 invariant audit failed: {bad}')
+          print('063 scope/invariant audit: PASS',sha)
+          with Path('063-verification-report.txt').open('a') as f:
+              f.write(f'063 postpatch source manifest SHA-256: {sha}\n')
+          PYSCOPE
+
+      - name: Full clean compile tests and assemble 063
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./gradlew clean :app:compileDebugKotlin :app:testDebugUnitTest :app:assembleDebug --stacktrace --no-daemon --no-configuration-cache
+          echo '063 clean compile + full unit tests + assemble: PASS' >> 063-verification-report.txt
+
+      - name: Verify post-test source identity and APK identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PYPOST'
+          from pathlib import Path
+          import hashlib,json
+          expected=json.loads(Path('063-postpatch-source-manifest.json').read_text())
+          current={}
+          for p in sorted(Path('app').rglob('*')):
+              if p.is_file() and not p.as_posix().startswith('app/build/'):
+                  current[p.as_posix()]=hashlib.sha256(p.read_bytes()).hexdigest()
+          if current != expected: raise SystemExit('063 production source changed during build/tests')
+          print('063 post-test source identity: PASS')
+          PYPOST
+          APK="$(find app/build/outputs/apk/debug -type f -name '*.apk' -print -quit)"
+          [ -n "$APK" ] || { echo '063 APK missing' >&2; exit 1; }
+          BUILD_TOOLS="$(find "$ANDROID_HOME/build-tools" -mindepth 1 -maxdepth 1 -type d | sort -V | tail -1)"
+          "$BUILD_TOOLS/aapt" dump badging "$APK" > 063-apk-badging.txt
+          grep -q "package: name='ai.closepaw.rc11c058'" 063-apk-badging.txt
+          grep -q "versionName='0.1.0-rc11-c063'" 063-apk-badging.txt
+          grep -q "application-label:'ClosePaw RC11 063'" 063-apk-badging.txt
+          "$BUILD_TOOLS/apksigner" verify --verbose --print-certs "$APK" > 063-apksigner.txt
+          sha256sum "$APK" > 063-apk-sha256.txt
+          cat >> 063-verification-report.txt <<'REPORT'
+          063 CI build/test/source/APK gates: PASS.
+          Device acceptance: ROUTER START must baseline current 00 without stale replay; capture diagnostics should report capture=clipboard or capture=accessibility-grounded; then 00->12->00 route, 00->04->00 route, duplicate/no-replay, runtime agent add.
+          REPORT
+
+      - name: Prepare 063 verified full-source snapshot
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf /tmp/063-verified-source
+          mkdir -p /tmp/063-verified-source
+          rsync -a --exclude='.git' --exclude='.github' --exclude='app/build' ./ /tmp/063-verified-source/
+
+      - name: Upload 063 verification proof
+        uses: actions/upload-artifact@v4
+        with:
+          name: 063-ClosePaw-RC11-verification-proof
+          path: |
+            063-verification-report.txt
+            063-baseline-source-manifest.json
+            063-postpatch-source-manifest.json
+            063-postpatch-manifest-sha256.txt
+            063-apk-badging.txt
+            063-apksigner.txt
+            063-apk-sha256.txt
+
+      - name: Upload 063 verified full source
+        uses: actions/upload-artifact@v4
+        with:
+          name: 063-ClosePaw-RC11-verified-full-source
+          path: /tmp/063-verified-source
+
+      - name: Upload 063 APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: 063-ClosePaw-RC11-APK
+          path: app/build/outputs/apk/debug/*.apk
+
+      - name: Upload 063 failure evidence
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: 063-ClosePaw-RC11-failure-evidence
+          if-no-files-found: ignore
+          path: |
+            063-verification-report.txt
+            063-baseline-source-manifest.json
+            063-postpatch-source-manifest.json
+            app/src/main/kotlin/ai/closepaw/app/ChatGptProjectAdapterV58.kt
+            app/src/main/kotlin/ai/closepaw/app/ProjectOrchestratorV58.kt
