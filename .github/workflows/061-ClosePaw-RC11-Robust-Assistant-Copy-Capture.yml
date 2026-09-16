@@ -1,0 +1,438 @@
+name: 061 - ClosePaw RC11 Robust Assistant Copy Capture
+'on':
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout workflow host repository
+        uses: actions/checkout@v5
+
+      - name: Setup Java 17
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Restore exact verified 060 Source of Truth
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          ARTIFACT_NAME='060-ClosePaw-RC11-verified-full-source'
+          rm -rf /tmp/060-source /tmp/060-normalized /tmp/060-artifact.zip /tmp/060-list.json
+          mkdir -p /tmp/060-source
+          curl -fsSL -H "Authorization: Bearer $GH_TOKEN" -H 'Accept: application/vnd.github+json' \
+            "https://api.github.com/repos/${{GITHUB_REPOSITORY}}/actions/artifacts?name=${ARTIFACT_NAME}&per_page=100" \
+            -o /tmp/060-list.json
+          python3 - <<'PYMETA'
+          import json
+          d=json.load(open('/tmp/060-list.json'))
+          name='060-ClosePaw-RC11-verified-full-source'
+          matches=[a for a in d.get('artifacts',[]) if a.get('name')==name and not a.get('expired')]
+          if not matches:
+              raise SystemExit('verified 060 full-source artifact not found')
+          matches.sort(key=lambda a:a.get('created_at',''), reverse=True)
+          chosen=matches[0]
+          open('/tmp/060-artifact-id','w').write(str(chosen['id']))
+          open('/tmp/060-artifact-meta.txt','w').write(json.dumps(chosen,indent=2,sort_keys=True)+'\n')
+          print('060 artifact', chosen['id'], chosen.get('digest'))
+          PYMETA
+          ARTIFACT_ID="$(cat /tmp/060-artifact-id)"
+          curl -fsSL -L -H "Authorization: Bearer $GH_TOKEN" -H 'Accept: application/vnd.github+json' \
+            "https://api.github.com/repos/${{GITHUB_REPOSITORY}}/actions/artifacts/${ARTIFACT_ID}/zip" \
+            -o /tmp/060-artifact.zip
+          unzip -q /tmp/060-artifact.zip -d /tmp/060-source
+          MANIFEST="$(find /tmp/060-source -type f -name '060-postpatch-source-manifest.json' -print -quit)"
+          [ -n "$MANIFEST" ] || { echo '060 source manifest missing' >&2; exit 1; }
+          ROOT="$(dirname "$MANIFEST")"
+          if [ "$ROOT" != '/tmp/060-source' ]; then
+            mkdir -p /tmp/060-normalized
+            cp -a "$ROOT"/. /tmp/060-normalized/
+            rm -rf /tmp/060-source
+            mv /tmp/060-normalized /tmp/060-source
+          fi
+          python3 - <<'PYBASE'
+          from pathlib import Path
+          import hashlib,json
+          root=Path('/tmp/060-source')
+          manifest=json.loads((root/'060-postpatch-source-manifest.json').read_text())
+          current={}
+          for p in sorted((root/'app').rglob('*')):
+              if p.is_file() and '/build/' not in p.as_posix():
+                  current[p.relative_to(root).as_posix()]=hashlib.sha256(p.read_bytes()).hexdigest()
+          if current != manifest:
+              missing=sorted(set(manifest)-set(current)); added=sorted(set(current)-set(manifest)); changed=sorted(k for k in set(manifest)&set(current) if manifest[k]!=current[k])
+              raise SystemExit(f'060 source manifest mismatch missing={missing[:10]} added={added[:10]} changed={changed[:10]}')
+          build=(root/'app/build.gradle.kts').read_text()
+          strings=(root/'app/src/main/res/values/strings.xml').read_text()
+          assert 'versionNameSuffix = "-rc11-c060"' in build
+          assert 'ClosePaw RC11 060' in strings
+          print('verified 060 source identity: PASS')
+          PYBASE
+          find . -mindepth 1 -maxdepth 1 ! -name '.git' ! -name '.github' -exec rm -rf {} +
+          rsync -a --exclude='.git' --exclude='.github' /tmp/060-source/ ./
+          cp 060-postpatch-source-manifest.json 061-baseline-source-manifest.json
+          cat > 061-verification-report.txt <<'REPORT'
+          ClosePaw RC11 061 verification report
+          Baseline: verified 060 full-source artifact.
+          Device evidence from c060: manager navigation PASS; baseline exact cursor capture failed after 8 bounded backward scans; fail-closed after 3 consecutive failures PASS.
+          061 scope: robust assistant-response Copy control capture across ChatGPT label/localization variants, preserving code-block Copy discrimination.
+          REPORT
+          cat /tmp/060-artifact-meta.txt >> 061-verification-report.txt
+
+      - name: Baseline 060 clean compile gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          chmod +x ./gradlew
+          ./gradlew clean :app:compileDebugKotlin --stacktrace --no-daemon --no-configuration-cache
+          echo 'Baseline 060 clean compile: PASS' >> 061-verification-report.txt
+
+      - name: Apply exact isolated 061 patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > /tmp/061.patch.b64 <<'PATCH061_B64'
+          ZGlmZiAtLWdpdCBhL2FwcC9zcmMvbWFpbi9rb3RsaW4vYWkvY2xvc2VwYXcvYXBwL0NoYXRHcHRQ
+          cm9qZWN0QWRhcHRlclY1OC5rdCBiL2FwcC9zcmMvbWFpbi9rb3RsaW4vYWkvY2xvc2VwYXcvYXBw
+          L0NoYXRHcHRQcm9qZWN0QWRhcHRlclY1OC5rdAppbmRleCA1NTA5MjJmLi4xYmIxNmI5IDEwMDY0
+          NAotLS0gYS9hcHAvc3JjL21haW4va290bGluL2FpL2Nsb3NlcGF3L2FwcC9DaGF0R3B0UHJvamVj
+          dEFkYXB0ZXJWNTgua3QKKysrIGIvYXBwL3NyYy9tYWluL2tvdGxpbi9haS9jbG9zZXBhdy9hcHAv
+          Q2hhdEdwdFByb2plY3RBZGFwdGVyVjU4Lmt0CkBAIC03MywxMCArNzMsMTcgQEAgaW50ZXJuYWwg
+          Y2xhc3MgQ2hhdEdwdFByb2plY3RBZGFwdGVyVjU4KHByaXZhdGUgdmFsIHNlcnZpY2U6IEFnZW50
+          U2VydmljZSkgewogICAgICAgICBwcml2YXRlIHZhbCBOQVZfTEFCRUxTID0gc2V0T2YoIk9wZW4g
+          bmF2aWdhdGlvbiBkcmF3ZXIiLCAiTmF2aWdhdGlvbiBtZW51IiwgIk9wZW4gc2lkZWJhciIsICJT
+          aWRlYmFyIiwgIk1lbnUiKQogICAgICAgICBwcml2YXRlIHZhbCBTRUFSQ0hfTEFCRUxTID0gc2V0
+          T2YoIlNlYXJjaCBjaGF0cyIsICJTZWFyY2ggY29udmVyc2F0aW9ucyIsICJTZWFyY2giKQogICAg
+          ICAgICBwcml2YXRlIHZhbCBTRU5EX0xBQkVMUyA9IHNldE9mKCJTZW5kIG1lc3NhZ2UiLCAiU2Vu
+          ZCIpCi0gICAgICAgIHByaXZhdGUgdmFsIENPUFlfUkVTUE9OU0VfTEFCRUxTID0gc2V0T2YoIkNv
+          cHkgcmVzcG9uc2UiKQorICAgICAgICBwcml2YXRlIHZhbCBDT1BZX1JFU1BPTlNFX0xBQkVMUyA9
+          IHNldE9mKCJDb3B5IHJlc3BvbnNlIiwgItqp2b7bjCDZvtin2LPYriIpCisgICAgICAgIHByaXZh
+          dGUgdmFsIEdFTkVSSUNfQ09QWV9MQUJFTFMgPSBzZXRPZigiQ29weSIsICLaqdm+24wiKQorICAg
+          ICAgICBwcml2YXRlIHZhbCBSRVNQT05TRV9DSFJPTUVfRVZJREVOQ0VfTEFCRUxTID0gc2V0T2Yo
+          CisgICAgICAgICAgICAiU2hhcmUiLCAiUmVhZCBhbG91ZCIsICJHb29kIHJlc3BvbnNlIiwgIkJh
+          ZCByZXNwb25zZSIsICJSZWdlbmVyYXRlIiwgIlJldHJ5IiwKKyAgICAgICAgICAgICLYp9i02KrY
+          sdin2qkg2q/YsNin2LHbjCIsICLYrtmI2KfZhtiv2YYg2KjYpyDYtdiv2KfbjCDYqNmE2YbYryIs
+          CisgICAgICAgICkKICAgICAgICAgcHJpdmF0ZSB2YWwgU1RPUF9HRU5FUkFUSU9OX0xBQkVMUyA9
+          IHNldE9mKCJTdG9wIGdlbmVyYXRpbmciLCAiU3RvcCByZXNwb25zZSIpCiAgICAgICAgIHByaXZh
+          dGUgdmFsIENIUk9NRV9MQUJFTFMgPSBzZXRPZigKLSAgICAgICAgICAgICJDb3B5IHJlc3BvbnNl
+          IiwgIlNoYXJlIiwgIlJlYWQgYWxvdWQiLCAiR29vZCByZXNwb25zZSIsICJCYWQgcmVzcG9uc2Ui
+          LCAiUmVnZW5lcmF0ZSIsICJSZXRyeSIsCisgICAgICAgICAgICAiQ29weSByZXNwb25zZSIsICLa
+          qdm+24wg2b7Yp9iz2K4iLCAiQ29weSIsICLaqdm+24wiLAorICAgICAgICAgICAgIlNoYXJlIiwg
+          IlJlYWQgYWxvdWQiLCAiR29vZCByZXNwb25zZSIsICJCYWQgcmVzcG9uc2UiLCAiUmVnZW5lcmF0
+          ZSIsICJSZXRyeSIsCisgICAgICAgICAgICAi2KfYtNiq2LHYp9qpINqv2LDYp9ix24wiLCAi2K7Z
+          iNin2YbYr9mGINio2Kcg2LXYr9in24wg2KjZhNmG2K8iLAogICAgICAgICAgICAgIkVkaXQiLCAi
+          U2VuZCIsICJTZW5kIG1lc3NhZ2UiLCAiQXNrIGFueXRoaW5nIiwgIkNoYXRHUFQgY2FuIG1ha2Ug
+          bWlzdGFrZXMuIiwgIlN0b3AgZ2VuZXJhdGluZyIsICJTdG9wIHJlc3BvbnNlIiwKICAgICAgICAg
+          KQogICAgIH0KQEAgLTIwMiwxNyArMjA5LDE0IEBAIGludGVybmFsIGNsYXNzIENoYXRHcHRQcm9q
+          ZWN0QWRhcHRlclY1OChwcml2YXRlIHZhbCBzZXJ2aWNlOiBBZ2VudFNlcnZpY2UpIHsKICAgICAg
+          ICAgKQogICAgIH0KIAotICAgIGZ1biBhc3Npc3RhbnRSZXNwb25zZUNvbnRyb2xDb3VudCgpOiBJ
+          bnQgPSBjb2xsZWN0RXhhY3RMYWJlbE5vZGVzKENPUFlfUkVTUE9OU0VfTEFCRUxTKS5zaXplCisg
+          ICAgZnVuIGFzc2lzdGFudFJlc3BvbnNlQ29udHJvbENvdW50KCk6IEludCA9IGNvbGxlY3RSZXNw
+          b25zZUNvcHlDb250cm9scygpLnNpemUKIAogICAgIGZ1biBhc3Npc3RhbnRNZXNzYWdlRmluZ2Vy
+          cHJpbnRzKCk6IExpc3Q8U3RyaW5nPiA9CiAgICAgICAgIGFzc2lzdGFudE1lc3NhZ2VUZXh0cygp
+          Lm1hcChQcm9qZWN0T3JjaGVzdHJhdG9yUHJvdG9jb2xWNTg6OnNoYTI1NikKIAogICAgIGZ1biBh
+          c3Npc3RhbnRNZXNzYWdlVGV4dHMoKTogTGlzdDxTdHJpbmc+IHsKICAgICAgICAgdmFsIHJvb3Qg
+          PSBmb2N1c2VkUm9vdE9yTnVsbCgpID86IHJldHVybiBlbXB0eUxpc3QoKQotICAgICAgICB2YWwg
+          Y29weUNvbnRyb2xzID0gbXV0YWJsZUxpc3RPZjxBY2Nlc3NpYmlsaXR5Tm9kZUluZm8+KCkKLSAg
+          ICAgICAgd2Fsayhyb290KSB7IG5vZGUgLT4KLSAgICAgICAgICAgIGlmIChub2RlTWF0Y2hlc0V4
+          YWN0TGFiZWwobm9kZSwgQ09QWV9SRVNQT05TRV9MQUJFTFMpKSBjb3B5Q29udHJvbHMgKz0gbm9k
+          ZQotICAgICAgICB9CisgICAgICAgIHZhbCBjb3B5Q29udHJvbHMgPSBjb2xsZWN0UmVzcG9uc2VD
+          b3B5Q29udHJvbHMoKQogICAgICAgICByZXR1cm4gY29weUNvbnRyb2xzLnNvcnRlZEJ5KDo6bm9k
+          ZVRvcCkubWFwTm90TnVsbCg6Om1lc3NhZ2VUZXh0Rm9yQ29weUNvbnRyb2wpLmZpbHRlciB7IGl0
+          LmlzTm90QmxhbmsoKSB9CiAgICAgfQogCkBAIC0yMjcsNyArMjMxLDcgQEAgaW50ZXJuYWwgY2xh
+          c3MgQ2hhdEdwdFByb2plY3RBZGFwdGVyVjU4KHByaXZhdGUgdmFsIHNlcnZpY2U6IEFnZW50U2Vy
+          dmljZSkgewogICAgICAgICB2YXIgc2Nyb2xscyA9IDAKICAgICAgICAgdHJ5IHsKICAgICAgICAg
+          ICAgIHdoaWxlICh0cnVlKSB7Ci0gICAgICAgICAgICAgICAgdmFsIHZpc2libGVDb3VudCA9IGNv
+          bGxlY3RFeGFjdExhYmVsTm9kZXMoQ09QWV9SRVNQT05TRV9MQUJFTFMpLnNpemUKKyAgICAgICAg
+          ICAgICAgICB2YWwgdmlzaWJsZUNvdW50ID0gY29sbGVjdFJlc3BvbnNlQ29weUNvbnRyb2xzKCku
+          c2l6ZQogICAgICAgICAgICAgICAgIGZvciAoaW5kZXhGcm9tQm90dG9tIGluIDAgdW50aWwgdmlz
+          aWJsZUNvdW50KSB7CiAgICAgICAgICAgICAgICAgICAgIHZhbCByZXNwb25zZSA9IGNvcHlWaXNp
+          YmxlQXNzaXN0YW50UmVzcG9uc2VGcm9tQm90dG9tKGluZGV4RnJvbUJvdHRvbSkKICAgICAgICAg
+          ICAgICAgICAgICAgICAgID8udHJpbSgpCkBAIC0yNzgsNyArMjgyLDcgQEAgaW50ZXJuYWwgY2xh
+          c3MgQ2hhdEdwdFByb2plY3RBZGFwdGVyVjU4KHByaXZhdGUgdmFsIHNlcnZpY2U6IEFnZW50U2Vy
+          dmljZSkgewogICAgICAgICByZXF1aXJlKG1hcmtlci5pc05vdEJsYW5rKCkpCiAgICAgICAgIHRy
+          eSB7CiAgICAgICAgICAgICByZXBlYXQobWF4QmFja3dhcmRTY3JvbGxzICsgMSkgeyBwYXNzIC0+
+          Ci0gICAgICAgICAgICAgICAgdmFsIGNvbnRyb2xzID0gY29sbGVjdEV4YWN0TGFiZWxOb2RlcyhD
+          T1BZX1JFU1BPTlNFX0xBQkVMUykuc29ydGVkQnkoOjpub2RlVG9wKQorICAgICAgICAgICAgICAg
+          IHZhbCBjb250cm9scyA9IGNvbGxlY3RSZXNwb25zZUNvcHlDb250cm9scygpLnNvcnRlZEJ5KDo6
+          bm9kZVRvcCkKICAgICAgICAgICAgICAgICBmb3IgKGNvbnRyb2wgaW4gY29udHJvbHMuYXNSZXZl
+          cnNlZCgpKSB7CiAgICAgICAgICAgICAgICAgICAgIHZhbCBjYW5kaWRhdGUgPSBtZXNzYWdlVGV4
+          dEZvckNvcHlDb250cm9sKGNvbnRyb2wpID86IGNvbnRpbnVlCiAgICAgICAgICAgICAgICAgICAg
+          IGlmICghY2FuZGlkYXRlLmNvbnRhaW5zKG1hcmtlcikpIGNvbnRpbnVlCkBAIC0zMTYsNyArMzIw
+          LDcgQEAgaW50ZXJuYWwgY2xhc3MgQ2hhdEdwdFByb2plY3RBZGFwdGVyVjU4KHByaXZhdGUgdmFs
+          IHNlcnZpY2U6IEFnZW50U2VydmljZSkgewogCiAgICAgICAgIHRyeSB7CiAgICAgICAgICAgICB3
+          aGlsZSAodHJ1ZSkgewotICAgICAgICAgICAgICAgIHZhbCB2aXNpYmxlQ291bnQgPSBjb2xsZWN0
+          RXhhY3RMYWJlbE5vZGVzKENPUFlfUkVTUE9OU0VfTEFCRUxTKS5zaXplCisgICAgICAgICAgICAg
+          ICAgdmFsIHZpc2libGVDb3VudCA9IGNvbGxlY3RSZXNwb25zZUNvcHlDb250cm9scygpLnNpemUK
+          ICAgICAgICAgICAgICAgICBmb3IgKGluZGV4RnJvbUJvdHRvbSBpbiAwIHVudGlsIHZpc2libGVD
+          b3VudCkgewogICAgICAgICAgICAgICAgICAgICB2YWwgcmVzcG9uc2UgPSBjb3B5VmlzaWJsZUFz
+          c2lzdGFudFJlc3BvbnNlRnJvbUJvdHRvbShpbmRleEZyb21Cb3R0b20pCiAgICAgICAgICAgICAg
+          ICAgICAgICAgICA/LnRyaW0oKQpAQCAtNTc4LDYgKzU4Miw2MyBAQCBpbnRlcm5hbCBjbGFzcyBD
+          aGF0R3B0UHJvamVjdEFkYXB0ZXJWNTgocHJpdmF0ZSB2YWwgc2VydmljZTogQWdlbnRTZXJ2aWNl
+          KSB7CiAgICAgICAgIHJldHVybiBvdXQKICAgICB9CiAKKyAgICBwcml2YXRlIGZ1biBjb2xsZWN0
+          UmVzcG9uc2VDb3B5Q29udHJvbHMoKTogTGlzdDxBY2Nlc3NpYmlsaXR5Tm9kZUluZm8+IHsKKyAg
+          ICAgICAgdmFsIHJvb3QgPSBmb2N1c2VkUm9vdE9yTnVsbCgpID86IHJldHVybiBlbXB0eUxpc3Qo
+          KQorICAgICAgICB2YWwgb3V0ID0gbXV0YWJsZUxpc3RPZjxBY2Nlc3NpYmlsaXR5Tm9kZUluZm8+
+          KCkKKyAgICAgICAgd2Fsayhyb290KSB7IG5vZGUgLT4KKyAgICAgICAgICAgIGlmIChpc1Jlc3Bv
+          bnNlQ29weUNvbnRyb2wobm9kZSkpIG91dCArPSBub2RlCisgICAgICAgIH0KKyAgICAgICAgcmV0
+          dXJuIG91dC5kaXN0aW5jdEJ5KDo6bm9kZVNpZ25hdHVyZSkKKyAgICB9CisKKyAgICAvKioKKyAg
+          ICAgKiBDaGF0R1BUIEFuZHJvaWQgZXhwb3NlcyBhc3Npc3RhbnQtdHVybiBDb3B5IGRpZmZlcmVu
+          dGx5IGFjcm9zcyBhcHAgYnVpbGRzL2xvY2FsZXMuCisgICAgICogQW4gZXhwbGljaXQgQ29weSBy
+          ZXNwb25zZSBsYWJlbCBpcyBhdXRob3JpdGF0aXZlLiBBIGdlbmVyaWMgQ29weS/aqdm+24wgaXMg
+          YWNjZXB0ZWQgb25seSB3aGVuCisgICAgICogYSBuZWFyYnkgYXNzaXN0YW50IHJlc3BvbnNlLWFj
+          dGlvbiB0b29sYmFyIHByb3ZlcyBpdCBpcyBub3QgYSBjb2RlLWJsb2NrIGNvcHkgYnV0dG9uLgor
+          ICAgICAqLworICAgIHByaXZhdGUgZnVuIGlzUmVzcG9uc2VDb3B5Q29udHJvbChub2RlOiBBY2Nl
+          c3NpYmlsaXR5Tm9kZUluZm8pOiBCb29sZWFuIHsKKyAgICAgICAgaWYgKG5vZGVNYXRjaGVzRXhh
+          Y3RMYWJlbChub2RlLCBDT1BZX1JFU1BPTlNFX0xBQkVMUykpIHJldHVybiB0cnVlCisgICAgICAg
+          IGlmICghbm9kZU1hdGNoZXNFeGFjdExhYmVsKG5vZGUsIEdFTkVSSUNfQ09QWV9MQUJFTFMpKSBy
+          ZXR1cm4gZmFsc2UKKworICAgICAgICB2YXIgY3VycmVudCA9IG5vZGUucGFyZW50CisgICAgICAg
+          IHJlcGVhdCg3KSB7CisgICAgICAgICAgICB2YWwgc2NvcGUgPSBjdXJyZW50ID86IHJldHVybiBm
+          YWxzZQorICAgICAgICAgICAgaWYgKCFjb250YWluc0VkaXRhYmxlRGVzY2VuZGFudChzY29wZSkp
+          IHsKKyAgICAgICAgICAgICAgICB2YWwgY29weUNvdW50ID0gY291bnRSYXdDb3B5TGFiZWxzKHNj
+          b3BlLCBsaW1pdCA9IDMpCisgICAgICAgICAgICAgICAgdmFsIGNocm9tZUNvdW50ID0gY291bnRF
+          eGFjdExhYmVscyhzY29wZSwgUkVTUE9OU0VfQ0hST01FX0VWSURFTkNFX0xBQkVMUywgbGltaXQg
+          PSAyKQorICAgICAgICAgICAgICAgIGlmIChjb3B5Q291bnQgPT0gMSAmJiBjaHJvbWVDb3VudCA+
+          PSAxKSByZXR1cm4gdHJ1ZQorICAgICAgICAgICAgICAgIGlmIChjb3B5Q291bnQgPiAxICYmIGNo
+          cm9tZUNvdW50ID49IDEpIHJldHVybiBmYWxzZQorICAgICAgICAgICAgfQorICAgICAgICAgICAg
+          Y3VycmVudCA9IHNjb3BlLnBhcmVudAorICAgICAgICB9CisgICAgICAgIHJldHVybiBmYWxzZQor
+          ICAgIH0KKworICAgIHByaXZhdGUgZnVuIGNvdW50UmF3Q29weUxhYmVscyhyb290OiBBY2Nlc3Np
+          YmlsaXR5Tm9kZUluZm8sIGxpbWl0OiBJbnQpOiBJbnQgeworICAgICAgICB2YXIgY291bnQgPSAw
+          CisgICAgICAgIHdhbGsocm9vdCkgeyBub2RlIC0+CisgICAgICAgICAgICBpZiAoY291bnQgPj0g
+          bGltaXQpIHJldHVybkB3YWxrCisgICAgICAgICAgICBpZiAobm9kZU1hdGNoZXNFeGFjdExhYmVs
+          KG5vZGUsIENPUFlfUkVTUE9OU0VfTEFCRUxTKSB8fCBub2RlTWF0Y2hlc0V4YWN0TGFiZWwobm9k
+          ZSwgR0VORVJJQ19DT1BZX0xBQkVMUykpIGNvdW50KysKKyAgICAgICAgfQorICAgICAgICByZXR1
+          cm4gY291bnQKKyAgICB9CisKKyAgICBwcml2YXRlIGZ1biBjb3VudEV4YWN0TGFiZWxzKHJvb3Q6
+          IEFjY2Vzc2liaWxpdHlOb2RlSW5mbywgbGFiZWxzOiBTZXQ8U3RyaW5nPiwgbGltaXQ6IEludCk6
+          IEludCB7CisgICAgICAgIHZhciBjb3VudCA9IDAKKyAgICAgICAgd2Fsayhyb290KSB7IG5vZGUg
+          LT4KKyAgICAgICAgICAgIGlmIChjb3VudCA+PSBsaW1pdCkgcmV0dXJuQHdhbGsKKyAgICAgICAg
+          ICAgIGlmIChub2RlTWF0Y2hlc0V4YWN0TGFiZWwobm9kZSwgbGFiZWxzKSkgY291bnQrKworICAg
+          ICAgICB9CisgICAgICAgIHJldHVybiBjb3VudAorICAgIH0KKworICAgIGZ1biByZXNwb25zZUNv
+          cHlEaWFnbm9zdGljc1Y2MSgpOiBTdHJpbmcgeworICAgICAgICB2YWwgZXhwbGljaXQgPSBjb2xs
+          ZWN0RXhhY3RMYWJlbE5vZGVzKENPUFlfUkVTUE9OU0VfTEFCRUxTKS5zaXplCisgICAgICAgIHZh
+          bCBnZW5lcmljID0gY29sbGVjdEV4YWN0TGFiZWxOb2RlcyhHRU5FUklDX0NPUFlfTEFCRUxTKS5z
+          aXplCisgICAgICAgIHZhbCBhY2NlcHRlZCA9IGNvbGxlY3RSZXNwb25zZUNvcHlDb250cm9scygp
+          LnNpemUKKyAgICAgICAgcmV0dXJuICJleHBsaWNpdD0kZXhwbGljaXQ7Z2VuZXJpYz0kZ2VuZXJp
+          YzthY2NlcHRlZD0kYWNjZXB0ZWQiCisgICAgfQorCiAgICAgcHJpdmF0ZSBmdW4gbm9kZU1hdGNo
+          ZXNFeGFjdExhYmVsKG5vZGU6IEFjY2Vzc2liaWxpdHlOb2RlSW5mbywgbGFiZWxzOiBTZXQ8U3Ry
+          aW5nPik6IEJvb2xlYW4gewogICAgICAgICB2YWwgdmFsdWVzID0gbGlzdE9mTm90TnVsbChub2Rl
+          LnRleHQ/LnRvU3RyaW5nKCk/LnRyaW0oKSwgbm9kZS5jb250ZW50RGVzY3JpcHRpb24/LnRvU3Ry
+          aW5nKCk/LnRyaW0oKSkKICAgICAgICAgcmV0dXJuIHZhbHVlcy5hbnkgeyB2YWx1ZSAtPiBsYWJl
+          bHMuYW55IHsgbGFiZWwgLT4gdmFsdWUuZXF1YWxzKGxhYmVsLCBpZ25vcmVDYXNlID0gdHJ1ZSkg
+          fSB9CkBAIC02NTUsNyArNzE2LDcgQEAgaW50ZXJuYWwgY2xhc3MgQ2hhdEdwdFByb2plY3RBZGFw
+          dGVyVjU4KHByaXZhdGUgdmFsIHNlcnZpY2U6IEFnZW50U2VydmljZSkgewogICAgICAgICB2YXIg
+          Y291bnQgPSAwCiAgICAgICAgIGZ1biB2aXNpdChub2RlOiBBY2Nlc3NpYmlsaXR5Tm9kZUluZm8p
+          IHsKICAgICAgICAgICAgIGlmIChjb3VudCA+PSBsaW1pdCkgcmV0dXJuCi0gICAgICAgICAgICBp
+          ZiAobm9kZU1hdGNoZXNFeGFjdExhYmVsKG5vZGUsIENPUFlfUkVTUE9OU0VfTEFCRUxTKSkgY291
+          bnQrKworICAgICAgICAgICAgaWYgKGlzUmVzcG9uc2VDb3B5Q29udHJvbChub2RlKSkgY291bnQr
+          KwogICAgICAgICAgICAgZm9yIChpIGluIDAgdW50aWwgbm9kZS5jaGlsZENvdW50KSBub2RlLmdl
+          dENoaWxkKGkpPy5sZXQoOjp2aXNpdCkKICAgICAgICAgfQogICAgICAgICB2aXNpdChyb290KQpA
+          QCAtNzA5LDcgKzc3MCw3IEBAIGludGVybmFsIGNsYXNzIENoYXRHcHRQcm9qZWN0QWRhcHRlclY1
+          OChwcml2YXRlIHZhbCBzZXJ2aWNlOiBBZ2VudFNlcnZpY2UpIHsKICAgICBwcml2YXRlIHN1c3Bl
+          bmQgZnVuIGNvcHlWaXNpYmxlQXNzaXN0YW50UmVzcG9uc2VGcm9tQm90dG9tKGluZGV4RnJvbUJv
+          dHRvbTogSW50KTogU3RyaW5nPyB7CiAgICAgICAgIGlmIChpbmRleEZyb21Cb3R0b20gPCAwKSBy
+          ZXR1cm4gbnVsbAogICAgICAgICAvLyBSZS1yZXNvbHZlIG9uIGV2ZXJ5IGNvcHkuIENvcHkgYWN0
+          aW9ucyBhbmQgQW5kcm9pZCB0b2FzdHMgY2FuIGludmFsaWRhdGUgb2xkIG5vZGVzLgotICAgICAg
+          ICB2YWwgY29udHJvbHMgPSBjb2xsZWN0RXhhY3RMYWJlbE5vZGVzKENPUFlfUkVTUE9OU0VfTEFC
+          RUxTKS5zb3J0ZWRCeSg6Om5vZGVUb3ApCisgICAgICAgIHZhbCBjb250cm9scyA9IGNvbGxlY3RS
+          ZXNwb25zZUNvcHlDb250cm9scygpLnNvcnRlZEJ5KDo6bm9kZVRvcCkKICAgICAgICAgdmFsIGlu
+          ZGV4ID0gY29udHJvbHMubGFzdEluZGV4IC0gaW5kZXhGcm9tQm90dG9tCiAgICAgICAgIGlmIChp
+          bmRleCAhaW4gY29udHJvbHMuaW5kaWNlcykgcmV0dXJuIG51bGwKICAgICAgICAgcmV0dXJuIGNv
+          cHlSZXNwb25zZUNvbnRyb2woY29udHJvbHNbaW5kZXhdKQpkaWZmIC0tZ2l0IGEvYXBwL3NyYy9t
+          YWluL2tvdGxpbi9haS9jbG9zZXBhdy9hcHAvUHJvamVjdE9yY2hlc3RyYXRvclY1OC5rdCBiL2Fw
+          cC9zcmMvbWFpbi9rb3RsaW4vYWkvY2xvc2VwYXcvYXBwL1Byb2plY3RPcmNoZXN0cmF0b3JWNTgu
+          a3QKaW5kZXggNmM1ZDc4OS4uOGJiMTliMiAxMDA2NDQKLS0tIGEvYXBwL3NyYy9tYWluL2tvdGxp
+          bi9haS9jbG9zZXBhdy9hcHAvUHJvamVjdE9yY2hlc3RyYXRvclY1OC5rdAorKysgYi9hcHAvc3Jj
+          L21haW4va290bGluL2FpL2Nsb3NlcGF3L2FwcC9Qcm9qZWN0T3JjaGVzdHJhdG9yVjU4Lmt0CkBA
+          IC0yNTMsNyArMjUzLDcgQEAgaW50ZXJuYWwgY2xhc3MgUHJvamVjdE9yY2hlc3RyYXRvclY1OChw
+          cml2YXRlIHZhbCBzZXJ2aWNlOiBBZ2VudFNlcnZpY2UpIHsKICAgICAgICAgICAgICAgICAgICAg
+          aWYgKGJhc2VsaW5lID09IG51bGwgJiYgIWJhc2VsaW5lUHJvYmUuaGlzdG9yeVN0YXJ0UHJvdmVu
+          KSB7CiAgICAgICAgICAgICAgICAgICAgICAgICB0cmFjZSgKICAgICAgICAgICAgICAgICAgICAg
+          ICAgICAgICAiTUFOQUdFUl9CQVNFTElORV9ERUZFUlJFRCIsCi0gICAgICAgICAgICAgICAgICAg
+          ICAgICAgICAgInByb2plY3Q9JHtwcm9qZWN0LnByb2plY3RJZH18bGltaXQ9JHtiYXNlbGluZVBy
+          b2JlLmhpc3RvcnlMaW1pdFJlYWNoZWR9IiwKKyAgICAgICAgICAgICAgICAgICAgICAgICAgICAi
+          cHJvamVjdD0ke3Byb2plY3QucHJvamVjdElkfXxsaW1pdD0ke2Jhc2VsaW5lUHJvYmUuaGlzdG9y
+          eUxpbWl0UmVhY2hlZH18Y29weT0ke3VpLnJlc3BvbnNlQ29weURpYWdub3N0aWNzVjYxKCl9IiwK
+          ICAgICAgICAgICAgICAgICAgICAgICAgICkKICAgICAgICAgICAgICAgICAgICAgICAgIGVycm9y
+          KCJNYW5hZ2VyIGJhc2VsaW5lIGV4YWN0IGN1cnNvciB1bmF2YWlsYWJsZSB3aXRoaW4gYm91bmRl
+          ZCBoaXN0b3J5IikKICAgICAgICAgICAgICAgICAgICAgfQpAQCAtMjYyLDcgKzI2Miw3IEBAIGlu
+          dGVybmFsIGNsYXNzIFByb2plY3RPcmNoZXN0cmF0b3JWNTgocHJpdmF0ZSB2YWwgc2VydmljZTog
+          QWdlbnRTZXJ2aWNlKSB7CiAgICAgICAgICAgICAgICAgICAgIG1hbmFnZXJGYWlsdXJlQnlQcm9q
+          ZWN0LnJlbW92ZShwcm9qZWN0LnByb2plY3RJZCkKICAgICAgICAgICAgICAgICAgICAgdHJhY2Uo
+          CiAgICAgICAgICAgICAgICAgICAgICAgICAiTUFOQUdFUl9CQVNFTElORV9QUklNRUQiLAotICAg
+          ICAgICAgICAgICAgICAgICAgICAgInByb2plY3Q9JHtwcm9qZWN0LnByb2plY3RJZH18YXNzaXN0
+          YW50PSR7aWYgKGV4YWN0SGFzaCA9PSBudWxsKSAiZW1wdHktaGlzdG9yeS1wcm92ZW4iIGVsc2Ug
+          ZXhhY3RIYXNoLnRha2UoMTYpfSIsCisgICAgICAgICAgICAgICAgICAgICAgICAicHJvamVjdD0k
+          e3Byb2plY3QucHJvamVjdElkfXxhc3Npc3RhbnQ9JHtpZiAoZXhhY3RIYXNoID09IG51bGwpICJl
+          bXB0eS1oaXN0b3J5LXByb3ZlbiIgZWxzZSBleGFjdEhhc2gudGFrZSgxNil9fGNvcHk9JHt1aS5y
+          ZXNwb25zZUNvcHlEaWFnbm9zdGljc1Y2MSgpfSIsCiAgICAgICAgICAgICAgICAgICAgICkKICAg
+          ICAgICAgICAgICAgICAgICAgcmV0dXJuCiAgICAgICAgICAgICAgICAgfQo=
+          PATCH061_B64
+          base64 -d /tmp/061.patch.b64 > /tmp/061.patch
+          rm -f /tmp/061.patch.b64
+          test "$(sha256sum /tmp/061.patch | awk '{print $1}')" = 'f03fae0f28d57cca59383322d3e42156edb29fd436335985cefe83c5af5295f1'
+          git apply --check /tmp/061.patch
+          git apply /tmp/061.patch
+          cp /tmp/061.patch 061-isolated.patch
+          sha256sum 061-isolated.patch > 061-patch-sha256.txt
+          python3 - <<'PYVERSION'
+          from pathlib import Path
+          build=Path('app/build.gradle.kts')
+          s=build.read_text(); old='versionNameSuffix = "-rc11-c060"'; new='versionNameSuffix = "-rc11-c061"'
+          assert s.count(old)==1, s.count(old); build.write_text(s.replace(old,new,1))
+          strings=Path('app/src/main/res/values/strings.xml')
+          s=strings.read_text(); old='ClosePaw RC11 060'; new='ClosePaw RC11 061'
+          assert s.count(old)==1, s.count(old); strings.write_text(s.replace(old,new,1))
+          PYVERSION
+          echo '061 patch + version/label update: PASS' >> 061-verification-report.txt
+
+      - name: Verify 061 isolated scope and invariants
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PYAUDIT'
+          from pathlib import Path
+          import hashlib,json
+          base=json.loads(Path('061-baseline-source-manifest.json').read_text())
+          current={}
+          for p in sorted(Path('app').rglob('*')):
+              if p.is_file() and not p.as_posix().startswith('app/build/'):
+                  current[p.as_posix()]=hashlib.sha256(p.read_bytes()).hexdigest()
+          allowed={
+              'app/build.gradle.kts',
+              'app/src/main/kotlin/ai/closepaw/app/ChatGptProjectAdapterV58.kt',
+              'app/src/main/kotlin/ai/closepaw/app/ProjectOrchestratorV58.kt',
+              'app/src/main/res/values/strings.xml',
+          }
+          changed={k for k in set(base)|set(current) if base.get(k)!=current.get(k)}
+          if changed != allowed:
+              raise SystemExit(f'061 isolation mismatch unexpected={sorted(changed-allowed)} missing={sorted(allowed-changed)}')
+          adapter=Path('app/src/main/kotlin/ai/closepaw/app/ChatGptProjectAdapterV58.kt').read_text()
+          orch=Path('app/src/main/kotlin/ai/closepaw/app/ProjectOrchestratorV58.kt').read_text()
+          build=Path('app/build.gradle.kts').read_text(); strings=Path('app/src/main/res/values/strings.xml').read_text()
+          checks={
+              'explicit localized copy labels': 'setOf("Copy response", "کپی پاسخ")' in adapter,
+              'generic copy labels': 'GENERIC_COPY_LABELS = setOf("Copy", "کپی")' in adapter,
+              'response chrome evidence': 'RESPONSE_CHROME_EVIDENCE_LABELS' in adapter,
+              'generic copy discriminator': 'isResponseCopyControl' in adapter and 'copyCount == 1 && chromeCount >= 1' in adapter,
+              'all response scans use robust collector': adapter.count('collectResponseCopyControls()') >= 6,
+              'copy counting uses discriminator': 'if (isResponseCopyControl(node)) count++' in adapter,
+              '060 baseline logic retained': 'probeManagerBaseline(maxBackwardScrolls: Int = 8)' in adapter,
+              '060 bounded manager failure retained': 'MAX_CONSECUTIVE_MANAGER_SCAN_FAILURES = 3' in orch and 'MANAGER_SCAN_FAIL_CLOSED' in orch,
+              'copy diagnostics persisted': 'responseCopyDiagnosticsV61()' in adapter and 'copy=${ui.responseCopyDiagnosticsV61()}' in orch,
+              'package continuity': 'applicationIdSuffix = ".rc11c058"' in build,
+              'version 061': 'versionNameSuffix = "-rc11-c061"' in build,
+              'label 061': 'ClosePaw RC11 061' in strings,
+          }
+          bad=[k for k,v in checks.items() if not v]
+          if bad: raise SystemExit(f'061 invariant audit failed: {bad}')
+          Path('061-postpatch-source-manifest.json').write_text(json.dumps(current,indent=2,sort_keys=True)+'\n')
+          sha=hashlib.sha256(Path('061-postpatch-source-manifest.json').read_bytes()).hexdigest()
+          Path('061-postpatch-manifest-sha256.txt').write_text(sha+'  061-postpatch-source-manifest.json\n')
+          print('061 isolated scope/invariants: PASS', sha)
+          PYAUDIT
+          echo '061 isolated scope/invariants: PASS' >> 061-verification-report.txt
+
+      - name: Frozen router/terminal unit gates
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./gradlew :app:testDebugUnitTest \
+            --tests 'ai.closepaw.app.ProjectOrchestratorProtocolV58Test' \
+            --tests 'ai.closepaw.app.GoalPostconditionV41Test' \
+            --tests 'ai.closepaw.app.PostPlanGuardV58ATest' \
+            --tests 'ai.closepaw.app.ActionLifecycleV57Test' \
+            --stacktrace --no-daemon --no-configuration-cache
+          echo '061 frozen unit gates: PASS' >> 061-verification-report.txt
+
+      - name: Full clean compile tests and assemble 061
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./gradlew clean :app:compileDebugKotlin :app:testDebugUnitTest :app:assembleDebug --stacktrace --no-daemon --no-configuration-cache
+          echo '061 clean compile + full unit tests + assemble: PASS' >> 061-verification-report.txt
+
+      - name: Verify post-test source and APK identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PYPOST'
+          from pathlib import Path
+          import hashlib,json
+          expected=json.loads(Path('061-postpatch-source-manifest.json').read_text())
+          current={}
+          for p in sorted(Path('app').rglob('*')):
+              if p.is_file() and not p.as_posix().startswith('app/build/'):
+                  current[p.as_posix()]=hashlib.sha256(p.read_bytes()).hexdigest()
+          if current != expected: raise SystemExit('061 production source changed during build/tests')
+          PYPOST
+          APK="$(find app/build/outputs/apk/debug -type f -name '*.apk' -print -quit)"
+          [ -n "$APK" ] || { echo '061 APK missing' >&2; exit 1; }
+          BUILD_TOOLS="$(find "$ANDROID_HOME/build-tools" -mindepth 1 -maxdepth 1 -type d | sort -V | tail -1)"
+          "$BUILD_TOOLS/aapt" dump badging "$APK" > 061-apk-badging.txt
+          grep -q "package: name='ai.closepaw.rc11c058'" 061-apk-badging.txt
+          grep -q "versionName='0.1.0-rc11-c061'" 061-apk-badging.txt
+          grep -q "application-label:'ClosePaw RC11 061'" 061-apk-badging.txt
+          "$BUILD_TOOLS/apksigner" verify --verbose --print-certs "$APK" > 061-apksigner.txt
+          sha256sum "$APK" > 061-apk-sha256.txt
+          cat >> 061-verification-report.txt <<'REPORT'
+          061 CI build/test/source/APK gates: PASS.
+          Runtime acceptance: test 1 only first — ROUTER START must open 00, prime a non-empty exact manager cursor, then remain running/quiet.
+          If test 1 passes, continue existing tests 2-5 without changing their payloads.
+          REPORT
+
+      - name: Prepare 061 verified full-source snapshot
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf /tmp/061-verified-source
+          mkdir -p /tmp/061-verified-source
+          rsync -a --exclude='.git' --exclude='.github' --exclude='app/build' ./ /tmp/061-verified-source/
+
+      - name: Upload 061 verification proof
+        uses: actions/upload-artifact@v4
+        with:
+          name: 061-ClosePaw-RC11-verification-proof
+          path: |
+            061-verification-report.txt
+            061-isolated.patch
+            061-patch-sha256.txt
+            061-baseline-source-manifest.json
+            061-postpatch-source-manifest.json
+            061-postpatch-manifest-sha256.txt
+            061-apk-badging.txt
+            061-apksigner.txt
+            061-apk-sha256.txt
+
+      - name: Upload 061 verified full source
+        uses: actions/upload-artifact@v4
+        with:
+          name: 061-ClosePaw-RC11-verified-full-source
+          path: /tmp/061-verified-source
+
+      - name: Upload 061 APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: 061-ClosePaw-RC11-APK
+          path: app/build/outputs/apk/debug/*.apk
+
+      - name: Upload 061 failure evidence
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: 061-ClosePaw-RC11-failure-evidence
+          if-no-files-found: ignore
+          path: |
+            061-verification-report.txt
+            061-isolated.patch
+            061-patch-sha256.txt
+            061-baseline-source-manifest.json
+            061-postpatch-source-manifest.json
+            app/src/main/kotlin/ai/closepaw/app/ChatGptProjectAdapterV58.kt
+            app/src/main/kotlin/ai/closepaw/app/ProjectOrchestratorV58.kt

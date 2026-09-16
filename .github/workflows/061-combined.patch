@@ -1,0 +1,175 @@
+diff --git a/app/src/main/kotlin/ai/closepaw/app/ChatGptProjectAdapterV58.kt b/app/src/main/kotlin/ai/closepaw/app/ChatGptProjectAdapterV58.kt
+index 550922f..1bb16b9 100644
+--- a/app/src/main/kotlin/ai/closepaw/app/ChatGptProjectAdapterV58.kt
++++ b/app/src/main/kotlin/ai/closepaw/app/ChatGptProjectAdapterV58.kt
+@@ -73,10 +73,17 @@ internal class ChatGptProjectAdapterV58(private val service: AgentService) {
+         private val NAV_LABELS = setOf("Open navigation drawer", "Navigation menu", "Open sidebar", "Sidebar", "Menu")
+         private val SEARCH_LABELS = setOf("Search chats", "Search conversations", "Search")
+         private val SEND_LABELS = setOf("Send message", "Send")
+-        private val COPY_RESPONSE_LABELS = setOf("Copy response")
++        private val COPY_RESPONSE_LABELS = setOf("Copy response", "کپی پاسخ")
++        private val GENERIC_COPY_LABELS = setOf("Copy", "کپی")
++        private val RESPONSE_CHROME_EVIDENCE_LABELS = setOf(
++            "Share", "Read aloud", "Good response", "Bad response", "Regenerate", "Retry",
++            "اشتراک گذاری", "خواندن با صدای بلند",
++        )
+         private val STOP_GENERATION_LABELS = setOf("Stop generating", "Stop response")
+         private val CHROME_LABELS = setOf(
+-            "Copy response", "Share", "Read aloud", "Good response", "Bad response", "Regenerate", "Retry",
++            "Copy response", "کپی پاسخ", "Copy", "کپی",
++            "Share", "Read aloud", "Good response", "Bad response", "Regenerate", "Retry",
++            "اشتراک گذاری", "خواندن با صدای بلند",
+             "Edit", "Send", "Send message", "Ask anything", "ChatGPT can make mistakes.", "Stop generating", "Stop response",
+         )
+     }
+@@ -202,17 +209,14 @@ internal class ChatGptProjectAdapterV58(private val service: AgentService) {
+         )
+     }
+ 
+-    fun assistantResponseControlCount(): Int = collectExactLabelNodes(COPY_RESPONSE_LABELS).size
++    fun assistantResponseControlCount(): Int = collectResponseCopyControls().size
+ 
+     fun assistantMessageFingerprints(): List<String> =
+         assistantMessageTexts().map(ProjectOrchestratorProtocolV58::sha256)
+ 
+     fun assistantMessageTexts(): List<String> {
+         val root = focusedRootOrNull() ?: return emptyList()
+-        val copyControls = mutableListOf<AccessibilityNodeInfo>()
+-        walk(root) { node ->
+-            if (nodeMatchesExactLabel(node, COPY_RESPONSE_LABELS)) copyControls += node
+-        }
++        val copyControls = collectResponseCopyControls()
+         return copyControls.sortedBy(::nodeTop).mapNotNull(::messageTextForCopyControl).filter { it.isNotBlank() }
+     }
+ 
+@@ -227,7 +231,7 @@ internal class ChatGptProjectAdapterV58(private val service: AgentService) {
+         var scrolls = 0
+         try {
+             while (true) {
+-                val visibleCount = collectExactLabelNodes(COPY_RESPONSE_LABELS).size
++                val visibleCount = collectResponseCopyControls().size
+                 for (indexFromBottom in 0 until visibleCount) {
+                     val response = copyVisibleAssistantResponseFromBottom(indexFromBottom)
+                         ?.trim()
+@@ -278,7 +282,7 @@ internal class ChatGptProjectAdapterV58(private val service: AgentService) {
+         require(marker.isNotBlank())
+         try {
+             repeat(maxBackwardScrolls + 1) { pass ->
+-                val controls = collectExactLabelNodes(COPY_RESPONSE_LABELS).sortedBy(::nodeTop)
++                val controls = collectResponseCopyControls().sortedBy(::nodeTop)
+                 for (control in controls.asReversed()) {
+                     val candidate = messageTextForCopyControl(control) ?: continue
+                     if (!candidate.contains(marker)) continue
+@@ -316,7 +320,7 @@ internal class ChatGptProjectAdapterV58(private val service: AgentService) {
+ 
+         try {
+             while (true) {
+-                val visibleCount = collectExactLabelNodes(COPY_RESPONSE_LABELS).size
++                val visibleCount = collectResponseCopyControls().size
+                 for (indexFromBottom in 0 until visibleCount) {
+                     val response = copyVisibleAssistantResponseFromBottom(indexFromBottom)
+                         ?.trim()
+@@ -578,6 +582,63 @@ internal class ChatGptProjectAdapterV58(private val service: AgentService) {
+         return out
+     }
+ 
++    private fun collectResponseCopyControls(): List<AccessibilityNodeInfo> {
++        val root = focusedRootOrNull() ?: return emptyList()
++        val out = mutableListOf<AccessibilityNodeInfo>()
++        walk(root) { node ->
++            if (isResponseCopyControl(node)) out += node
++        }
++        return out.distinctBy(::nodeSignature)
++    }
++
++    /**
++     * ChatGPT Android exposes assistant-turn Copy differently across app builds/locales.
++     * An explicit Copy response label is authoritative. A generic Copy/کپی is accepted only when
++     * a nearby assistant response-action toolbar proves it is not a code-block copy button.
++     */
++    private fun isResponseCopyControl(node: AccessibilityNodeInfo): Boolean {
++        if (nodeMatchesExactLabel(node, COPY_RESPONSE_LABELS)) return true
++        if (!nodeMatchesExactLabel(node, GENERIC_COPY_LABELS)) return false
++
++        var current = node.parent
++        repeat(7) {
++            val scope = current ?: return false
++            if (!containsEditableDescendant(scope)) {
++                val copyCount = countRawCopyLabels(scope, limit = 3)
++                val chromeCount = countExactLabels(scope, RESPONSE_CHROME_EVIDENCE_LABELS, limit = 2)
++                if (copyCount == 1 && chromeCount >= 1) return true
++                if (copyCount > 1 && chromeCount >= 1) return false
++            }
++            current = scope.parent
++        }
++        return false
++    }
++
++    private fun countRawCopyLabels(root: AccessibilityNodeInfo, limit: Int): Int {
++        var count = 0
++        walk(root) { node ->
++            if (count >= limit) return@walk
++            if (nodeMatchesExactLabel(node, COPY_RESPONSE_LABELS) || nodeMatchesExactLabel(node, GENERIC_COPY_LABELS)) count++
++        }
++        return count
++    }
++
++    private fun countExactLabels(root: AccessibilityNodeInfo, labels: Set<String>, limit: Int): Int {
++        var count = 0
++        walk(root) { node ->
++            if (count >= limit) return@walk
++            if (nodeMatchesExactLabel(node, labels)) count++
++        }
++        return count
++    }
++
++    fun responseCopyDiagnosticsV61(): String {
++        val explicit = collectExactLabelNodes(COPY_RESPONSE_LABELS).size
++        val generic = collectExactLabelNodes(GENERIC_COPY_LABELS).size
++        val accepted = collectResponseCopyControls().size
++        return "explicit=$explicit;generic=$generic;accepted=$accepted"
++    }
++
+     private fun nodeMatchesExactLabel(node: AccessibilityNodeInfo, labels: Set<String>): Boolean {
+         val values = listOfNotNull(node.text?.toString()?.trim(), node.contentDescription?.toString()?.trim())
+         return values.any { value -> labels.any { label -> value.equals(label, ignoreCase = true) } }
+@@ -655,7 +716,7 @@ internal class ChatGptProjectAdapterV58(private val service: AgentService) {
+         var count = 0
+         fun visit(node: AccessibilityNodeInfo) {
+             if (count >= limit) return
+-            if (nodeMatchesExactLabel(node, COPY_RESPONSE_LABELS)) count++
++            if (isResponseCopyControl(node)) count++
+             for (i in 0 until node.childCount) node.getChild(i)?.let(::visit)
+         }
+         visit(root)
+@@ -709,7 +770,7 @@ internal class ChatGptProjectAdapterV58(private val service: AgentService) {
+     private suspend fun copyVisibleAssistantResponseFromBottom(indexFromBottom: Int): String? {
+         if (indexFromBottom < 0) return null
+         // Re-resolve on every copy. Copy actions and Android toasts can invalidate old nodes.
+-        val controls = collectExactLabelNodes(COPY_RESPONSE_LABELS).sortedBy(::nodeTop)
++        val controls = collectResponseCopyControls().sortedBy(::nodeTop)
+         val index = controls.lastIndex - indexFromBottom
+         if (index !in controls.indices) return null
+         return copyResponseControl(controls[index])
+diff --git a/app/src/main/kotlin/ai/closepaw/app/ProjectOrchestratorV58.kt b/app/src/main/kotlin/ai/closepaw/app/ProjectOrchestratorV58.kt
+index 6c5d789..8bb19b2 100644
+--- a/app/src/main/kotlin/ai/closepaw/app/ProjectOrchestratorV58.kt
++++ b/app/src/main/kotlin/ai/closepaw/app/ProjectOrchestratorV58.kt
+@@ -253,7 +253,7 @@ internal class ProjectOrchestratorV58(private val service: AgentService) {
+                     if (baseline == null && !baselineProbe.historyStartProven) {
+                         trace(
+                             "MANAGER_BASELINE_DEFERRED",
+-                            "project=${project.projectId}|limit=${baselineProbe.historyLimitReached}",
++                            "project=${project.projectId}|limit=${baselineProbe.historyLimitReached}|copy=${ui.responseCopyDiagnosticsV61()}",
+                         )
+                         error("Manager baseline exact cursor unavailable within bounded history")
+                     }
+@@ -262,7 +262,7 @@ internal class ProjectOrchestratorV58(private val service: AgentService) {
+                     managerFailureByProject.remove(project.projectId)
+                     trace(
+                         "MANAGER_BASELINE_PRIMED",
+-                        "project=${project.projectId}|assistant=${if (exactHash == null) "empty-history-proven" else exactHash.take(16)}",
++                        "project=${project.projectId}|assistant=${if (exactHash == null) "empty-history-proven" else exactHash.take(16)}|copy=${ui.responseCopyDiagnosticsV61()}",
+                     )
+                     return
+                 }
