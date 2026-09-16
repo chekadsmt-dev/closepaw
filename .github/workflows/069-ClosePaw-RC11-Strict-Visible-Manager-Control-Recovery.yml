@@ -1,0 +1,454 @@
+name: 069 - ClosePaw RC11 Strict Visible Manager Control Recovery
+'on':
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout workflow host repository
+        uses: actions/checkout@v5
+
+      - name: Setup Java 17
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Restore exact verified 068 Source of Truth
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          ARTIFACT_NAME='068-ClosePaw-RC11-verified-full-source'
+          EXPECTED_ARTIFACT_DIGEST='sha256:49763a9484559f33ed2ca99cd0f143fecf2b28c5a8bfbf56330c942a39310f42'
+          EXPECTED_MANIFEST_SHA='8a74b9ad27220b144647d195713afe120866381c52663675a48be5388e6cf3d6'
+          export ARTIFACT_NAME EXPECTED_ARTIFACT_DIGEST EXPECTED_MANIFEST_SHA
+          rm -rf /tmp/068-source /tmp/068-stage1 /tmp/068-stage2 /tmp/068-normalized /tmp/068-artifact.zip /tmp/068-list.json
+          mkdir -p /tmp/068-stage1
+          curl -fsSL -H "Authorization: Bearer $GH_TOKEN" -H 'Accept: application/vnd.github+json' \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts?name=${ARTIFACT_NAME}&per_page=100" \
+            -o /tmp/068-list.json
+          python3 - <<'PYMETA'
+          import json,os
+          d=json.load(open('/tmp/068-list.json'))
+          name=os.environ['ARTIFACT_NAME']; expected=os.environ['EXPECTED_ARTIFACT_DIGEST']
+          matches=[a for a in d.get('artifacts',[]) if a.get('name')==name and not a.get('expired')]
+          if not matches: raise SystemExit('verified 068 full-source artifact not found')
+          matches.sort(key=lambda a:a.get('created_at',''), reverse=True)
+          chosen=matches[0]
+          if chosen.get('digest') != expected:
+              raise SystemExit(f'068 artifact digest mismatch: {chosen.get("digest")} != {expected}')
+          open('/tmp/068-artifact-id','w').write(str(chosen['id']))
+          open('/tmp/068-artifact-meta.txt','w').write(json.dumps(chosen,indent=2,sort_keys=True)+'\n')
+          print('068 artifact identity PASS',chosen['id'],chosen.get('digest'))
+          PYMETA
+          ARTIFACT_ID="$(cat /tmp/068-artifact-id)"
+          curl -fsSL -L -H "Authorization: Bearer $GH_TOKEN" -H 'Accept: application/vnd.github+json' \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/${ARTIFACT_ID}/zip" \
+            -o /tmp/068-artifact.zip
+          unzip -q /tmp/068-artifact.zip -d /tmp/068-stage1
+          MANIFEST="$(find /tmp/068-stage1 -type f -name '068-postpatch-source-manifest.json' -print -quit)"
+          if [ -z "$MANIFEST" ]; then
+            mapfile -t NESTED_ZIPS < <(find /tmp/068-stage1 -type f -name '*.zip' -print)
+            [ "${#NESTED_ZIPS[@]}" -eq 1 ] || {
+              printf '068 source manifest missing after outer unzip; nested zip count=%s\n' "${#NESTED_ZIPS[@]}" >&2
+              exit 1
+            }
+            mkdir -p /tmp/068-stage2
+            unzip -q "${NESTED_ZIPS[0]}" -d /tmp/068-stage2
+            MANIFEST="$(find /tmp/068-stage2 -type f -name '068-postpatch-source-manifest.json' -print -quit)"
+          fi
+          [ -n "$MANIFEST" ] || { echo '068 source manifest missing after artifact unwrap' >&2; exit 1; }
+          ROOT="$(dirname "$MANIFEST")"
+          mkdir -p /tmp/068-normalized
+          cp -a "$ROOT"/. /tmp/068-normalized/
+          mv /tmp/068-normalized /tmp/068-source
+          ACTUAL_MANIFEST_SHA="$(sha256sum /tmp/068-source/068-postpatch-source-manifest.json | awk '{print $1}')"
+          [ "$ACTUAL_MANIFEST_SHA" = "$EXPECTED_MANIFEST_SHA" ] || { echo "068 manifest SHA mismatch: $ACTUAL_MANIFEST_SHA" >&2; exit 1; }
+          python3 - <<'PYBASE'
+          from pathlib import Path
+          import hashlib,json
+          root=Path('/tmp/068-source')
+          manifest=json.loads((root/'068-postpatch-source-manifest.json').read_text())
+          current={}
+          for p in sorted((root/'app').rglob('*')):
+              if p.is_file() and '/build/' not in p.as_posix():
+                  current[p.relative_to(root).as_posix()]=hashlib.sha256(p.read_bytes()).hexdigest()
+          if current != manifest:
+              missing=sorted(set(manifest)-set(current)); added=sorted(set(current)-set(manifest))
+              changed=sorted(k for k in set(manifest)&set(current) if manifest[k]!=current[k])
+              raise SystemExit(f'068 source manifest mismatch missing={missing[:10]} added={added[:10]} changed={changed[:10]}')
+          assert 'versionNameSuffix = "-rc11-c068"' in (root/'app/build.gradle.kts').read_text()
+          assert 'ClosePaw RC11 068' in (root/'app/src/main/res/values/strings.xml').read_text()
+          print('verified 068 source identity: PASS')
+          PYBASE
+          find . -mindepth 1 -maxdepth 1 ! -name '.git' ! -name '.github' -exec rm -rf {} +
+          rsync -a --exclude='.git' --exclude='.github' /tmp/068-source/ ./
+          cp 068-postpatch-source-manifest.json 069-baseline-source-manifest.json
+          cat > 069-verification-report.txt <<'REPORT'
+          ClosePaw RC11 069 verification report
+          Baseline: exact verified 068 full-source artifact, pinned by GitHub artifact digest and source-manifest SHA-256.
+          Device evidence from c068: manager navigation remained valid, but current ChatGPT Android intermittently exposed no Copy/response-toolbar semantics at conversation bottom (explicit=0;generic=0;accepted=0;capture=none). c068 treated that UI-role absence as a fatal manager scan error and stopped after three identical failures. Earlier scans could also keep an old toolbar-grounded assistant snapshot while a newer control response was visible.
+          069 design: strict whole-response ROUTE_TASK/PROJECT_MANIFEST/PROJECT_UPDATE text can be recovered directly from a visible left/full-width assistant-lane text node when response chrome is absent. User-bubble controls are rejected by conservative geometry and surrounding prose is rejected by the existing strict whole-response parser. Missing response chrome becomes a non-fatal defer instead of a three-strike router stop. Existing V65 route transaction ownership, no-blind-replay state, exact protocol parser, and whitespace-tolerant correlation-marker verification remain intact.
+          REPORT
+          cat /tmp/068-artifact-meta.txt >> 069-verification-report.txt
+
+      - name: Baseline 068 clean compile gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          chmod +x ./gradlew
+          ./gradlew clean :app:compileDebugKotlin --stacktrace --no-daemon --no-configuration-cache
+          echo 'Baseline 068 clean compile: PASS' >> 069-verification-report.txt
+
+      - name: Apply isolated 069 manager-control recovery patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > /tmp/069.patch.b64 <<'PATCH069_B64'
+          ZGlmZiAtLWdpdCBhL2FwcC9idWlsZC5ncmFkbGUua3RzIGIvYXBwL2J1aWxkLmdyYWRsZS5rdHMK
+          aW5kZXggMGE4N2MwNy4uMDk3MDgzNCAxMDA2NDQKLS0tIGEvYXBwL2J1aWxkLmdyYWRsZS5rdHMK
+          KysrIGIvYXBwL2J1aWxkLmdyYWRsZS5rdHMKQEAgLTQ3LDcgKzQ3LDcgQEAgYW5kcm9pZCB7CiAg
+          ICAgYnVpbGRUeXBlcyB7CiAgICAgICAgIGRlYnVnIHsKICAgICBhcHBsaWNhdGlvbklkU3VmZml4
+          ID0gIi5yYzExYzA1OCIKLSAgICB2ZXJzaW9uTmFtZVN1ZmZpeCA9ICItcmMxMS1jMDY4IgorICAg
+          IHZlcnNpb25OYW1lU3VmZml4ID0gIi1yYzExLWMwNjkiCiAKICAgICB2YWwgZXZhbFNzbCA9IHBy
+          b2plY3QuZmluZFByb3BlcnR5KCJpbnNlY3VyZVNzbEZvckV2YWwiKT8udG9TdHJpbmcoKT8udG9C
+          b29sZWFuKCkgPzogZmFsc2UKICAgICBidWlsZENvbmZpZ0ZpZWxkKCJib29sZWFuIiwgIklOU0VD
+          VVJFX1NTTF9GT1JfRVZBTCIsIGV2YWxTc2wudG9TdHJpbmcoKSkKZGlmZiAtLWdpdCBhL2FwcC9z
+          cmMvbWFpbi9rb3RsaW4vYWkvY2xvc2VwYXcvYXBwL0NoYXRHcHRQcm9qZWN0QWRhcHRlclY1OC5r
+          dCBiL2FwcC9zcmMvbWFpbi9rb3RsaW4vYWkvY2xvc2VwYXcvYXBwL0NoYXRHcHRQcm9qZWN0QWRh
+          cHRlclY1OC5rdAppbmRleCA2M2NhOTZjLi45N2UzODNlIDEwMDY0NAotLS0gYS9hcHAvc3JjL21h
+          aW4va290bGluL2FpL2Nsb3NlcGF3L2FwcC9DaGF0R3B0UHJvamVjdEFkYXB0ZXJWNTgua3QKKysr
+          IGIvYXBwL3NyYy9tYWluL2tvdGxpbi9haS9jbG9zZXBhdy9hcHAvQ2hhdEdwdFByb2plY3RBZGFw
+          dGVyVjU4Lmt0CkBAIC01OCw2ICs1OCw0MiBAQCBpbnRlcm5hbCBmdW4gY29ycmVsYXRpb25NYXJr
+          ZXJNYXRjaGVzVjY1KHRleHQ6IFN0cmluZywgbWFya2VyOiBTdHJpbmcpOiBCb29sZWFuCiAgICAg
+          cmV0dXJuIGNvbXBhY3RUZXh0LmNvbnRhaW5zKGNvbXBhY3RNYXJrZXIpCiB9CiAKK2ludGVybmFs
+          IGZ1biBhc3Npc3RhbnRMaWtlQ29udHJvbEdlb21ldHJ5VjY5KAorICAgIHJvb3RMZWZ0OiBJbnQs
+          CisgICAgcm9vdFJpZ2h0OiBJbnQsCisgICAgY2FuZGlkYXRlTGVmdDogSW50LAorICAgIGNhbmRp
+          ZGF0ZVJpZ2h0OiBJbnQsCispOiBCb29sZWFuIHsKKyAgICB2YWwgcm9vdFdpZHRoID0gcm9vdFJp
+          Z2h0IC0gcm9vdExlZnQKKyAgICB2YWwgY2FuZGlkYXRlV2lkdGggPSBjYW5kaWRhdGVSaWdodCAt
+          IGNhbmRpZGF0ZUxlZnQKKyAgICBpZiAocm9vdFdpZHRoIDw9IDAgfHwgY2FuZGlkYXRlV2lkdGgg
+          PD0gMCkgcmV0dXJuIGZhbHNlCisgICAgdmFsIGxlZnRJbnNldCA9IChjYW5kaWRhdGVMZWZ0IC0g
+          cm9vdExlZnQpLmNvZXJjZUF0TGVhc3QoMCkKKyAgICAvLyBDaGF0R1BUIHVzZXIgYnViYmxlcyBh
+          cmUgcmlnaHQtaW5zZXQ7IGFzc2lzdGFudCB0dXJucyBvY2N1cHkgdGhlIGxlZnQvZnVsbC13aWR0
+          aCBsYW5lLgorICAgIC8vIEtlZXAgdGhpcyBjb25zZXJ2YXRpdmU6IDw9MjAlIGxlZnQgaW5zZXQg
+          YW5kID49NTUlIHJvb3Qgd2lkdGguCisgICAgcmV0dXJuIGxlZnRJbnNldCAqIDUgPD0gcm9vdFdp
+          ZHRoICYmIGNhbmRpZGF0ZVdpZHRoICogMjAgPj0gcm9vdFdpZHRoICogMTEKK30KKworaW50ZXJu
+          YWwgZnVuIGNsYXNzaWZ5TWFuYWdlckNvbnRyb2xUZXh0VjY5KHRleHQ6IFN0cmluZyk6IFN0cmlu
+          Zz8geworICAgIHZhbCByb3V0ZXMgPSBQcm9qZWN0T3JjaGVzdHJhdG9yUHJvdG9jb2xWNTgucm91
+          dGVzKHRleHQpCisgICAgdmFsIG1hbmlmZXN0cyA9IFByb2plY3RPcmNoZXN0cmF0b3JQcm90b2Nv
+          bFY1OC5tYW5pZmVzdHModGV4dCkKKyAgICB2YWwgdXBkYXRlcyA9IFByb2plY3RPcmNoZXN0cmF0
+          b3JQcm90b2NvbFY1OC51cGRhdGVzKHRleHQpCisgICAgaWYgKHJvdXRlcy5zaXplICsgbWFuaWZl
+          c3RzLnNpemUgKyB1cGRhdGVzLnNpemUgIT0gMSkgcmV0dXJuIG51bGwKKyAgICByZXR1cm4gd2hl
+          biB7CisgICAgICAgIHJvdXRlcy5zaXplID09IDEgLT4gIlJPVVRFX1RBU0siCisgICAgICAgIG1h
+          bmlmZXN0cy5zaXplID09IDEgLT4gIlBST0pFQ1RfTUFOSUZFU1QiCisgICAgICAgIHVwZGF0ZXMu
+          c2l6ZSA9PSAxIC0+ICJQUk9KRUNUX1VQREFURSIKKyAgICAgICAgZWxzZSAtPiBudWxsCisgICAg
+          fQorfQorCitpbnRlcm5hbCBkYXRhIGNsYXNzIE1hbmFnZXJDb250cm9sQ2FuZGlkYXRlVjY5KAor
+          ICAgIHZhbCB0ZXh0OiBTdHJpbmcsCisgICAgdmFsIGtpbmQ6IFN0cmluZywKKyAgICB2YWwgdG9w
+          OiBJbnQsCisgICAgdmFsIGxlZnQ6IEludCwKKyAgICB2YWwgcmlnaHQ6IEludCwKKykKKwogLyoq
+          CiAgKiBWNjYgY3Vyc29yIGlkZW50aXR5IGRlbGliZXJhdGVseSBpZ25vcmVzIHRyYW5zcG9ydC1v
+          bmx5IHdoaXRlc3BhY2UgZGlmZmVyZW5jZXMgaW50cm9kdWNlZCBieQogICogQW5kcm9pZC9Db21w
+          b3NlIHdyYXBwaW5nLCB3aGlsZSBwcmVzZXJ2aW5nIGV2ZXJ5IHN1YnN0YW50aXZlIGNoYXJhY3Rl
+          ci4gIFRoaXMgaXMgYSBoYXNoCkBAIC0xMDMsNiArMTM5LDcgQEAgaW50ZXJuYWwgY2xhc3MgQ2hh
+          dEdwdFByb2plY3RBZGFwdGVyVjU4KHByaXZhdGUgdmFsIHNlcnZpY2U6IEFnZW50U2VydmljZSkg
+          ewogICAgIHByaXZhdGUgdmFyIGxlYXNlZENvbnZlcnNhdGlvbkNvbmZpZ3VyZWRUaXRsZTogU3Ry
+          aW5nPyA9IG51bGwKICAgICBwcml2YXRlIHZhciBsZWFzZWRDb252ZXJzYXRpb25SZXNvbHZlZFRp
+          dGxlOiBTdHJpbmc/ID0gbnVsbAogICAgIHByaXZhdGUgdmFyIGxhc3RBc3Npc3RhbnRDYXB0dXJl
+          U291cmNlVjYzOiBTdHJpbmcgPSAibm9uZSIKKyAgICBwcml2YXRlIHZhciBsYXN0TWFuYWdlckNv
+          bnRyb2xEaWFnbm9zdGljc1Y2OTogU3RyaW5nID0gInN0cmljdD0wO2Fzc2lzdGFudEdlb209MDtz
+          ZWxlY3RlZD1ub25lIgogCiAgICAgY29tcGFuaW9uIG9iamVjdCB7CiAgICAgICAgIHByaXZhdGUg
+          Y29uc3QgdmFsIENIQVRHUFRfUEFDS0FHRSA9ICJjb20ub3BlbmFpLmNoYXRncHQiCkBAIC0yNzcs
+          NiArMzE0LDY3IEBAIGludGVybmFsIGNsYXNzIENoYXRHcHRQcm9qZWN0QWRhcHRlclY1OChwcml2
+          YXRlIHZhbCBzZXJ2aWNlOiBBZ2VudFNlcnZpY2UpIHsKICAgICAgICAgcmV0dXJuIGxhdGVzdEFz
+          c2lzdGFudFJlc3BvbnNlKCk/LnRyaW0oKT8udGFrZUlmIHsgaXQuaXNOb3RCbGFuaygpIH0KICAg
+          ICB9CiAKKyAgICAvKioKKyAgICAgKiBWNjkgZmFsbGJhY2sgZm9yIGN1cnJlbnQgQ2hhdEdQVCBi
+          dWlsZHMgd2hlcmUgcmVzcG9uc2UtdG9vbGJhciBzZW1hbnRpY3MgY2FuIGRpc2FwcGVhciBhdAor
+          ICAgICAqIHRoZSBjb252ZXJzYXRpb24gYm90dG9tLiBJdCBhY2NlcHRzIG9ubHkgYSBTVFJJQ1Qg
+          d2hvbGUtcmVzcG9uc2Ugcm91dGVyIGNvbnRyb2wgYmxvY2sgZnJvbQorICAgICAqIGEgbGVmdC9m
+          dWxsLXdpZHRoIGFzc2lzdGFudC1saWtlIHRleHQgbm9kZS4gQSB1c2VyIGJ1YmJsZSBjb250YWlu
+          aW5nIHRoZSBzYW1lIHByb3RvY29sIGlzCisgICAgICogcmVqZWN0ZWQgYnkgZ2VvbWV0cnksIGFu
+          ZCBzdXJyb3VuZGluZyBwcm9zZSBpcyByZWplY3RlZCBieSB0aGUgc3RyaWN0IHByb3RvY29sIHBh
+          cnNlci4KKyAgICAgKi8KKyAgICBzdXNwZW5kIGZ1biBsYXRlc3RNYW5hZ2VyQ29udHJvbENhbmRp
+          ZGF0ZUF0Qm90dG9tVjY5KG1heEZvcndhcmRTY3JvbGxzOiBJbnQgPSAxMik6IE1hbmFnZXJDb250
+          cm9sQ2FuZGlkYXRlVjY5PyB7CisgICAgICAgIHNjcm9sbFRvQm90dG9tKG1heEZvcndhcmRTY3Jv
+          bGxzKQorICAgICAgICBkZWxheSgxODApCisgICAgICAgIGlmIChpc0dlbmVyYXRpbmcoKSkgcmV0
+          dXJuIG51bGwKKyAgICAgICAgcmV0dXJuIHZpc2libGVNYW5hZ2VyQ29udHJvbENhbmRpZGF0ZVY2
+          OSgpCisgICAgfQorCisgICAgZnVuIG1hbmFnZXJDb250cm9sRGlhZ25vc3RpY3NWNjkoKTogU3Ry
+          aW5nID0gbGFzdE1hbmFnZXJDb250cm9sRGlhZ25vc3RpY3NWNjkKKworICAgIHByaXZhdGUgZnVu
+          IHZpc2libGVNYW5hZ2VyQ29udHJvbENhbmRpZGF0ZVY2OSgpOiBNYW5hZ2VyQ29udHJvbENhbmRp
+          ZGF0ZVY2OT8geworICAgICAgICB2YWwgcm9vdCA9IGZvY3VzZWRSb290T3JOdWxsKCkgPzogcnVu
+          IHsKKyAgICAgICAgICAgIGxhc3RNYW5hZ2VyQ29udHJvbERpYWdub3N0aWNzVjY5ID0gInN0cmlj
+          dD0wO2Fzc2lzdGFudEdlb209MDtzZWxlY3RlZD1ub25lO3Jvb3Q9bWlzc2luZyIKKyAgICAgICAg
+          ICAgIHJldHVybiBudWxsCisgICAgICAgIH0KKyAgICAgICAgdmFsIHJvb3RSZWN0ID0gYW5kcm9p
+          ZC5ncmFwaGljcy5SZWN0KCkuYWxzbyhyb290OjpnZXRCb3VuZHNJblNjcmVlbikKKyAgICAgICAg
+          dmFsIGNhbmRpZGF0ZXMgPSBtdXRhYmxlTGlzdE9mPE1hbmFnZXJDb250cm9sQ2FuZGlkYXRlVjY5
+          PigpCisgICAgICAgIHZhciBzdHJpY3RDb3VudCA9IDAKKyAgICAgICAgdmFyIGdlb21ldHJ5Q291
+          bnQgPSAwCisKKyAgICAgICAgd2Fsayhyb290KSB7IG5vZGUgLT4KKyAgICAgICAgICAgIGlmICgh
+          bm9kZS5pc1Zpc2libGVUb1VzZXIgfHwgbm9kZS5wYWNrYWdlTmFtZT8udG9TdHJpbmcoKSAhPSBD
+          SEFUR1BUX1BBQ0tBR0UpIHJldHVybkB3YWxrCisgICAgICAgICAgICBpZiAoaXNUZXh0SW5wdXRO
+          b2RlKG5vZGUpIHx8IGhhc0VkaXRhYmxlQW5jZXN0b3Iobm9kZSkpIHJldHVybkB3YWxrCisgICAg
+          ICAgICAgICB2YWwgcmVjdCA9IGFuZHJvaWQuZ3JhcGhpY3MuUmVjdCgpLmFsc28obm9kZTo6Z2V0
+          Qm91bmRzSW5TY3JlZW4pCisgICAgICAgICAgICBpZiAocmVjdC53aWR0aCgpIDw9IDAgfHwgcmVj
+          dC5oZWlnaHQoKSA8PSAwKSByZXR1cm5Ad2FsaworICAgICAgICAgICAgdmFsIHZhbHVlcyA9IGxp
+          c3RPZk5vdE51bGwobm9kZS50ZXh0Py50b1N0cmluZygpLCBub2RlLmNvbnRlbnREZXNjcmlwdGlv
+          bj8udG9TdHJpbmcoKSkKKyAgICAgICAgICAgICAgICAubWFwIHsgaXQudHJpbSgpIH0KKyAgICAg
+          ICAgICAgICAgICAuZmlsdGVyIHsgaXQuaXNOb3RCbGFuaygpIH0KKyAgICAgICAgICAgICAgICAu
+          ZGlzdGluY3QoKQorICAgICAgICAgICAgdmFsdWVzLmZvckVhY2ggeyB2YWx1ZSAtPgorICAgICAg
+          ICAgICAgICAgIHZhbCBraW5kID0gY2xhc3NpZnlNYW5hZ2VyQ29udHJvbFRleHRWNjkodmFsdWUp
+          ID86IHJldHVybkBmb3JFYWNoCisgICAgICAgICAgICAgICAgc3RyaWN0Q291bnQrKworICAgICAg
+          ICAgICAgICAgIGlmICghYXNzaXN0YW50TGlrZUNvbnRyb2xHZW9tZXRyeVY2OShyb290UmVjdC5s
+          ZWZ0LCByb290UmVjdC5yaWdodCwgcmVjdC5sZWZ0LCByZWN0LnJpZ2h0KSkgcmV0dXJuQGZvckVh
+          Y2gKKyAgICAgICAgICAgICAgICBnZW9tZXRyeUNvdW50KysKKyAgICAgICAgICAgICAgICBjYW5k
+          aWRhdGVzICs9IE1hbmFnZXJDb250cm9sQ2FuZGlkYXRlVjY5KHZhbHVlLCBraW5kLCByZWN0LnRv
+          cCwgcmVjdC5sZWZ0LCByZWN0LnJpZ2h0KQorICAgICAgICAgICAgfQorICAgICAgICB9CisKKyAg
+          ICAgICAgdmFsIHNlbGVjdGVkID0gY2FuZGlkYXRlcworICAgICAgICAgICAgLmRpc3RpbmN0Qnkg
+          eyBhc3Npc3RhbnRSZXNwb25zZUhhc2hWNjYoaXQudGV4dCkgfQorICAgICAgICAgICAgLm1heEJ5
+          T3JOdWxsIHsgaXQudG9wIH0KKyAgICAgICAgbGFzdE1hbmFnZXJDb250cm9sRGlhZ25vc3RpY3NW
+          NjkgPSBidWlsZFN0cmluZyB7CisgICAgICAgICAgICBhcHBlbmQoInN0cmljdD0iKS5hcHBlbmQo
+          c3RyaWN0Q291bnQpCisgICAgICAgICAgICBhcHBlbmQoIjthc3Npc3RhbnRHZW9tPSIpLmFwcGVu
+          ZChnZW9tZXRyeUNvdW50KQorICAgICAgICAgICAgYXBwZW5kKCI7c2VsZWN0ZWQ9IikuYXBwZW5k
+          KHNlbGVjdGVkPy5raW5kID86ICJub25lIikKKyAgICAgICAgICAgIGlmIChzZWxlY3RlZCAhPSBu
+          dWxsKSB7CisgICAgICAgICAgICAgICAgYXBwZW5kKCI7bGVmdD0iKS5hcHBlbmQoc2VsZWN0ZWQu
+          bGVmdCkKKyAgICAgICAgICAgICAgICBhcHBlbmQoIjtyaWdodD0iKS5hcHBlbmQoc2VsZWN0ZWQu
+          cmlnaHQpCisgICAgICAgICAgICAgICAgYXBwZW5kKCI7dG9wPSIpLmFwcGVuZChzZWxlY3RlZC50
+          b3ApCisgICAgICAgICAgICB9CisgICAgICAgICAgICBhcHBlbmQoIjtyb290TGVmdD0iKS5hcHBl
+          bmQocm9vdFJlY3QubGVmdCkKKyAgICAgICAgICAgIGFwcGVuZCgiO3Jvb3RSaWdodD0iKS5hcHBl
+          bmQocm9vdFJlY3QucmlnaHQpCisgICAgICAgIH0KKyAgICAgICAgcmV0dXJuIHNlbGVjdGVkCisg
+          ICAgfQorCiAgICAgLyoqCiAgICAgICogTm9uLWF1dGhvcml0YXRpdmUgbWFuYWdlciBjaGFuZ2Ug
+          ZGV0ZWN0b3IuIFVubGlrZSB0aGUgb2xkIGxhc3QtcmVzcG9uc2UgZmluZ2VycHJpbnQsIHRoaXMK
+          ICAgICAgKiBjb3ZlcnMgdGhlIHdob2xlIHZpc2libGUgY29udmVyc2F0aW9uIHN1cmZhY2UsIHNv
+          IGEgbmV3bHkgcmVuZGVyZWQgYXNzaXN0YW50IHR1cm4gY2Fubm90IGJlCmRpZmYgLS1naXQgYS9h
+          cHAvc3JjL21haW4va290bGluL2FpL2Nsb3NlcGF3L2FwcC9Qcm9qZWN0T3JjaGVzdHJhdG9yVjU4
+          Lmt0IGIvYXBwL3NyYy9tYWluL2tvdGxpbi9haS9jbG9zZXBhdy9hcHAvUHJvamVjdE9yY2hlc3Ry
+          YXRvclY1OC5rdAppbmRleCBmMDIzODFmLi44MWZmZTU4IDEwMDY0NAotLS0gYS9hcHAvc3JjL21h
+          aW4va290bGluL2FpL2Nsb3NlcGF3L2FwcC9Qcm9qZWN0T3JjaGVzdHJhdG9yVjU4Lmt0CisrKyBi
+          L2FwcC9zcmMvbWFpbi9rb3RsaW4vYWkvY2xvc2VwYXcvYXBwL1Byb2plY3RPcmNoZXN0cmF0b3JW
+          NTgua3QKQEAgLTI1OCwxMyArMjU4LDIwIEBAIGludGVybmFsIGNsYXNzIFByb2plY3RPcmNoZXN0
+          cmF0b3JWNTgocHJpdmF0ZSB2YWwgc2VydmljZTogQWdlbnRTZXJ2aWNlKSB7CiAgICAgICAgICAg
+          ICAgICAgICAgIHJldHVybgogICAgICAgICAgICAgICAgIH0KIAotICAgICAgICAgICAgICAgIHZh
+          bCBsYXRlc3QgPSB1aS5sYXRlc3RBc3Npc3RhbnRSZXNwb25zZUF0Qm90dG9tVjY4KCkKKyAgICAg
+          ICAgICAgICAgICAvLyBQcmVmZXIgYSBzdHJpY3QgdmlzaWJsZSBjb250cm9sLXBsYW5lIGJsb2Nr
+          IGV2ZW4gd2hlbiBDaGF0R1BUIG5vIGxvbmdlciBleHBvc2VzCisgICAgICAgICAgICAgICAgLy8g
+          Q29weS9yZXNwb25zZS10b29sYmFyIHNlbWFudGljcyBhdCB0aGUgYm90dG9tLiBUaGlzIGlzIHJv
+          bGUtZ2F0ZWQgYnkgY29uc2VydmF0aXZlCisgICAgICAgICAgICAgICAgLy8gYXNzaXN0YW50LWxh
+          bmUgZ2VvbWV0cnkgYW5kIHN0cmljdCB3aG9sZS1yZXNwb25zZSBwcm90b2NvbCBwYXJzaW5nLgor
+          ICAgICAgICAgICAgICAgIHZhbCBzdHJpY3RDb250cm9sID0gdWkubGF0ZXN0TWFuYWdlckNvbnRy
+          b2xDYW5kaWRhdGVBdEJvdHRvbVY2OSgpCisgICAgICAgICAgICAgICAgdmFsIGxhdGVzdCA9IHN0
+          cmljdENvbnRyb2w/LnRleHQgPzogdWkubGF0ZXN0QXNzaXN0YW50UmVzcG9uc2VBdEJvdHRvbVY2
+          OCgpCiAgICAgICAgICAgICAgICAgaWYgKGxhdGVzdCA9PSBudWxsKSB7CisgICAgICAgICAgICAg
+          ICAgICAgIC8vIFN0cnVjdHVyYWwgYXNzaXN0YW50IGNocm9tZSBjYW4gdHJhbnNpZW50bHkgZGlz
+          YXBwZWFyIGluIENvbXBvc2UuIFRoYXQgaXMgbm90CisgICAgICAgICAgICAgICAgICAgIC8vIGEg
+          bmF2aWdhdGlvbiBmYWlsdXJlIGFuZCBtdXN0IG5vdCBjb3VudCB0b3dhcmQgdGhlIDMtc3RyaWtl
+          IHJvdXRlciBmYWlsLWNsb3NlLgorICAgICAgICAgICAgICAgICAgICBtYW5hZ2VyRmFpbHVyZUJ5
+          UHJvamVjdC5yZW1vdmUocHJvamVjdC5wcm9qZWN0SWQpCiAgICAgICAgICAgICAgICAgICAgIHRy
+          YWNlKAotICAgICAgICAgICAgICAgICAgICAgICAgIk1BTkFHRVJfTEFURVNUX1VOQVZBSUxBQkxF
+          IiwKLSAgICAgICAgICAgICAgICAgICAgICAgICJwcm9qZWN0PSR7cHJvamVjdC5wcm9qZWN0SWR9
+          fGNvcHk9JHt1aS5yZXNwb25zZUNhcHR1cmVEaWFnbm9zdGljc1Y2MygpfSIsCisgICAgICAgICAg
+          ICAgICAgICAgICAgICAiTUFOQUdFUl9TQ0FOX0RFRkVSUkVEX1Y2OSIsCisgICAgICAgICAgICAg
+          ICAgICAgICAgICAicHJvamVjdD0ke3Byb2plY3QucHJvamVjdElkfXxjb250cm9sPSR7dWkubWFu
+          YWdlckNvbnRyb2xEaWFnbm9zdGljc1Y2OSgpfXxjb3B5PSR7dWkucmVzcG9uc2VDYXB0dXJlRGlh
+          Z25vc3RpY3NWNjMoKX0iLAogICAgICAgICAgICAgICAgICAgICApCi0gICAgICAgICAgICAgICAg
+          ICAgIGVycm9yKCJOZXdlc3QgbWFuYWdlciBhc3Npc3RhbnQgcmVzcG9uc2UgaXMgc3RydWN0dXJh
+          bGx5IHVuYXZhaWxhYmxlIGF0IGNvbnZlcnNhdGlvbiBib3R0b20iKQorICAgICAgICAgICAgICAg
+          ICAgICByZXR1cm4KICAgICAgICAgICAgICAgICB9CiAKICAgICAgICAgICAgICAgICB2YWwgbGF0
+          ZXN0SGFzaCA9IGFzc2lzdGFudFJlc3BvbnNlSGFzaFY2NihsYXRlc3QpCkBAIC0yODUsMTMgKzI5
+          MiwxNiBAQCBpbnRlcm5hbCBjbGFzcyBQcm9qZWN0T3JjaGVzdHJhdG9yVjU4KHByaXZhdGUgdmFs
+          IHNlcnZpY2U6IEFnZW50U2VydmljZSkgewogCiAgICAgICAgICAgICAgICAgaWYgKGxhdGVzdEhh
+          c2ggPT0gY3Vyc29yKSB7CiAgICAgICAgICAgICAgICAgICAgIG1hbmFnZXJGYWlsdXJlQnlQcm9q
+          ZWN0LnJlbW92ZShwcm9qZWN0LnByb2plY3RJZCkKLSAgICAgICAgICAgICAgICAgICAgdHJhY2Uo
+          Ik1BTkFHRVJfU0NBTl9VTkNIQU5HRUQiLCAicHJvamVjdD0ke3Byb2plY3QucHJvamVjdElkfXxs
+          YXRlc3Q9djY4IikKKyAgICAgICAgICAgICAgICAgICAgdHJhY2UoCisgICAgICAgICAgICAgICAg
+          ICAgICAgICAiTUFOQUdFUl9TQ0FOX1VOQ0hBTkdFRCIsCisgICAgICAgICAgICAgICAgICAgICAg
+          ICAicHJvamVjdD0ke3Byb2plY3QucHJvamVjdElkfXxsYXRlc3Q9djY5fGNvbnRyb2w9JHt1aS5t
+          YW5hZ2VyQ29udHJvbERpYWdub3N0aWNzVjY5KCl9IiwKKyAgICAgICAgICAgICAgICAgICAgKQog
+          ICAgICAgICAgICAgICAgICAgICByZXR1cm4KICAgICAgICAgICAgICAgICB9CiAKICAgICAgICAg
+          ICAgICAgICB0cmFjZSgKLSAgICAgICAgICAgICAgICAgICAgIk1BTkFHRVJfTEFURVNUX0NIQU5H
+          RURfVjY4IiwKLSAgICAgICAgICAgICAgICAgICAgInByb2plY3Q9JHtwcm9qZWN0LnByb2plY3RJ
+          ZH18Y3Vyc29yPSR7Y3Vyc29yPy50YWtlKDE2KSA/OiAiZW1wdHkifXxsYXRlc3Q9JHtsYXRlc3RI
+          YXNoLnRha2UoMTYpfSIsCisgICAgICAgICAgICAgICAgICAgICJNQU5BR0VSX0xBVEVTVF9DSEFO
+          R0VEX1Y2OSIsCisgICAgICAgICAgICAgICAgICAgICJwcm9qZWN0PSR7cHJvamVjdC5wcm9qZWN0
+          SWR9fGN1cnNvcj0ke2N1cnNvcj8udGFrZSgxNikgPzogImVtcHR5In18bGF0ZXN0PSR7bGF0ZXN0
+          SGFzaC50YWtlKDE2KX18Y29udHJvbD0ke3VpLm1hbmFnZXJDb250cm9sRGlhZ25vc3RpY3NWNjko
+          KX0iLAogICAgICAgICAgICAgICAgICkKIAogICAgICAgICAgICAgICAgIGN1cnJlbnRDb3JvdXRp
+          bmVDb250ZXh0KCkuZW5zdXJlQWN0aXZlKCkKQEAgLTMyNCw3ICszMzQsNyBAQCBpbnRlcm5hbCBj
+          bGFzcyBQcm9qZWN0T3JjaGVzdHJhdG9yVjU4KHByaXZhdGUgdmFsIHNlcnZpY2U6IEFnZW50U2Vy
+          dmljZSkgewogICAgICAgICAgICAgICAgICAgICB2YWwgcGFyc2VkUm91dGVzID0gUHJvamVjdE9y
+          Y2hlc3RyYXRvclByb3RvY29sVjU4LnJvdXRlcyhsYXRlc3QpCiAgICAgICAgICAgICAgICAgICAg
+          IHRyYWNlKAogICAgICAgICAgICAgICAgICAgICAgICAgIk1BTkFHRVJfUkVTUE9OU0VfUEFSU0VE
+          IiwKLSAgICAgICAgICAgICAgICAgICAgICAgICJwcm9qZWN0PSR7cHJvamVjdC5wcm9qZWN0SWR9
+          fHNoYT0ke21hbmFnZXJSZXNwb25zZUhhc2gudGFrZSgxNil9fHJvdXRlcz0ke3BhcnNlZFJvdXRl
+          cy5zaXplfXxjaGFycz0ke2xhdGVzdC5sZW5ndGh9fG1vZGU9bGF0ZXN0LXY2OCIsCisgICAgICAg
+          ICAgICAgICAgICAgICAgICAicHJvamVjdD0ke3Byb2plY3QucHJvamVjdElkfXxzaGE9JHttYW5h
+          Z2VyUmVzcG9uc2VIYXNoLnRha2UoMTYpfXxyb3V0ZXM9JHtwYXJzZWRSb3V0ZXMuc2l6ZX18Y2hh
+          cnM9JHtsYXRlc3QubGVuZ3RofXxtb2RlPWxhdGVzdC12NjkiLAogICAgICAgICAgICAgICAgICAg
+          ICApCiAgICAgICAgICAgICAgICAgICAgIHBhcnNlZFJvdXRlcy5mb3JFYWNoIHsgcGFyc2VkIC0+
+          CiAgICAgICAgICAgICAgICAgICAgICAgICB0cnkgewpkaWZmIC0tZ2l0IGEvYXBwL3NyYy9tYWlu
+          L3Jlcy92YWx1ZXMvc3RyaW5ncy54bWwgYi9hcHAvc3JjL21haW4vcmVzL3ZhbHVlcy9zdHJpbmdz
+          LnhtbAppbmRleCA4MjI5YmNlLi5jMmUwYmVjIDEwMDY0NAotLS0gYS9hcHAvc3JjL21haW4vcmVz
+          L3ZhbHVlcy9zdHJpbmdzLnhtbAorKysgYi9hcHAvc3JjL21haW4vcmVzL3ZhbHVlcy9zdHJpbmdz
+          LnhtbApAQCAtMSw1ICsxLDUgQEAKIDw/eG1sIHZlcnNpb249IjEuMCIgZW5jb2Rpbmc9InV0Zi04
+          Ij8+CiA8cmVzb3VyY2VzPgotICAgIDxzdHJpbmcgbmFtZT0iYXBwX25hbWUiPkNsb3NlUGF3IFJD
+          MTEgMDY4PC9zdHJpbmc+CisgICAgPHN0cmluZyBuYW1lPSJhcHBfbmFtZSI+Q2xvc2VQYXcgUkMx
+          MSAwNjk8L3N0cmluZz4KICAgICA8c3RyaW5nIG5hbWU9ImFjY2Vzc2liaWxpdHlfc2VydmljZV9k
+          ZXNjcmlwdGlvbiI+Q2xvc2VQYXcgaXMgYW4gb24tZGV2aWNlIGF1dG9tYXRpb24gYWdlbnQuIFdp
+          dGggeW91ciBwZXJtaXNzaW9uLCBpdCByZWFkcyBvbi1zY3JlZW4gZWxlbWVudHMgYW5kIHBlcmZv
+          cm1zIHRhcHMsIHN3aXBlcywgYW5kIHRleHQgaW5wdXQgd2hlbiB5b3Ugc3RhcnQgYSB0YXNrIG9y
+          IGVuYWJsZSBQcm9qZWN0IFJvdXRlci4gUHJvamVjdCBSb3V0ZXIgbWF5IGNvbnRpbnVlIGNvb3Jk
+          aW5hdGluZyBjb25maWd1cmVkIENoYXRHUFQgY29udmVyc2F0aW9ucyB1bnRpbCB5b3Ugc3RvcCBp
+          dC48L3N0cmluZz4KIDwvcmVzb3VyY2VzPgpkaWZmIC0tZ2l0IGEvYXBwL3NyYy90ZXN0L2tvdGxp
+          bi9haS9jbG9zZXBhdy9hcHAvQ2hhdEdwdFByb2plY3RBZGFwdGVyVjY5VGVzdC5rdCBiL2FwcC9z
+          cmMvdGVzdC9rb3RsaW4vYWkvY2xvc2VwYXcvYXBwL0NoYXRHcHRQcm9qZWN0QWRhcHRlclY2OVRl
+          c3Qua3QKbmV3IGZpbGUgbW9kZSAxMDA2NDQKaW5kZXggMDAwMDAwMC4uZjMxNjk2ZgotLS0gL2Rl
+          di9udWxsCisrKyBiL2FwcC9zcmMvdGVzdC9rb3RsaW4vYWkvY2xvc2VwYXcvYXBwL0NoYXRHcHRQ
+          cm9qZWN0QWRhcHRlclY2OVRlc3Qua3QKQEAgLTAsMCArMSwzNiBAQAorcGFja2FnZSBhaS5jbG9z
+          ZXBhdy5hcHAKKworaW1wb3J0IG9yZy5qdW5pdC5Bc3NlcnQuYXNzZXJ0RXF1YWxzCitpbXBvcnQg
+          b3JnLmp1bml0LkFzc2VydC5hc3NlcnRGYWxzZQoraW1wb3J0IG9yZy5qdW5pdC5Bc3NlcnQuYXNz
+          ZXJ0TnVsbAoraW1wb3J0IG9yZy5qdW5pdC5Bc3NlcnQuYXNzZXJ0VHJ1ZQoraW1wb3J0IG9yZy5q
+          dW5pdC5UZXN0CisKK2NsYXNzIENoYXRHcHRQcm9qZWN0QWRhcHRlclY2OVRlc3QgeworICAgIEBU
+          ZXN0CisgICAgZnVuIGFzc2lzdGFudExhbmVHZW9tZXRyeUFjY2VwdHNXaWRlTGVmdEFsaWduZWRS
+          ZXNwb25zZSgpIHsKKyAgICAgICAgYXNzZXJ0VHJ1ZShhc3Npc3RhbnRMaWtlQ29udHJvbEdlb21l
+          dHJ5VjY5KDAsIDEwODAsIDQwLCAxMDQwKSkKKyAgICB9CisKKyAgICBAVGVzdAorICAgIGZ1biBh
+          c3Npc3RhbnRMYW5lR2VvbWV0cnlSZWplY3RzUmlnaHRJbnNldFVzZXJCdWJibGUoKSB7CisgICAg
+          ICAgIGFzc2VydEZhbHNlKGFzc2lzdGFudExpa2VDb250cm9sR2VvbWV0cnlWNjkoMCwgMTA4MCwg
+          MjcwLCAxMDQwKSkKKyAgICB9CisKKyAgICBAVGVzdAorICAgIGZ1biBhc3Npc3RhbnRMYW5lR2Vv
+          bWV0cnlSZWplY3RzTmFycm93TGVmdENvbnRyb2woKSB7CisgICAgICAgIGFzc2VydEZhbHNlKGFz
+          c2lzdGFudExpa2VDb250cm9sR2VvbWV0cnlWNjkoMCwgMTA4MCwgNDAsIDQwMCkpCisgICAgfQor
+          CisgICAgQFRlc3QKKyAgICBmdW4gc3RyaWN0RmxhdHRlbmVkUm91dGVJc1JlY29nbml6ZWQoKSB7
+          CisgICAgICAgIHZhbCB0ZXh0ID0gIlJPVVRFX1RBU0sgUFJPSkVDVF9JRDogU01UIFJPVVRFX0lE
+          OiBDUDA2OC1FMkUtMDQtMDAxIEZST006IDAwIFRBUkdFVDogMDQgT0JKRUNUSVZFOiBSZXBseSBl
+          eGFjdGx5LiBSRVRVUk5fVE86IDAwIEVORF9ST1VURV9UQVNLIgorICAgICAgICBhc3NlcnRFcXVh
+          bHMoIlJPVVRFX1RBU0siLCBjbGFzc2lmeU1hbmFnZXJDb250cm9sVGV4dFY2OSh0ZXh0KSkKKyAg
+          ICB9CisKKyAgICBAVGVzdAorICAgIGZ1biBzdXJyb3VuZGluZ1Byb3NlSXNOb3RSZWNvZ25pemVk
+          QXNNYW5hZ2VyQ29udHJvbCgpIHsKKyAgICAgICAgdmFsIHRleHQgPSAiUGxlYXNlIHJldHVybiB0
+          aGlzOiBST1VURV9UQVNLIFBST0pFQ1RfSUQ6IFNNVCBST1VURV9JRDogQ1AwNjgtRTJFLTA0LTAw
+          MSBGUk9NOiAwMCBUQVJHRVQ6IDA0IFJFVFVSTl9UTzogMDAgRU5EX1JPVVRFX1RBU0siCisgICAg
+          ICAgIGFzc2VydE51bGwoY2xhc3NpZnlNYW5hZ2VyQ29udHJvbFRleHRWNjkodGV4dCkpCisgICAg
+          fQorfQo=
+          PATCH069_B64
+          base64 -d /tmp/069.patch.b64 > /tmp/069.patch
+          printf '%s  %s\n' 'fc1c7524e88c52717000b37734b99bc7cd830872151812ea89ce0ec7e5f5d1e8' '/tmp/069.patch' | sha256sum -c -
+          git apply --check /tmp/069.patch
+          git apply /tmp/069.patch
+          git diff --check
+          echo '069 isolated patch apply: PASS' >> 069-verification-report.txt
+
+      - name: Verify 069 scope and invariants
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PYSCOPE'
+          from pathlib import Path
+          import hashlib,json
+          base=json.loads(Path('069-baseline-source-manifest.json').read_text())
+          current={}
+          for p in sorted(Path('app').rglob('*')):
+              if p.is_file() and not p.as_posix().startswith('app/build/'):
+                  current[p.as_posix()]=hashlib.sha256(p.read_bytes()).hexdigest()
+          allowed={
+              'app/build.gradle.kts',
+              'app/src/main/kotlin/ai/closepaw/app/ChatGptProjectAdapterV58.kt',
+              'app/src/main/kotlin/ai/closepaw/app/ProjectOrchestratorV58.kt',
+              'app/src/main/res/values/strings.xml',
+              'app/src/test/kotlin/ai/closepaw/app/ChatGptProjectAdapterV69Test.kt',
+          }
+          changed={k for k in set(base)|set(current) if base.get(k)!=current.get(k)}
+          if changed != allowed:
+              raise SystemExit(f'069 isolation mismatch unexpected={sorted(changed-allowed)} missing={sorted(allowed-changed)}')
+          a=Path('app/src/main/kotlin/ai/closepaw/app/ChatGptProjectAdapterV58.kt').read_text()
+          o=Path('app/src/main/kotlin/ai/closepaw/app/ProjectOrchestratorV58.kt').read_text()
+          checks={
+              'assistant geometry gate': 'assistantLikeControlGeometryV69' in a,
+              'strict control classifier': 'classifyManagerControlTextV69' in a,
+              'visible strict control fallback': 'latestManagerControlCandidateAtBottomV69' in a,
+              'user surrounding prose still strict': 'ProjectOrchestratorProtocolV58.routes(text)' in a,
+              'missing chrome is deferred': 'MANAGER_SCAN_DEFERRED_V69' in o and 'Newest manager assistant response is structurally unavailable' not in o,
+              'route transaction priority retained': 'val runnable = store.runnableRoutes(limit = 12)' in o and 'Only an idle router may observe a manager' in o,
+              'marker wrap recovery retained': 'correlationMarkerMatchesV65' in a,
+              'version 069': 'versionNameSuffix = "-rc11-c069"' in Path('app/build.gradle.kts').read_text(),
+              'label 069': 'ClosePaw RC11 069' in Path('app/src/main/res/values/strings.xml').read_text(),
+          }
+          bad=[k for k,v in checks.items() if not v]
+          if bad: raise SystemExit(f'069 invariant audit failed: {bad}')
+          Path('069-postpatch-source-manifest.json').write_text(json.dumps(current,indent=2,sort_keys=True)+'\n')
+          sha=hashlib.sha256(Path('069-postpatch-source-manifest.json').read_bytes()).hexdigest()
+          Path('069-postpatch-manifest-sha256.txt').write_text(sha+'  069-postpatch-source-manifest.json\n')
+          print('069 scope/invariant audit: PASS',sha)
+          with Path('069-verification-report.txt').open('a') as f: f.write(f'069 postpatch source manifest SHA-256: {sha}\n')
+          PYSCOPE
+
+      - name: Full clean compile tests and assemble 069
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./gradlew clean :app:compileDebugKotlin :app:testDebugUnitTest :app:assembleDebug --stacktrace --no-daemon --no-configuration-cache
+          echo '069 clean compile + full unit tests + assemble: PASS' >> 069-verification-report.txt
+
+      - name: Verify post-test source identity and APK identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PYPOST'
+          from pathlib import Path
+          import hashlib,json
+          expected=json.loads(Path('069-postpatch-source-manifest.json').read_text())
+          current={}
+          for p in sorted(Path('app').rglob('*')):
+              if p.is_file() and not p.as_posix().startswith('app/build/'):
+                  current[p.as_posix()]=hashlib.sha256(p.read_bytes()).hexdigest()
+          if current != expected: raise SystemExit('069 production source changed during build/tests')
+          print('069 post-test source identity: PASS')
+          PYPOST
+          APK="$(find app/build/outputs/apk/debug -type f -name '*.apk' -print -quit)"
+          [ -n "$APK" ] || { echo '069 APK missing' >&2; exit 1; }
+          BUILD_TOOLS="$(find "$ANDROID_HOME/build-tools" -mindepth 1 -maxdepth 1 -type d | sort -V | tail -1)"
+          "$BUILD_TOOLS/aapt" dump badging "$APK" > 069-apk-badging.txt
+          grep -q "package: name='ai.closepaw.rc11c058'" 069-apk-badging.txt
+          grep -q "versionName='0.1.0-rc11-c069'" 069-apk-badging.txt
+          grep -q "application-label:'ClosePaw RC11 069'" 069-apk-badging.txt
+          "$BUILD_TOOLS/apksigner" verify --verbose --print-certs "$APK" > 069-apksigner.txt
+          sha256sum "$APK" > 069-apk-sha256.txt
+          cp "$APK" ClosePaw-0.1.0-rc11-c069-debug.apk
+          echo '069 APK identity/signature: PASS' >> 069-verification-report.txt
+
+      - name: Package verified 069 full source
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf /tmp/069-full-source
+          mkdir -p /tmp/069-full-source
+          rsync -a --exclude='.git' --exclude='.github' --exclude='app/build' --exclude='*.apk' ./ /tmp/069-full-source/
+          test -f /tmp/069-full-source/069-postpatch-source-manifest.json
+          echo '069 full source package prepared: PASS' >> 069-verification-report.txt
+
+      - name: Upload 069 verification proof
+        uses: actions/upload-artifact@v4
+        with:
+          name: 069-ClosePaw-RC11-verification-proof
+          path: |
+            069-verification-report.txt
+            069-postpatch-source-manifest.json
+            069-postpatch-manifest-sha256.txt
+            069-apk-badging.txt
+            069-apksigner.txt
+            069-apk-sha256.txt
+          if-no-files-found: error
+
+      - name: Upload 069 verified full source
+        uses: actions/upload-artifact@v4
+        with:
+          name: 069-ClosePaw-RC11-verified-full-source
+          path: /tmp/069-full-source/
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Upload 069 APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: 069-ClosePaw-RC11-APK
+          path: ClosePaw-0.1.0-rc11-c069-debug.apk
+          if-no-files-found: error
