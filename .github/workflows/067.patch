@@ -1,0 +1,329 @@
+diff --git a/app/build.gradle.kts b/app/build.gradle.kts
+index fe66bbe..010a74c 100644
+--- a/app/build.gradle.kts
++++ b/app/build.gradle.kts
+@@ -47,7 +47,7 @@ android {
+     buildTypes {
+         debug {
+     applicationIdSuffix = ".rc11c058"
+-    versionNameSuffix = "-rc11-c066"
++    versionNameSuffix = "-rc11-c067"
+ 
+     val evalSsl = project.findProperty("insecureSslForEval")?.toString()?.toBoolean() ?: false
+     buildConfigField("boolean", "INSECURE_SSL_FOR_EVAL", evalSsl.toString())
+diff --git a/app/src/main/kotlin/ai/closepaw/app/ChatGptProjectAdapterV58.kt b/app/src/main/kotlin/ai/closepaw/app/ChatGptProjectAdapterV58.kt
+index fd86f21..74e1db2 100644
+--- a/app/src/main/kotlin/ai/closepaw/app/ChatGptProjectAdapterV58.kt
++++ b/app/src/main/kotlin/ai/closepaw/app/ChatGptProjectAdapterV58.kt
+@@ -264,6 +264,19 @@ internal class ChatGptProjectAdapterV58(private val service: AgentService) {
+ 
+     suspend fun latestAssistantResponse(): String? = assistantMessageTexts().lastOrNull()
+ 
++    /**
++     * V67 manager authority is latest-turn only. Always settle at the conversation bottom before
++     * reading the newest structurally-grounded assistant turn. This deliberately removes the old
++     * bounded-history cursor search: manager polling must never depend on finding an old response
++     * in a long/virtualized chat.
++     */
++    suspend fun latestAssistantResponseAtBottomV67(maxForwardScrolls: Int = 12): String? {
++        scrollToBottom(maxForwardScrolls)
++        delay(180)
++        if (isGenerating()) return null
++        return latestAssistantResponse()?.trim()?.takeIf { it.isNotBlank() }
++    }
++
+     /**
+      * Non-authoritative manager change detector. Unlike the old last-response fingerprint, this
+      * covers the whole visible conversation surface, so a newly rendered assistant turn cannot be
+diff --git a/app/src/main/kotlin/ai/closepaw/app/ProjectOrchestratorV58.kt b/app/src/main/kotlin/ai/closepaw/app/ProjectOrchestratorV58.kt
+index 460ce6e..46f8c93 100644
+--- a/app/src/main/kotlin/ai/closepaw/app/ProjectOrchestratorV58.kt
++++ b/app/src/main/kotlin/ai/closepaw/app/ProjectOrchestratorV58.kt
+@@ -249,195 +249,119 @@ internal class ProjectOrchestratorV58(private val service: AgentService) {
+                 trace("MANAGER_SCAN_START", "project=${project.projectId} chat=${manager.chatTitle}")
+                 val navigationReceipt = ui.openConversation(manager.chatTitle)
+                 trace("MANAGER_NAV_OK", "project=${project.projectId}|${navigationReceipt.compact()}")
+-                // V66 quiet detector hashes the whole visible, non-editable ChatGPT conversation
+-                // surface. It is optimization metadata only: uncertainty NEVER means unchanged.
+-                // A periodic structural assistant-response audit also prevents a detector defect
+-                // from suppressing manager work indefinitely.
++                // V67 authority rule: process only the newest structurally-grounded assistant turn.
++                // Never walk manager history to rediscover an old cursor. Long/virtualized chats made
++                // that boundary unstable and caused false MANAGER_CURSOR_GAP failures. Route/control
++                // IDs plus the durable latest-response cursor provide idempotency without replay scans.
+                 if (ui.isGenerating()) {
+                     trace("MANAGER_SCAN_DEFER_GENERATING", "project=${project.projectId}")
+                     return
+                 }
+-                val surfaceHashA = ui.managerSurfaceFingerprintV66()
+-                delay(350)
+-                if (ui.isGenerating()) {
+-                    trace("MANAGER_SCAN_DEFER_GENERATING", "project=${project.projectId}")
+-                    return
+-                }
+-                val surfaceHashB = ui.managerSurfaceFingerprintV66()
+-                val surfaceStable = surfaceHashA != null && surfaceHashA == surfaceHashB
+-                val surfaceHash = if (surfaceStable) surfaceHashB else null
+-                if (!surfaceStable) {
+-                    trace(
+-                        "MANAGER_SURFACE_UNCERTAIN",
+-                        "project=${project.projectId}|a=${surfaceHashA?.take(12) ?: "null"}|b=${surfaceHashB?.take(12) ?: "null"}",
+-                    )
+-                }
+ 
+-                // 065 and older stored raw/accessibility-dependent cursor hashes. Re-baseline once
+-                // into V66 canonical response identity before accepting new commands. This is
+-                // intentionally stale-replay-safe: anything already present at upgrade is history.
+-                val cursorInitialized = store.isManagerCursorInitialized(project.projectId)
+-                val cursorNeedsV66Migration = cursorInitialized && !store.isManagerCursorV66(project.projectId)
+-                if (!cursorInitialized || cursorNeedsV66Migration) {
+-                    val baselineProbe = ui.probeManagerBaseline()
+-                    val baseline = baselineProbe.latestExactResponse?.trim()?.takeIf { it.isNotBlank() }
+-                    if (baseline == null && !baselineProbe.historyStartProven) {
+-                        trace(
+-                            "MANAGER_BASELINE_DEFERRED",
+-                            "project=${project.projectId}|limit=${baselineProbe.historyLimitReached}|copy=${ui.responseCaptureDiagnosticsV63()}",
+-                        )
+-                        error("Manager baseline structural cursor unavailable within bounded history")
+-                    }
+-                    val canonicalHash = baseline?.let(::assistantResponseHashV66)
+-                    store.primeManagerCursor(project.projectId, canonicalHash, surfaceHash)
+-                    managerExactAuditAtByProject[project.projectId] = System.currentTimeMillis()
+-                    managerFailureByProject.remove(project.projectId)
++                val latest = ui.latestAssistantResponseAtBottomV67()
++                if (latest == null) {
+                     trace(
+-                        if (cursorNeedsV66Migration) "MANAGER_CURSOR_MIGRATED_V66" else "MANAGER_BASELINE_PRIMED",
+-                        "project=${project.projectId}|assistant=${if (canonicalHash == null) "empty-history-proven" else canonicalHash.take(16)}|surface=${surfaceHash?.take(12) ?: "uncertain"}|copy=${ui.responseCaptureDiagnosticsV63()}",
++                        "MANAGER_LATEST_UNAVAILABLE",
++                        "project=${project.projectId}|copy=${ui.responseCaptureDiagnosticsV63()}",
+                     )
+-                    return
++                    error("Newest manager assistant response is structurally unavailable at conversation bottom")
+                 }
+ 
++                val latestHash = assistantResponseHashV66(latest)
++                val cursorInitialized = store.isManagerCursorInitialized(project.projectId)
+                 val cursor = store.managerResponseCursor(project.projectId)
+-                val priorSurfaceHash = store.managerSurfaceCursor(project.projectId)
+-                val exactAuditDue =
+-                    System.currentTimeMillis() - (managerExactAuditAtByProject[project.projectId] ?: 0L) >=
+-                        MANAGER_EXACT_AUDIT_INTERVAL_MS
+ 
+-                if (surfaceHash != null && priorSurfaceHash != null && surfaceHash == priorSurfaceHash && !exactAuditDue) {
++                if (!cursorInitialized) {
++                    // First activation on a fresh install is stale-replay-safe: establish the newest
++                    // existing assistant turn as baseline and wait for a genuinely newer turn.
++                    store.primeManagerCursor(project.projectId, latestHash, null)
+                     managerFailureByProject.remove(project.projectId)
+-                    trace("MANAGER_SCAN_UNCHANGED", "project=${project.projectId}|surface=v66")
++                    trace(
++                        "MANAGER_BASELINE_PRIMED_V67",
++                        "project=${project.projectId}|assistant=${latestHash.take(16)}",
++                    )
+                     return
+                 }
+ 
+-                // Cheap structural audit: no click/clipboard/history scroll. If the newest grounded
+-                // assistant turn still equals the durable cursor, absorb harmless surface changes
+-                // (for example the user's prompt appearing before the assistant answer) and stay quiet.
+-                val latestGrounded = ui.latestAssistantResponse()?.trim()?.takeIf { it.isNotBlank() }
+-                val latestGroundedHash = latestGrounded?.let(::assistantResponseHashV66)
+-                if (latestGroundedHash == cursor || (cursor == null && latestGrounded == null)) {
+-                    if (surfaceHash != null) store.setManagerSurfaceCursor(project.projectId, surfaceHash)
+-                    managerExactAuditAtByProject[project.projectId] = System.currentTimeMillis()
++                if (latestHash == cursor) {
+                     managerFailureByProject.remove(project.projectId)
+-                    trace(
+-                        "MANAGER_SCAN_UNCHANGED",
+-                        "project=${project.projectId}|latest=v66|surface=${if (surfaceHash != null) "updated" else "uncertain"}",
+-                    )
++                    trace("MANAGER_SCAN_UNCHANGED", "project=${project.projectId}|latest=v67")
+                     return
+                 }
+ 
+                 trace(
+-                    "MANAGER_RESPONSE_CHANGE_CANDIDATE",
+-                    "project=${project.projectId}|cursor=${cursor?.take(16) ?: "empty"}|latest=${latestGroundedHash?.take(16) ?: "unavailable"}|surface=${surfaceHash?.take(12) ?: "uncertain"}",
++                    "MANAGER_LATEST_CHANGED_V67",
++                    "project=${project.projectId}|cursor=${cursor?.take(16) ?: "empty"}|latest=${latestHash.take(16)}",
+                 )
+ 
+-                // Structural assistant-response scan is authoritative. It uses response-action
+-                // containers and V66 canonical hashes; if the durable cursor cannot be proven,
+-                // fail closed rather than skip an unknown manager-history gap.
+-                val scan = ui.copyAssistantResponsesAfter(cursorHash = cursor)
+-                if (!scan.boundaryFound) {
+-                    // A cursor gap is a real scan failure. Authority cannot advance across an
+-                    // unproven history boundary, and repeated gaps must hit the same bounded
+-                    // fail-closed policy as navigation/copy failures.
+-                    trace(
+-                        "MANAGER_CURSOR_GAP",
+-                        "project=${project.projectId}|cursor=${cursor?.take(16) ?: "empty"}|limit=${scan.historyLimitReached}",
+-                    )
+-                    error("Manager exact response cursor boundary unavailable")
+-                }
+-
+-                if (scan.responsesOldestFirst.isEmpty()) {
+-                    if (surfaceHash != null) store.setManagerSurfaceCursor(project.projectId, surfaceHash)
+-                    managerExactAuditAtByProject[project.projectId] = System.currentTimeMillis()
+-                    managerFailureByProject.remove(project.projectId)
+-                    trace("MANAGER_SCAN_UNCHANGED", "project=${project.projectId}|exact=v66")
+-                    return
+-                }
+-
+-                for (message in scan.responsesOldestFirst) {
+-                    currentCoroutineContext().ensureActive()
+-                    val managerResponseHash = assistantResponseHashV66(message)
+-
+-                    val controlPlanePayload = controlPlanePayload(message)
+-                    val isControlPlaneResponse =
+-                        controlPlanePayload != null && !message.contains("RESULT_FROM_AGENT")
+-                    if (isControlPlaneResponse) {
+-                        // Topology mutation is privileged and deliberately single-operation.
+-                        // Atomic batches can be added later with an explicit batch protocol; do not
+-                        // partially apply several manager-authored mutations from one response.
+-                        val trustedControlPayload = requireNotNull(controlPlanePayload)
+-                        val manifests = ProjectOrchestratorProtocolV58.manifests(trustedControlPayload)
+-                            .filter { it.projectId == project.projectId }
+-                        val updates = ProjectOrchestratorProtocolV58.updates(trustedControlPayload)
+-                            .filter { it.projectId == project.projectId }
+-                        if (manifests.size + updates.size != 1) {
+-                            trace(
+-                                "CONTROL_PLANE_REJECTED",
+-                                "project=${project.projectId}|reason=expected_exactly_one_topology_block|manifests=${manifests.size}|updates=${updates.size}",
+-                            )
+-                        } else if (manifests.size == 1) {
+-                            runCatching { store.applyManifest(manifests.single()) }
+-                                .onSuccess { changed -> if (changed) trace("MANIFEST_APPLIED", "project=${project.projectId} v=${manifests.single().version}") }
+-                                .onFailure { trace("MANIFEST_REJECTED", "project=${project.projectId} error=${it.message}") }
+-                        } else {
+-                            runCatching { store.applyUpdate(updates.single()) }
+-                                .onSuccess { changed -> if (changed) trace("UPDATE_APPLIED", "project=${project.projectId} op=${updates.single().op} v=${updates.single().newVersion}") }
+-                                .onFailure { trace("UPDATE_REJECTED", "project=${project.projectId} error=${it.message}") }
+-                        }
+-                    } else {
+-                        val parsedRoutes = ProjectOrchestratorProtocolV58.routes(message)
++                currentCoroutineContext().ensureActive()
++                val managerResponseHash = latestHash
++                val controlPlanePayload = controlPlanePayload(latest)
++                val isControlPlaneResponse =
++                    controlPlanePayload != null && !latest.contains("RESULT_FROM_AGENT")
++
++                if (isControlPlaneResponse) {
++                    val trustedControlPayload = requireNotNull(controlPlanePayload)
++                    val manifests = ProjectOrchestratorProtocolV58.manifests(trustedControlPayload)
++                        .filter { it.projectId == project.projectId }
++                    val updates = ProjectOrchestratorProtocolV58.updates(trustedControlPayload)
++                        .filter { it.projectId == project.projectId }
++                    if (manifests.size + updates.size != 1) {
+                         trace(
+-                            "MANAGER_RESPONSE_PARSED",
+-                            "project=${project.projectId}|sha=${managerResponseHash.take(16)}|routes=${parsedRoutes.size}|chars=${message.length}",
++                            "CONTROL_PLANE_REJECTED",
++                            "project=${project.projectId}|reason=expected_exactly_one_topology_block|manifests=${manifests.size}|updates=${updates.size}",
+                         )
+-                        parsedRoutes.forEach { parsed ->
+-                            try {
+-                                val discovered = store.discoverRoute(project, parsed, manager)
+-                                trace("ROUTE_DISCOVERED", routeTag(discovered))
+-                            } catch (t: Throwable) {
+-                                trace("ROUTE_REJECTED", "project=${project.projectId} route=${parsed.routeId} error=${t.message}")
+-                            }
++                    } else if (manifests.size == 1) {
++                        runCatching { store.applyManifest(manifests.single()) }
++                            .onSuccess { changed -> if (changed) trace("MANIFEST_APPLIED", "project=${project.projectId} v=${manifests.single().version}") }
++                            .onFailure { trace("MANIFEST_REJECTED", "project=${project.projectId} error=${it.message}") }
++                    } else {
++                        runCatching { store.applyUpdate(updates.single()) }
++                            .onSuccess { changed -> if (changed) trace("UPDATE_APPLIED", "project=${project.projectId} op=${updates.single().op} v=${updates.single().newVersion}") }
++                            .onFailure { trace("UPDATE_REJECTED", "project=${project.projectId} error=${it.message}") }
++                    }
++                } else {
++                    val parsedRoutes = ProjectOrchestratorProtocolV58.routes(latest)
++                    trace(
++                        "MANAGER_RESPONSE_PARSED",
++                        "project=${project.projectId}|sha=${managerResponseHash.take(16)}|routes=${parsedRoutes.size}|chars=${latest.length}|mode=latest-v67",
++                    )
++                    parsedRoutes.forEach { parsed ->
++                        try {
++                            val discovered = store.discoverRoute(project, parsed, manager)
++                            trace("ROUTE_DISCOVERED", routeTag(discovered))
++                        } catch (t: Throwable) {
++                            trace("ROUTE_REJECTED", "project=${project.projectId} route=${parsed.routeId} error=${t.message}")
+                         }
+                     }
++                }
+ 
+-                    // Advance only after this exact response has been deterministically handled.
+-                    // If cancellation/crash occurs before this write, route/control idempotency
+-                    // makes reprocessing safe on restart. A control-plane mutation may deliberately
+-                    // clear the manager cursor when it changes the authority boundary; never write an
+-                    // old-manager cursor back into the new manager chat.
+-                    if (isControlPlaneResponse) {
+-                        val reboundProject = store.project(project.projectId)
+-                        val reboundManager = reboundProject?.let {
+-                            store.agent(project.projectId, it.managerAgentId)
+-                        }
+-                        val sameAuthorityBoundary =
+-                            reboundProject?.enabled == true &&
+-                                reboundProject.managerAgentId == manager.agentId &&
+-                                reboundManager?.enabled == true &&
+-                                reboundManager.chatTitle == manager.chatTitle
+-                        if (sameAuthorityBoundary) {
+-                            store.setManagerResponseCursor(project.projectId, managerResponseHash)
+-                            trace("MANAGER_RESPONSE_COMMITTED", "project=${project.projectId}|sha=${managerResponseHash.take(16)}")
+-                        } else {
+-                            trace("MANAGER_CURSOR_REBOUND", "project=${project.projectId}|oldManager=${manager.agentId}")
+-                        }
+-                        // Any topology command can change the authority boundary (manager,
+-                        // manager chat, enabled state, or registry membership). Never continue
+-                        // consuming a backlog under the stale ProjectRecord/manager snapshot.
+-                        // Re-enter on the next scan and resolve the authority boundary fresh.
+-                        trace("MANAGER_SCAN_REBIND_AFTER_CONTROL", "project=${project.projectId}")
+-                        return
+-                    } else {
++                // Commit this latest turn only after deterministic handling. If a crash occurs before
++                // this write, route/control idempotency safely absorbs a retry. No historical scan is
++                // required on restart.
++                if (isControlPlaneResponse) {
++                    val reboundProject = store.project(project.projectId)
++                    val reboundManager = reboundProject?.let { store.agent(project.projectId, it.managerAgentId) }
++                    val sameAuthorityBoundary =
++                        reboundProject?.enabled == true &&
++                            reboundProject.managerAgentId == manager.agentId &&
++                            reboundManager?.enabled == true &&
++                            reboundManager.chatTitle == manager.chatTitle
++                    if (sameAuthorityBoundary) {
+                         store.setManagerResponseCursor(project.projectId, managerResponseHash)
+-                        trace("MANAGER_RESPONSE_COMMITTED", "project=${project.projectId}|sha=${managerResponseHash.take(16)}")
++                        trace("MANAGER_RESPONSE_COMMITTED", "project=${project.projectId}|sha=${managerResponseHash.take(16)}|mode=v67")
++                    } else {
++                        trace("MANAGER_CURSOR_REBOUND", "project=${project.projectId}|oldManager=${manager.agentId}")
+                     }
++                    trace("MANAGER_SCAN_REBIND_AFTER_CONTROL", "project=${project.projectId}")
++                    return
++                } else {
++                    store.setManagerResponseCursor(project.projectId, managerResponseHash)
++                    trace("MANAGER_RESPONSE_COMMITTED", "project=${project.projectId}|sha=${managerResponseHash.take(16)}|mode=v67")
+                 }
+ 
+-                if (surfaceHash != null) store.setManagerSurfaceCursor(project.projectId, surfaceHash)
+-                managerExactAuditAtByProject[project.projectId] = System.currentTimeMillis()
+                 managerFailureByProject.remove(project.projectId)
+-                trace("MANAGER_SCAN_DONE", "project=${project.projectId}|responses=${scan.responsesOldestFirst.size}|cursor=v66")
++                trace("MANAGER_SCAN_DONE", "project=${project.projectId}|responses=1|cursor=v67")
+         } catch (cancel: CancellationException) {
+             throw cancel
+         } catch (t: Throwable) {
+diff --git a/app/src/main/res/values/strings.xml b/app/src/main/res/values/strings.xml
+index 33f84d1..aeca3b3 100644
+--- a/app/src/main/res/values/strings.xml
++++ b/app/src/main/res/values/strings.xml
+@@ -1,5 +1,5 @@
+ <?xml version="1.0" encoding="utf-8"?>
+ <resources>
+-    <string name="app_name">ClosePaw RC11 066</string>
++    <string name="app_name">ClosePaw RC11 067</string>
+     <string name="accessibility_service_description">ClosePaw is an on-device automation agent. With your permission, it reads on-screen elements and performs taps, swipes, and text input when you start a task or enable Project Router. Project Router may continue coordinating configured ChatGPT conversations until you stop it.</string>
+ </resources>
