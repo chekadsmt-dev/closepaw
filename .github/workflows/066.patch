@@ -1,0 +1,622 @@
+diff --git a/app/build.gradle.kts b/app/build.gradle.kts
+index 3b56c9b..fe66bbe 100644
+--- a/app/build.gradle.kts
++++ b/app/build.gradle.kts
+@@ -47,7 +47,7 @@ android {
+     buildTypes {
+         debug {
+     applicationIdSuffix = ".rc11c058"
+-    versionNameSuffix = "-rc11-c065"
++    versionNameSuffix = "-rc11-c066"
+ 
+     val evalSsl = project.findProperty("insecureSslForEval")?.toString()?.toBoolean() ?: false
+     buildConfigField("boolean", "INSECURE_SSL_FOR_EVAL", evalSsl.toString())
+diff --git a/app/src/main/kotlin/ai/closepaw/app/ChatGptProjectAdapterV58.kt b/app/src/main/kotlin/ai/closepaw/app/ChatGptProjectAdapterV58.kt
+index ab8a137..fd86f21 100644
+--- a/app/src/main/kotlin/ai/closepaw/app/ChatGptProjectAdapterV58.kt
++++ b/app/src/main/kotlin/ai/closepaw/app/ChatGptProjectAdapterV58.kt
+@@ -58,6 +58,29 @@ internal fun correlationMarkerMatchesV65(text: String, marker: String): Boolean
+     return compactText.contains(compactMarker)
+ }
+ 
++/**
++ * V66 cursor identity deliberately ignores transport-only whitespace differences introduced by
++ * Android/Compose wrapping, while preserving every substantive character.  This is a hash
++ * canonicalization rule only; protocol parsing still runs against the original response text.
++ */
++internal fun canonicalAssistantResponseV66(text: String): String =
++    text.replace('\u00a0', ' ').replace(Regex("\\s+"), " ").trim()
++
++internal fun assistantResponseHashV66(text: String): String =
++    ProjectOrchestratorProtocolV58.sha256(canonicalAssistantResponseV66(text))
++
++internal fun managerSurfaceHashV66(lines: List<String>): String? {
++    val canonical = lines
++        .map { it.replace('\u00a0', ' ').replace(Regex("\\s+"), " ").trim() }
++        .filter { it.isNotBlank() }
++        .fold(mutableListOf<String>()) { out, value ->
++            if (out.lastOrNull() != value) out += value
++            out
++        }
++    if (canonical.isEmpty()) return null
++    return ProjectOrchestratorProtocolV58.sha256(canonical.joinToString("\n"))
++}
++
+ internal data class ManagerBaselineProbeV60(
+     val latestExactResponse: String?,
+     val historyStartProven: Boolean,
+@@ -223,18 +246,48 @@ internal class ChatGptProjectAdapterV58(private val service: AgentService) {
+         )
+     }
+ 
+-    fun assistantResponseControlCount(): Int = collectResponseCopyControls().size
++    fun assistantResponseControlCount(): Int = collectAssistantMessageSnapshotsV66().size
+ 
+     fun assistantMessageFingerprints(): List<String> =
+-        assistantMessageTexts().map(ProjectOrchestratorProtocolV58::sha256)
++        assistantMessageTexts().map(::assistantResponseHashV66)
+ 
+-    fun assistantMessageTexts(): List<String> {
+-        val root = focusedRootOrNull() ?: return emptyList()
+-        val copyControls = collectResponseCopyControls()
+-        return copyControls.sortedBy(::nodeTop).mapNotNull(::messageTextForCopyControl).filter { it.isNotBlank() }
+-    }
++    fun assistantMessageTexts(): List<String> = collectAssistantMessageSnapshotsV66()
++        .sortedBy { it.top }
++        .map { it.text }
++        .fold(mutableListOf<String>()) { out, text ->
++            // Compose can expose both Copy-grounded and toolbar-grounded anchors for the same
++            // assistant turn. Deduplicate only adjacent identical canonical responses so two
++            // genuinely repeated turns remain distinguishable when separated by another turn.
++            if (out.lastOrNull()?.let(::assistantResponseHashV66) != assistantResponseHashV66(text)) out += text
++            out
++        }
+ 
+-    suspend fun latestAssistantResponse(): String? = copyVisibleAssistantResponseFromBottom(0)
++    suspend fun latestAssistantResponse(): String? = assistantMessageTexts().lastOrNull()
++
++    /**
++     * Non-authoritative manager change detector. Unlike the old last-response fingerprint, this
++     * covers the whole visible conversation surface, so a newly rendered assistant turn cannot be
++     * hidden by stale/virtualized response controls. Uncertainty returns null and callers must
++     * fall through to an exact structural response scan rather than assume unchanged.
++     */
++    fun managerSurfaceFingerprintV66(): String? {
++        val root = focusedRootOrNull() ?: return null
++        val lines = mutableListOf<String>()
++        walk(root) { node ->
++            if (!node.isVisibleToUser || node.packageName?.toString() != CHATGPT_PACKAGE) return@walk
++            if (isTextInputNode(node) || hasEditableAncestor(node)) return@walk
++            listOfNotNull(node.text?.toString(), node.contentDescription?.toString()).forEach { raw ->
++                val value = raw.replace('\u00a0', ' ').replace(Regex("\\s+"), " ").trim()
++                if (value.isBlank()) return@forEach
++                if (CHROME_LABELS.any { value.equals(it, ignoreCase = true) }) return@forEach
++                if (NAV_LABELS.any { value.equals(it, ignoreCase = true) }) return@forEach
++                if (SEARCH_LABELS.any { value.equals(it, ignoreCase = true) }) return@forEach
++                if (SEND_LABELS.any { value.equals(it, ignoreCase = true) }) return@forEach
++                if (lines.lastOrNull() != value) lines += value
++            }
++        }
++        return managerSurfaceHashV66(lines)
++    }
+ 
+     /**
+      * Establish activation baseline without treating "no Copy control at the bottom" as proof that
+@@ -245,18 +298,12 @@ internal class ChatGptProjectAdapterV58(private val service: AgentService) {
+         var scrolls = 0
+         try {
+             while (true) {
+-                val visibleCount = collectResponseCopyControls().size
+-                for (indexFromBottom in 0 until visibleCount) {
+-                    val response = copyVisibleAssistantResponseFromBottom(indexFromBottom)
+-                        ?.trim()
+-                        ?.takeIf { it.isNotBlank() }
+-                    if (response != null) {
+-                        return ManagerBaselineProbeV60(
+-                            latestExactResponse = response,
+-                            historyStartProven = false,
+-                            historyLimitReached = false,
+-                        )
+-                    }
++                assistantMessageTexts().lastOrNull()?.trim()?.takeIf { it.isNotBlank() }?.let { response ->
++                    return ManagerBaselineProbeV60(
++                        latestExactResponse = response,
++                        historyStartProven = false,
++                        historyLimitReached = false,
++                    )
+                 }
+ 
+                 val movedBackward = scrollConversation(forward = false)
+@@ -278,7 +325,7 @@ internal class ChatGptProjectAdapterV58(private val service: AgentService) {
+                 delay(250)
+             }
+         } finally {
+-            scrollToBottom(maxBackwardScrolls + 3)
++            if (scrolls > 0) scrollToBottom(maxBackwardScrolls + 3)
+         }
+     }
+ 
+@@ -294,32 +341,34 @@ internal class ChatGptProjectAdapterV58(private val service: AgentService) {
+         maxBackwardScrolls: Int = 2,
+     ): String? {
+         require(marker.isNotBlank())
++        var scrolls = 0
+         try {
+             repeat(maxBackwardScrolls + 1) { pass ->
+-                val controls = collectResponseCopyControls().sortedBy(::nodeTop)
+-                for (control in controls.asReversed()) {
+-                    val candidate = messageTextForCopyControl(control) ?: continue
++                val snapshots = collectAssistantMessageSnapshotsV66().sortedBy { it.top }
++                for (snapshot in snapshots.asReversed()) {
++                    val candidate = snapshot.text.trim()
+                     if (!correlationMarkerMatchesV65(candidate, marker)) continue
+-                    val copied = copyResponseControl(control)?.trim()
+-                    if (!copied.isNullOrBlank() && correlationMarkerMatchesV65(copied, marker)) {
+-                        lastAssistantCaptureSourceV63 = "clipboard"
+-                        return copied
++                    val control = snapshot.copyControl
++                    if (control != null) {
++                        val copied = copyResponseControl(control)?.trim()
++                        if (!copied.isNullOrBlank() && correlationMarkerMatchesV65(copied, marker)) {
++                            lastAssistantCaptureSourceV63 = "clipboard"
++                            return copied
++                        }
+                     }
+-                    // Android 16 / current ChatGPT builds may execute Copy while denying the
+-                    // background accessibility service a readable clipboard receipt.  The control
+-                    // is already structurally proven to be the assistant-turn Copy (not code-block
+-                    // Copy), and candidate is scoped to that exact assistant response container.
+-                    // Whole-response protocol parsing remains fail-closed downstream.
+-                    lastAssistantCaptureSourceV63 = "accessibility-grounded"
++                    // The response-action toolbar structurally proves this is an assistant turn;
++                    // whole-response protocol/correlation checks remain fail-closed downstream.
++                    lastAssistantCaptureSourceV63 = "accessibility-grounded-v66"
+                     return candidate
+                 }
+                 if (pass >= maxBackwardScrolls) return@repeat
+                 if (!scrollConversation(forward = false)) return@repeat
++                scrolls++
+                 delay(250)
+             }
+             return null
+         } finally {
+-            scrollToBottom(maxBackwardScrolls + 3)
++            if (scrolls > 0) scrollToBottom(maxBackwardScrolls + 3)
+         }
+     }
+ 
+@@ -344,13 +393,10 @@ internal class ChatGptProjectAdapterV58(private val service: AgentService) {
+ 
+         try {
+             while (true) {
+-                val visibleCount = collectResponseCopyControls().size
+-                for (indexFromBottom in 0 until visibleCount) {
+-                    val response = copyVisibleAssistantResponseFromBottom(indexFromBottom)
+-                        ?.trim()
+-                        ?.takeIf { it.isNotBlank() }
+-                        ?: continue
+-                    val hash = ProjectOrchestratorProtocolV58.sha256(response)
++                val visible = assistantMessageTexts()
++                for (response in visible.asReversed()) {
++                    val trimmed = response.trim().takeIf { it.isNotBlank() } ?: continue
++                    val hash = assistantResponseHashV66(trimmed)
+                     if (hash == cursorHash) {
+                         return AssistantResponseScanV58(
+                             responsesOldestFirst = newestFirst.asReversed(),
+@@ -358,7 +404,7 @@ internal class ChatGptProjectAdapterV58(private val service: AgentService) {
+                             historyLimitReached = false,
+                         )
+                     }
+-                    if (seenHashes.add(hash)) newestFirst += response
++                    if (seenHashes.add(hash)) newestFirst += trimmed
+                     if (newestFirst.size >= maxResponses) {
+                         return AssistantResponseScanV58(
+                             responsesOldestFirst = emptyList(),
+@@ -370,8 +416,6 @@ internal class ChatGptProjectAdapterV58(private val service: AgentService) {
+ 
+                 val movedBackward = scrollConversation(forward = false)
+                 if (!movedBackward) {
+-                    // A null cursor is only used after an explicitly observed empty baseline,
+-                    // so reaching the beginning of history proves the lower boundary.
+                     val boundaryFound = cursorHash == null
+                     return AssistantResponseScanV58(
+                         responsesOldestFirst = if (boundaryFound) newestFirst.asReversed() else emptyList(),
+@@ -390,8 +434,6 @@ internal class ChatGptProjectAdapterV58(private val service: AgentService) {
+                 delay(250)
+             }
+         } finally {
+-            // Do not synthesize scrolls in the common case where the exact cursor was already
+-            // visible. Restore the latest-message surface only if this scan actually moved back.
+             if (scrolls > 0) scrollToBottom(maxBackwardScrolls + 3)
+         }
+     }
+@@ -606,6 +648,69 @@ internal class ChatGptProjectAdapterV58(private val service: AgentService) {
+         return out
+     }
+ 
++    private data class AssistantMessageSnapshotV66(
++        val containerKey: String,
++        val text: String,
++        val top: Int,
++        val copyControl: AccessibilityNodeInfo?,
++    )
++
++    private fun assistantContainerForCopyV66(copy: AccessibilityNodeInfo): AccessibilityNodeInfo? {
++        var current = copy.parent
++        repeat(8) {
++            val candidate = current ?: return null
++            if (countCopyResponseControls(candidate, limit = 2) == 1 && !containsEditableDescendant(candidate)) {
++                if (contentLines(candidate).isNotEmpty()) return candidate
++            }
++            current = candidate.parent
++        }
++        return null
++    }
++
++    private fun assistantContainerForChromeV66(anchor: AccessibilityNodeInfo): AccessibilityNodeInfo? {
++        var current = anchor.parent
++        repeat(9) {
++            val candidate = current ?: return null
++            if (!containsEditableDescendant(candidate)) {
++                val evidence = countExactLabels(candidate, RESPONSE_CHROME_EVIDENCE_LABELS, limit = 4)
++                if (evidence >= 2 && contentLines(candidate).isNotEmpty()) return candidate
++            }
++            current = candidate.parent
++        }
++        return null
++    }
++
++    private fun collectAssistantMessageSnapshotsV66(): List<AssistantMessageSnapshotV66> {
++        val root = focusedRootOrNull() ?: return emptyList()
++        val byContainer = linkedMapOf<String, AssistantMessageSnapshotV66>()
++
++        collectResponseCopyControls().forEach { control ->
++            val container = assistantContainerForCopyV66(control) ?: return@forEach
++            val text = contentLines(container).joinToString("\n").trim()
++            if (text.isBlank()) return@forEach
++            val key = nodeSignature(container)
++            byContainer[key] = AssistantMessageSnapshotV66(key, text, nodeTop(container), control)
++        }
++
++        val chromeNodes = mutableListOf<AccessibilityNodeInfo>()
++        walk(root) { node ->
++            if (node.isVisibleToUser && node.packageName?.toString() == CHATGPT_PACKAGE &&
++                nodeMatchesExactLabel(node, RESPONSE_CHROME_EVIDENCE_LABELS)
++            ) chromeNodes += node
++        }
++        chromeNodes.forEach { anchorNode ->
++            val container = assistantContainerForChromeV66(anchorNode) ?: return@forEach
++            val text = contentLines(container).joinToString("\n").trim()
++            if (text.isBlank()) return@forEach
++            val key = nodeSignature(container)
++            val existing = byContainer[key]
++            if (existing == null) {
++                byContainer[key] = AssistantMessageSnapshotV66(key, text, nodeTop(container), null)
++            }
++        }
++        return byContainer.values.sortedBy { it.top }
++    }
++
+     private fun collectResponseCopyControls(): List<AccessibilityNodeInfo> {
+         val root = focusedRootOrNull() ?: return emptyList()
+         val out = mutableListOf<AccessibilityNodeInfo>()
+@@ -720,18 +825,8 @@ internal class ChatGptProjectAdapterV58(private val service: AgentService) {
+         return false
+     }
+ 
+-    private fun messageTextForCopyControl(copy: AccessibilityNodeInfo): String? {
+-        var current = copy.parent
+-        repeat(8) {
+-            val candidate = current ?: return null
+-            if (countCopyResponseControls(candidate, limit = 2) == 1 && !containsEditableDescendant(candidate)) {
+-                val lines = contentLines(candidate)
+-                if (lines.isNotEmpty()) return lines.joinToString("\n")
+-            }
+-            current = candidate.parent
+-        }
+-        return null
+-    }
++    private fun messageTextForCopyControl(copy: AccessibilityNodeInfo): String? =
++        assistantContainerForCopyV66(copy)?.let(::contentLines)?.takeIf { it.isNotEmpty() }?.joinToString("\n")
+ 
+     private fun containsEditableDescendant(root: AccessibilityNodeInfo): Boolean {
+         var found = false
+diff --git a/app/src/main/kotlin/ai/closepaw/app/ProjectOrchestratorStoreV58.kt b/app/src/main/kotlin/ai/closepaw/app/ProjectOrchestratorStoreV58.kt
+index e3fd9ab..4298275 100644
+--- a/app/src/main/kotlin/ai/closepaw/app/ProjectOrchestratorStoreV58.kt
++++ b/app/src/main/kotlin/ai/closepaw/app/ProjectOrchestratorStoreV58.kt
+@@ -184,6 +184,16 @@ internal class ProjectOrchestratorStoreV58(private val context: Context) :
+             null, null, null, "1",
+         ).use { c -> c.moveToFirst() && c.getString(0) == "1" }
+ 
++    @Synchronized
++    fun isManagerCursorV66(projectId: String): Boolean =
++        readableDatabase.query(
++            "router_meta",
++            arrayOf("meta_value"),
++            "meta_key = ?",
++            arrayOf("manager_cursor_format:$projectId"),
++            null, null, null, "1",
++        ).use { c -> c.moveToFirst() && c.getString(0) == "v66" }
++
+     @Synchronized
+     fun managerResponseCursor(projectId: String): String? =
+         readableDatabase.query(
+@@ -210,6 +220,7 @@ internal class ProjectOrchestratorStoreV58(private val context: Context) :
+                 putMetaInDb(db, "manager_surface_cursor:$projectId", surfaceHash)
+             }
+             putMetaInDb(db, "manager_cursor_initialized:$projectId", "1")
++            putMetaInDb(db, "manager_cursor_format:$projectId", "v66")
+             db.setTransactionSuccessful()
+         } finally {
+             db.endTransaction()
+@@ -223,6 +234,7 @@ internal class ProjectOrchestratorStoreV58(private val context: Context) :
+         try {
+             putMetaInDb(db, "manager_cursor:$projectId", responseHash)
+             putMetaInDb(db, "manager_cursor_initialized:$projectId", "1")
++            putMetaInDb(db, "manager_cursor_format:$projectId", "v66")
+             db.setTransactionSuccessful()
+         } finally {
+             db.endTransaction()
+@@ -736,11 +748,12 @@ internal class ProjectOrchestratorStoreV58(private val context: Context) :
+     private fun clearManagerResponseCursorInDb(db: SQLiteDatabase, projectId: String) {
+         db.delete(
+             "router_meta",
+-            "meta_key IN (?, ?, ?)",
++            "meta_key IN (?, ?, ?, ?)",
+             arrayOf(
+                 "manager_cursor:$projectId",
+                 "manager_surface_cursor:$projectId",
+                 "manager_cursor_initialized:$projectId",
++                "manager_cursor_format:$projectId",
+             ),
+         )
+     }
+diff --git a/app/src/main/kotlin/ai/closepaw/app/ProjectOrchestratorV58.kt b/app/src/main/kotlin/ai/closepaw/app/ProjectOrchestratorV58.kt
+index 036113d..460ce6e 100644
+--- a/app/src/main/kotlin/ai/closepaw/app/ProjectOrchestratorV58.kt
++++ b/app/src/main/kotlin/ai/closepaw/app/ProjectOrchestratorV58.kt
+@@ -25,6 +25,7 @@ internal class ProjectOrchestratorV58(private val service: AgentService) {
+         private const val TAG = "ProjectRouterV58"
+         private const val IDLE_POLL_MS = 2_500L
+         private const val MANAGER_SCAN_INTERVAL_MS = 12_000L
++        private const val MANAGER_EXACT_AUDIT_INTERVAL_MS = 120_000L
+         private const val RESPONSE_CHECK_WINDOW_MS = 10_000L
+         private const val RESPONSE_POLL_MS = 850L
+         private const val UI_CLICK_VERIFY_MS = 800L
+@@ -41,6 +42,7 @@ internal class ProjectOrchestratorV58(private val service: AgentService) {
+     private val directControlMutex = Mutex()
+     @Volatile private var workerJob: Job? = null
+     private val managerScanAtByProject = mutableMapOf<String, Long>()
++    private val managerExactAuditAtByProject = mutableMapOf<String, Long>()
+     private val managerFailureByProject = mutableMapOf<String, Pair<String, Int>>()
+ 
+     val isRunning: Boolean
+@@ -247,44 +249,36 @@ internal class ProjectOrchestratorV58(private val service: AgentService) {
+                 trace("MANAGER_SCAN_START", "project=${project.projectId} chat=${manager.chatTitle}")
+                 val navigationReceipt = ui.openConversation(manager.chatTitle)
+                 trace("MANAGER_NAV_OK", "project=${project.projectId}|${navigationReceipt.compact()}")
+-                // Accessibility fingerprints are a non-authoritative change detector only.
+-                // They may suppress work when unchanged, but can never authorize a command.
+-                // This keeps the steady-state router visually quiet: no Copy click and no history
+-                // scrolling every poll when the manager surface has not changed.
++                // V66 quiet detector hashes the whole visible, non-editable ChatGPT conversation
++                // surface. It is optimization metadata only: uncertainty NEVER means unchanged.
++                // A periodic structural assistant-response audit also prevents a detector defect
++                // from suppressing manager work indefinitely.
+                 if (ui.isGenerating()) {
+                     trace("MANAGER_SCAN_DEFER_GENERATING", "project=${project.projectId}")
+                     return
+                 }
+-                val surfaceHashA = ui.assistantMessageFingerprints().lastOrNull()
+-                delay(300)
++                val surfaceHashA = ui.managerSurfaceFingerprintV66()
++                delay(350)
+                 if (ui.isGenerating()) {
+                     trace("MANAGER_SCAN_DEFER_GENERATING", "project=${project.projectId}")
+                     return
+                 }
+-                val surfaceHashB = ui.assistantMessageFingerprints().lastOrNull()
+-                if (surfaceHashA != surfaceHashB) {
+-                    trace("MANAGER_SURFACE_UNSTABLE", "project=${project.projectId}")
+-                    return
+-                }
+-                val surfaceHash = surfaceHashB
+-
+-                if (store.isManagerCursorInitialized(project.projectId)) {
+-                    val priorSurfaceHash = store.managerSurfaceCursor(project.projectId)
+-                    if (surfaceHash == null) {
+-                        error("Manager surface fingerprint unavailable")
+-                    }
+-                    if (priorSurfaceHash != null && surfaceHash == priorSurfaceHash) {
+-                        managerFailureByProject.remove(project.projectId)
+-                        trace("MANAGER_SCAN_UNCHANGED", "project=${project.projectId}|surface=true")
+-                        return
+-                    }
++                val surfaceHashB = ui.managerSurfaceFingerprintV66()
++                val surfaceStable = surfaceHashA != null && surfaceHashA == surfaceHashB
++                val surfaceHash = if (surfaceStable) surfaceHashB else null
++                if (!surfaceStable) {
++                    trace(
++                        "MANAGER_SURFACE_UNCERTAIN",
++                        "project=${project.projectId}|a=${surfaceHashA?.take(12) ?: "null"}|b=${surfaceHashB?.take(12) ?: "null"}",
++                    )
+                 }
+ 
+-                // First sight of a manager chat establishes a baseline and NEVER executes old
+-                // history.  This prevents enabling the router from replaying stale ROUTE_TASK or
+-                // PROJECT_UPDATE content that predates activation. An empty baseline is recorded
+-                // explicitly so the first future assistant response is not skipped.
+-                if (!store.isManagerCursorInitialized(project.projectId)) {
++                // 065 and older stored raw/accessibility-dependent cursor hashes. Re-baseline once
++                // into V66 canonical response identity before accepting new commands. This is
++                // intentionally stale-replay-safe: anything already present at upgrade is history.
++                val cursorInitialized = store.isManagerCursorInitialized(project.projectId)
++                val cursorNeedsV66Migration = cursorInitialized && !store.isManagerCursorV66(project.projectId)
++                if (!cursorInitialized || cursorNeedsV66Migration) {
+                     val baselineProbe = ui.probeManagerBaseline()
+                     val baseline = baselineProbe.latestExactResponse?.trim()?.takeIf { it.isNotBlank() }
+                     if (baseline == null && !baselineProbe.historyStartProven) {
+@@ -292,22 +286,55 @@ internal class ProjectOrchestratorV58(private val service: AgentService) {
+                             "MANAGER_BASELINE_DEFERRED",
+                             "project=${project.projectId}|limit=${baselineProbe.historyLimitReached}|copy=${ui.responseCaptureDiagnosticsV63()}",
+                         )
+-                        error("Manager baseline exact cursor unavailable within bounded history")
++                        error("Manager baseline structural cursor unavailable within bounded history")
+                     }
+-                    val exactHash = baseline?.let(ProjectOrchestratorProtocolV58::sha256)
+-                    store.primeManagerCursor(project.projectId, exactHash, surfaceHash)
++                    val canonicalHash = baseline?.let(::assistantResponseHashV66)
++                    store.primeManagerCursor(project.projectId, canonicalHash, surfaceHash)
++                    managerExactAuditAtByProject[project.projectId] = System.currentTimeMillis()
+                     managerFailureByProject.remove(project.projectId)
+                     trace(
+-                        "MANAGER_BASELINE_PRIMED",
+-                        "project=${project.projectId}|assistant=${if (exactHash == null) "empty-history-proven" else exactHash.take(16)}|copy=${ui.responseCaptureDiagnosticsV63()}",
++                        if (cursorNeedsV66Migration) "MANAGER_CURSOR_MIGRATED_V66" else "MANAGER_BASELINE_PRIMED",
++                        "project=${project.projectId}|assistant=${if (canonicalHash == null) "empty-history-proven" else canonicalHash.take(16)}|surface=${surfaceHash?.take(12) ?: "uncertain"}|copy=${ui.responseCaptureDiagnosticsV63()}",
+                     )
+                     return
+                 }
+ 
+-                // Never let a heuristic accessibility fingerprint suppress an exact Copy-response
+-                // check. Surface hashes are diagnostics/optimization metadata only; command
+-                // authority and progress are keyed exclusively to the exact copied-response cursor.
+                 val cursor = store.managerResponseCursor(project.projectId)
++                val priorSurfaceHash = store.managerSurfaceCursor(project.projectId)
++                val exactAuditDue =
++                    System.currentTimeMillis() - (managerExactAuditAtByProject[project.projectId] ?: 0L) >=
++                        MANAGER_EXACT_AUDIT_INTERVAL_MS
++
++                if (surfaceHash != null && priorSurfaceHash != null && surfaceHash == priorSurfaceHash && !exactAuditDue) {
++                    managerFailureByProject.remove(project.projectId)
++                    trace("MANAGER_SCAN_UNCHANGED", "project=${project.projectId}|surface=v66")
++                    return
++                }
++
++                // Cheap structural audit: no click/clipboard/history scroll. If the newest grounded
++                // assistant turn still equals the durable cursor, absorb harmless surface changes
++                // (for example the user's prompt appearing before the assistant answer) and stay quiet.
++                val latestGrounded = ui.latestAssistantResponse()?.trim()?.takeIf { it.isNotBlank() }
++                val latestGroundedHash = latestGrounded?.let(::assistantResponseHashV66)
++                if (latestGroundedHash == cursor || (cursor == null && latestGrounded == null)) {
++                    if (surfaceHash != null) store.setManagerSurfaceCursor(project.projectId, surfaceHash)
++                    managerExactAuditAtByProject[project.projectId] = System.currentTimeMillis()
++                    managerFailureByProject.remove(project.projectId)
++                    trace(
++                        "MANAGER_SCAN_UNCHANGED",
++                        "project=${project.projectId}|latest=v66|surface=${if (surfaceHash != null) "updated" else "uncertain"}",
++                    )
++                    return
++                }
++
++                trace(
++                    "MANAGER_RESPONSE_CHANGE_CANDIDATE",
++                    "project=${project.projectId}|cursor=${cursor?.take(16) ?: "empty"}|latest=${latestGroundedHash?.take(16) ?: "unavailable"}|surface=${surfaceHash?.take(12) ?: "uncertain"}",
++                )
++
++                // Structural assistant-response scan is authoritative. It uses response-action
++                // containers and V66 canonical hashes; if the durable cursor cannot be proven,
++                // fail closed rather than skip an unknown manager-history gap.
+                 val scan = ui.copyAssistantResponsesAfter(cursorHash = cursor)
+                 if (!scan.boundaryFound) {
+                     // A cursor gap is a real scan failure. Authority cannot advance across an
+@@ -322,14 +349,15 @@ internal class ProjectOrchestratorV58(private val service: AgentService) {
+ 
+                 if (scan.responsesOldestFirst.isEmpty()) {
+                     if (surfaceHash != null) store.setManagerSurfaceCursor(project.projectId, surfaceHash)
++                    managerExactAuditAtByProject[project.projectId] = System.currentTimeMillis()
+                     managerFailureByProject.remove(project.projectId)
+-                    trace("MANAGER_SCAN_UNCHANGED", "project=${project.projectId}|exact=true")
++                    trace("MANAGER_SCAN_UNCHANGED", "project=${project.projectId}|exact=v66")
+                     return
+                 }
+ 
+                 for (message in scan.responsesOldestFirst) {
+                     currentCoroutineContext().ensureActive()
+-                    val managerResponseHash = ProjectOrchestratorProtocolV58.sha256(message)
++                    val managerResponseHash = assistantResponseHashV66(message)
+ 
+                     val controlPlanePayload = controlPlanePayload(message)
+                     val isControlPlaneResponse =
+@@ -407,8 +435,9 @@ internal class ProjectOrchestratorV58(private val service: AgentService) {
+                 }
+ 
+                 if (surfaceHash != null) store.setManagerSurfaceCursor(project.projectId, surfaceHash)
++                managerExactAuditAtByProject[project.projectId] = System.currentTimeMillis()
+                 managerFailureByProject.remove(project.projectId)
+-                trace("MANAGER_SCAN_DONE", "project=${project.projectId}|responses=${scan.responsesOldestFirst.size}")
++                trace("MANAGER_SCAN_DONE", "project=${project.projectId}|responses=${scan.responsesOldestFirst.size}|cursor=v66")
+         } catch (cancel: CancellationException) {
+             throw cancel
+         } catch (t: Throwable) {
+@@ -576,11 +605,11 @@ internal class ProjectOrchestratorV58(private val service: AgentService) {
+                 continue
+             }
+             val newest = ui.assistantMessageTexts().asReversed().firstOrNull { text ->
+-                ProjectOrchestratorProtocolV58.sha256(text) !in baseline &&
++                assistantResponseHashV66(text) !in baseline &&
+                     correlationMarkerMatchesV65(text, route.outboundMarker)
+             }
+             if (newest != null) {
+-                val hash = ProjectOrchestratorProtocolV58.sha256(newest)
++                val hash = assistantResponseHashV66(newest)
+                 if (hash == candidateHash) {
+                     stablePasses++
+                 } else {
+diff --git a/app/src/main/res/values/strings.xml b/app/src/main/res/values/strings.xml
+index 46dd890..33f84d1 100644
+--- a/app/src/main/res/values/strings.xml
++++ b/app/src/main/res/values/strings.xml
+@@ -1,5 +1,5 @@
+ <?xml version="1.0" encoding="utf-8"?>
+ <resources>
+-    <string name="app_name">ClosePaw RC11 065</string>
++    <string name="app_name">ClosePaw RC11 066</string>
+     <string name="accessibility_service_description">ClosePaw is an on-device automation agent. With your permission, it reads on-screen elements and performs taps, swipes, and text input when you start a task or enable Project Router. Project Router may continue coordinating configured ChatGPT conversations until you stop it.</string>
+ </resources>
+diff --git a/app/src/test/kotlin/ai/closepaw/app/ChatGptProjectAdapterV66Test.kt b/app/src/test/kotlin/ai/closepaw/app/ChatGptProjectAdapterV66Test.kt
+new file mode 100644
+index 0000000..58eed43
+--- /dev/null
++++ b/app/src/test/kotlin/ai/closepaw/app/ChatGptProjectAdapterV66Test.kt
+@@ -0,0 +1,39 @@
++package ai.closepaw.app
++
++import org.junit.Assert.assertEquals
++import org.junit.Assert.assertNotEquals
++import org.junit.Assert.assertNull
++import org.junit.Test
++
++class ChatGptProjectAdapterV66Test {
++    @Test
++    fun canonicalResponseIgnoresOnlyTransportWhitespace() {
++        val a = "ROUTE_TASK\nPROJECT_ID: SMT  ROUTE_ID: X"
++        val b = "ROUTE_TASK PROJECT_ID: SMT ROUTE_ID: X"
++        assertEquals(assistantResponseHashV66(a), assistantResponseHashV66(b))
++    }
++
++    @Test
++    fun canonicalResponseRejectsSubstantiveDifference() {
++        assertNotEquals(
++            assistantResponseHashV66("TARGET: 04"),
++            assistantResponseHashV66("TARGET: 05"),
++        )
++    }
++
++    @Test
++    fun managerSurfaceHashChangesWhenNewAssistantTextAppears() {
++        val before = managerSurfaceHashV66(listOf("SMT", "old answer"))
++        val after = managerSurfaceHashV66(listOf("SMT", "old answer", "ROUTE_TASK PROJECT_ID: SMT ROUTE_ID: CP066"))
++        assertNotEquals(before, after)
++    }
++
++    @Test
++    fun managerSurfaceHashNormalizesVisualWhitespace() {
++        assertEquals(
++            managerSurfaceHashV66(listOf("ROUTE_TASK   PROJECT_ID: SMT")),
++            managerSurfaceHashV66(listOf("ROUTE_TASK PROJECT_ID: SMT")),
++        )
++        assertNull(managerSurfaceHashV66(emptyList()))
++    }
++}
